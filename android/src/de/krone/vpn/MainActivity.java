@@ -458,14 +458,7 @@ public class MainActivity extends Activity {
     }
 
     private void installUpdate() {
-        Intent c = Updater.confirm;
-        if (c != null) {
-            try {
-                startActivity(c);
-                return;
-            } catch (Exception ignored) {
-            }
-        }
+        if (Updater.showConfirm(this)) return;
         try {
             JSONObject j = new JSONObject(Native.status(KroneVpnService.handle));
             String f = j.optString("update_file", "");
@@ -473,7 +466,19 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "Update wird noch geladen", Toast.LENGTH_SHORT).show();
                 return;
             }
+            Updater.installing = "";
             Updater.install(this, f, j.optString("update_version", ""), true);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** App im Vordergrund: liegt ein fertig geladenes Update bereit, die Rueckfrage von Android gleich zeigen */
+    private void updateOnOpen() {
+        try {
+            long h = KroneVpnService.handle;
+            if (h == 0) return;
+            JSONObject j = new JSONObject(Native.status(h));
+            Updater.onForeground(this, j.optString("update_file", ""), j.optString("update_version", ""));
         } catch (Exception ignored) {
         }
     }
@@ -702,11 +707,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        Updater.visible = this;
         ui.post(tick);
+        ui.postDelayed(this::updateOnOpen, 1500);
     }
 
     @Override
     protected void onPause() {
+        if (Updater.visible == this) Updater.visible = null;
         ui.removeCallbacks(tick);
         super.onPause();
     }

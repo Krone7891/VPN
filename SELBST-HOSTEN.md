@@ -67,8 +67,11 @@ kvpn-server update     # neue App-Version an Handy/PC verteilen – mit Rückfra
    neu, Android installiert es (ab Android 12 ohne Rückfrage, sonst einmal „Installieren“ tippen).
 Kommt ein Update an? `kvpn-server status` zeigt je Gerät System, App-Version und Update-Stand („wird angeboten“,
 „übertragen – wird installiert“, „aktuell“). Android: Wurde die App von Hand installiert, muss Android das **erste**
-Update einmal bestätigen – die App zeigt dafür eine Benachrichtigung „Update bereit“ (antippen → „Installieren“);
-danach aktualisiert sie sich ab Android 12 ohne Rückfrage.
+Update einmal bestätigen – die App zeigt dafür eine Benachrichtigung „Update bereit“ (antippen → „Installieren“),
+ist die App offen, kommt die Rückfrage sofort. Fehlt die Erlaubnis „Unbekannte Apps installieren“, öffnet die App
+zuerst diese Einstellung. Wurde die Rückfrage weggeklickt, kommt sie beim nächsten Öffnen der App wieder. Danach
+aktualisiert sie sich ab Android 12 ohne Rückfrage. (Bis 1.0.9 konnte die Rückfrage beim erneuten Öffnen der App
+„abgebrochen“ werden – ab 1.0.10 nicht mehr.)
 
 5. Bei der Freigabe werden auch die Apps auf der Download-Seite erneuert. Unter Windows bringt der Dienst außerdem
    ältere Kopien von KroneVPN.exe (z. B. im Download-Ordner) auf die neue Version – beim nächsten Start ist dann
