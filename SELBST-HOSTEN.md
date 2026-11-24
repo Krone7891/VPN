@@ -185,6 +185,10 @@ kvpn-server verlauf ["Annas Handy"]        # wann verbunden/getrennt (90 Tage)
 kvpn-server benutzer remove "Anna" [--mit-geraeten]
 ```
 
+**Auf der Webseite sperren:** Auf der Admin-Seite im VPN (`http://10.77.0.1:8180`) bzw. lokal (`http://localhost:8180`)
+gibt es unter den Geräten den Bereich „Benutzer & Geräte sperren“ – je Benutzer und je Gerät ein Knopf
+**Sperren/Entsperren**. Gesperrte Geräte werden sofort getrennt.
+
 Änderungen gelten sofort, ohne Neustart. Die Statistik-Seite zeigt den Benutzer an jedem Gerät, gesperrte/abgelaufene
 Geräte unter der Liste und die eingestellte Verschlüsselung.
 

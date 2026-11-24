@@ -1492,7 +1492,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kronevpn"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "eframe",
  "embed-resource",
@@ -1509,7 +1509,7 @@ dependencies = [
 
 [[package]]
 name = "kvpn"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "base64",
  "chacha20poly1305",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "kvpn-android"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "jni 0.21.1",
  "kvpn",
@@ -1541,7 +1541,7 @@ dependencies = [
 
 [[package]]
 name = "kvpn-server"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "futures-util",
  "kvpn",

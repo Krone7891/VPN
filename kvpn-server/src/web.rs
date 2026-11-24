@@ -106,6 +106,23 @@ pub async fn handle<S>(
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
     }
     // gespeicherte Verbindungscodes mit QR-Code – nur auf der lokalen Seite (http://localhost:8180), nie von aussen
+    // Benutzerverwaltung auf der Webseite: Benutzer und Geraete sperren/entsperren (nur lokal bzw. Admin im VPN)
+    if p.ends_with("/users.json") || (p.ends_with("/manage") && method == "POST") {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Nur auf der Admin-Seite (im VPN oder lokal)"}"#).await;
+        }
+        if !sh.cfg().users {
+            return respond(s, "200 OK", "application/json", "", br#"{"ok":false,"enabled":false,"err":"Benutzerverwaltung ist aus (kvpn-server einstellungen --benutzer an)"}"#).await;
+        }
+        let body = if method == "POST" { read_json(s, headers).await } else { serde_json::Value::Null };
+        let (path, sh2) = (sh.cfg_path.clone(), sh.clone());
+        let r = tokio::task::spawn_blocking(move || manage(&sh2, &path, &body)).await.unwrap_or_else(|e| Err(e.to_string()));
+        let b = match r {
+            Ok(v) => v,
+            Err(e) => json!({"ok": false, "err": e}),
+        };
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
+    }
     if p.ends_with("/codes") {
         if !local {
             return respond(s, "403 Forbidden", "application/json", "", br#"{"err":"Nur lokal auf dem Server"}"#).await;
@@ -163,6 +180,62 @@ pub async fn handle<S>(
         return respond(s, "200 OK", "text/html; charset=utf-8", "", PAGE.as_bytes()).await;
     }
     respond(s, "404 Not Found", "text/html; charset=utf-8", "", b"<!doctype html><title>404 Not Found</title><h1>Not Found</h1>").await;
+}
+
+// ------------------------------------------------------------------ Benutzerverwaltung (Webseite)
+
+async fn read_json<S: AsyncRead + Unpin>(s: &mut S, headers: &HashMap<String, String>) -> serde_json::Value {
+    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0).min(4096);
+    let mut body = vec![0u8; len];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_exact(&mut body)).await;
+    serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
+}
+
+/// Liste (GET) bzw. Aktion (POST {"kind":"device"|"user","name":"…","action":"sperren"|"entsperren"})
+fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde_json::Value, String> {
+    use crate::users;
+    let db = users::open(cfg_path)?;
+    let mut done = String::new();
+    if let Some(kind) = body["kind"].as_str() {
+        let name = body["name"].as_str().unwrap_or("").trim().to_string();
+        let off = match body["action"].as_str() {
+            Some("sperren") => true,
+            Some("entsperren") => false,
+            _ => return Err("unbekannte Aktion".into()),
+        };
+        let found = match kind {
+            "device" => users::set_disabled(&db, &name, off)?,
+            "user" => users::set_user_disabled(&db, &name, off)?,
+            _ => return Err("unbekannte Art".into()),
+        };
+        if !found {
+            return Err(format!("'{name}' nicht gefunden"));
+        }
+        drop(db);
+        sh.reload();
+        let what = if kind == "device" { "Geraet" } else { "Benutzer" };
+        crate::log!("Webseite: {what} '{name}' {}", if off { "gesperrt" } else { "entsperrt" });
+        done = format!("{} '{name}' {}", if kind == "device" { "Gerät" } else { "Benutzer" }, if off { "gesperrt – sofort getrennt" } else { "entsperrt" });
+        return manage(sh, cfg_path, &serde_json::Value::Null).map(|mut v| {
+            v["msg"] = json!(done);
+            v
+        });
+    }
+    let cfg = sh.cfg();
+    let online: std::collections::HashSet<String> =
+        sh.peers.read().unwrap().values().filter(|p| p.stats.connected_since.load(Relaxed) > 0).map(|p| p.peer.name.clone()).collect();
+    let devices: Vec<_> = users::devices(&db)?
+        .into_iter()
+        .map(|d| {
+            json!({"name": d.peer.name, "user": d.peer.user, "ip4": cfg.ip4(d.peer.index).to_string(), "status": d.status(),
+                   "active": d.active(), "disabled": d.disabled, "online": online.contains(&d.peer.name)})
+        })
+        .collect();
+    let users: Vec<_> = users::users(&db)?
+        .into_iter()
+        .map(|u| json!({"name": u.name, "note": u.note, "disabled": u.disabled, "devices": u.devices, "max": u.max_devices}))
+        .collect();
+    Ok(json!({"ok": true, "enabled": true, "users": users, "devices": devices, "msg": done}))
 }
 
 // ------------------------------------------------------------------ Admin-Seite im VPN (noch nicht angemeldet)

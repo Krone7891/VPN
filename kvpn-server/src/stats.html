@@ -119,6 +119,8 @@ function build(){
    '<span>Höchstens</span><input id="maxn" type="number" min="1" style="width:5.5em;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--soft);color:var(--ink);font:inherit">'+
    '<span>Geräte erlauben</span><button class="btn2" id="maxok" type="button" style="margin:0">Speichern</button><span class="mute" id="maxmsg"></span></div>'+
    '<div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
+   '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte sperren</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
+   '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
    '<div id="uplbox" hidden><h2>Eigenes Bild</h2><div class="card"><div class="upl"><img id="uplprev" alt="" hidden>'+
@@ -143,6 +145,7 @@ function render(d){
     if(s.logo)$('#fav').href=src;const pv=$('#uplprev');if(pv){pv.hidden=!s.logo;if(s.logo)pv.src=src}const dl=$('#upldel');if(dl)dl.hidden=!s.logo}
   $('#uplbox').hidden=!d.local;LOCAL=!!d.local;
   const ia=d.inactive||[];setT($('#inact'),ia.length?'Gesperrt oder abgelaufen (Benutzerverwaltung): '+ia.map(x=>x.name+(x.user?' ('+x.user+')':'')).join(', '):'');
+  if(LOCAL&&d.settings&&d.settings.users)loadMgmt();else{const m=$('#mgmt');if(m)m.hidden=true}
   const mb=$('#maxbox');if(d.local){if(mb.hidden){mb.hidden=false;mb.style.display='flex';$('#maxok').onclick=saveMax}
     const mi=$('#maxn');mi.max=d.max_possible||250;if(document.activeElement!==mi&&!mi.dataset.dirty)mi.value=d.max_peers;
     mi.oninput=()=>{mi.dataset.dirty=1};
@@ -189,6 +192,35 @@ async function showCode(name){
   dlg.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{if(b.dataset.a==='close')dlg.close();else{const t=dlg.querySelector('textarea');t.select();
     (navigator.clipboard?navigator.clipboard.writeText(t.value):Promise.reject()).then(()=>{b.textContent='Kopiert ✓'},()=>{document.execCommand('copy');b.textContent='Kopiert ✓'})}});
   dlg.showModal();
+}
+// Benutzerverwaltung: sperren/entsperren direkt auf der Seite (nur lokal bzw. Admin im VPN)
+let MG_T=0,MG_KEY='';
+async function loadMgmt(force){
+  if(!force&&Date.now()-MG_T<4000)return;MG_T=Date.now();
+  try{const r=await (await fetch(BASE+'users.json')).json();showMgmt(r)}catch(e){}
+}
+function showMgmt(r){
+  const box=$('#mgmt');if(!box)return;
+  if(!r||!r.enabled){box.hidden=true;return}
+  box.hidden=false;
+  if(r.msg)setT($('#mgmtmsg'),r.msg);
+  const key=JSON.stringify([r.users,r.devices]);if(key===MG_KEY)return;MG_KEY=key;
+  const btn=(kind,name,off)=>'<button type="button" class="btn2" style="margin:0" data-k="'+kind+'" data-n="'+esc(name)+'" data-a="'+(off?'entsperren':'sperren')+'">'+(off?'Entsperren':'Sperren')+'</button>';
+  const st=(t,bad)=>'<span class="badge'+(bad?' warn':' ok')+'">'+esc(t)+'</span>';
+  $('#mgmtu').innerHTML=r.users.length?'<table><thead><tr><th>Benutzer</th><th>Geräte</th><th>Status</th><th></th></tr></thead><tbody>'+
+    r.users.map(u=>'<tr><td><b>'+esc(u.name)+'</b>'+(u.note?' <span class="mute">'+esc(u.note)+'</span>':'')+'</td><td>'+esc(u.devices.join(', ')||'–')+(u.max?' <span class="mute">(max. '+u.max+')</span>':'')+'</td><td>'+
+      st(u.disabled?'gesperrt':'aktiv',u.disabled)+'</td><td style="text-align:right">'+btn('user',u.name,u.disabled)+'</td></tr>').join('')+'</tbody></table>'
+    :'<div class="mute">Noch keine Benutzer – anlegen auf dem Server: <code>kvpn-server benutzer add "Name"</code></div>';
+  $('#mgmtd').innerHTML='<table><thead><tr><th>Gerät</th><th>Benutzer</th><th>Adresse</th><th>Status</th><th></th></tr></thead><tbody>'+
+    r.devices.map(x=>'<tr><td><b>'+esc(x.name)+'</b>'+(x.online?' <span class="badge ok">online</span>':'')+'</td><td>'+esc(x.user||'–')+'</td><td>'+esc(x.ip4)+'</td><td>'+st(x.status,!x.active)+
+      '</td><td style="text-align:right">'+btn('device',x.name,x.disabled)+'</td></tr>').join('')+'</tbody></table>';
+  box.querySelectorAll('button[data-k]').forEach(b=>b.onclick=async()=>{
+    const off=b.dataset.a==='sperren',what=(b.dataset.k==='user'?'Benutzer':'Gerät')+' „'+b.dataset.n+'“';
+    if(off&&!confirm(what+' sperren?'+(b.dataset.k==='user'?' Alle seine Geräte':' Es')+' werden sofort getrennt.'))return;
+    b.disabled=true;
+    try{const r=await (await fetch(BASE+'manage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:b.dataset.k,name:b.dataset.n,action:b.dataset.a})})).json();
+      if(r.ok){MG_KEY='';showMgmt(r);MG_T=Date.now()}else{setT($('#mgmtmsg'),r.err||'Fehler');b.disabled=false}}
+    catch(e){setT($('#mgmtmsg'),'Fehler: '+e.message);b.disabled=false}});
 }
 async function saveMax(){
   const mi=$('#maxn'),m=$('#maxmsg');m.dataset.keep=1;

@@ -59,7 +59,7 @@ Fertig gebaut in [`dist/`](dist) – oder von deinem Server unter `/download/` m
 Höchstzahl Geräte. Details: [SELBST-HOSTEN.md](SELBST-HOSTEN.md#einstellungen-benutzerverwaltung-aes-256-leistungsmodus).
 
 **Admin-Seite im VPN:** verbunden `http://10.77.0.1:8180` öffnen – beim ersten Mal Passwort festlegen, dann von jedem
-Gerät im VPN anmelden (Update freigeben, Codes, Höchstzahl …). **Update-Stand der Geräte:** `kvpn-server status`.
+Gerät im VPN anmelden (Update freigeben, Codes, Höchstzahl, **Benutzer und Geräte sperren/entsperren** …). **Update-Stand der Geräte:** `kvpn-server status`.
 
 **Profile:** PC und Handy können mehrere Verbindungscodes speichern (z. B. verschiedene Server) und zwischen ihnen
 wechseln – Windows-Fenster „Profile“, Android „Profile …“, Linux `kronevpn --profile` / `--profil <nr>`.

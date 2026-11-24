@@ -259,6 +259,16 @@ ns kv-cli2 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"falsch-12
 ns kv-cli2 curl -s -m 5 -c "$W/adm2" -H 'Content-Type: application/json' -d '{"pw":"Geheim-1234"}' "$A/login" | grep -q '"ok":true' && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/codes" | grep -q '"codes"' \
   && ok "anderes Geraet: mit dem Passwort angemeldet, Codes sichtbar" || bad "Anmeldung vom zweiten Geraet"
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" -X POST "$A/max/8" | grep -q '"ok":true' && ok "Admin im VPN darf Einstellungen aendern (Hoechstzahl)" || bad "Admin /max"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/users.json" | grep -q '"name":"geraet6"' && ok "Webseite: Benutzer- und Geraeteliste" || bad "users.json: $(ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/users.json" | head -c 200)"
+ns kv-cli2 curl -s -m 5 -H 'Content-Type: application/json' -d '{"kind":"device","name":"geraet6","action":"sperren"}' "$A/manage" | grep -q '"ok":true' && bad "Sperren ohne Anmeldung moeglich!" || ok "Sperren ohne Anmeldung abgelehnt"
+ns kv-cli1 curl -sk -m 5 -H 'Content-Type: application/json' -d '{"kind":"device","name":"geraet6","action":"sperren"}' https://vpn.test/manage | grep -q '"ok":true' && bad "Sperren von aussen moeglich!" || ok "Sperren ueber die oeffentliche Seite abgelehnt"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"device","name":"geraet6","action":"sperren"}' "$A/manage" | grep -q '"msg":"Gerät .geraet6. gesperrt' && sleep 2 \
+  && ! ns kv-cli6 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "Webseite: Geraet gesperrt -> sofort getrennt" || bad "Webseite sperren"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"device","name":"geraet6","action":"entsperren"}' "$A/manage" | grep -q '"ok":true' \
+  && waitping kv-cli6 60 && ok "Webseite: entsperrt -> wieder verbunden" || bad "Webseite entsperren"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"user","name":"Tester","action":"sperren"}' "$A/manage" | grep -q '"disabled":true' \
+  && ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"user","name":"Tester","action":"entsperren"}' "$A/manage" | grep -q '"ok":true' \
+  && ok "Webseite: Benutzer sperren und entsperren" || bad "Webseite Benutzer sperren"
 ns kv-net curl -s -m 3 "http://10.201.0.1:8180/" >/dev/null 2>&1 && bad "Admin-Seite ausserhalb des VPN erreichbar!" || ok "ausserhalb des Tunnels nicht erreichbar"
 "$BIN/kvpn-server" admin-passwort --loeschen >/dev/null; sleep 4
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"setup":true' && ok "admin-passwort --loeschen: abgemeldet, neu festlegen moeglich" || bad "loeschen"
