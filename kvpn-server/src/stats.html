@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VPN-Statistik</title>
+<link rel="icon" id="fav" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%9B%A1%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<style>
+:root{--bg:#f4f5f8;--card:#fff;--ink:#16181d;--mute:#5d6472;--line:#e3e6ec;--grid:#eceef2;--acc:#3b6cf6;--soft:#eef1f6;
+ --ok:#18a058;--warn:#b26a00;--bad:#d03050;--s1:#2a78d6;--s2:#eb6834;--shadow:0 1px 2px rgba(16,24,40,.06),0 4px 16px rgba(16,24,40,.06);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){--bg:#0f1115;--card:#171a21;--ink:#e8eaf0;--mute:#9aa3b2;--line:#262b35;--grid:#20242d;--acc:#6f95ff;--soft:#1e222b;
+ --ok:#36c27a;--warn:#f0a72a;--bad:#ff5c7a;--s1:#3987e5;--s2:#d95926;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0f1115;--card:#171a21;--ink:#e8eaf0;--mute:#9aa3b2;--line:#262b35;--grid:#20242d;--acc:#6f95ff;--soft:#1e222b;
+ --ok:#36c27a;--warn:#f0a72a;--bad:#ff5c7a;--s1:#3987e5;--s2:#d95926;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--acc)}
+.wrap{max-width:1100px;margin:0 auto;padding:22px 16px 50px}
+.nav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
+h1{font-size:28px;margin:12px 0 0;letter-spacing:-.02em}
+h2{font-size:17px;margin:26px 0 10px}
+.sub{color:var(--mute);font-size:14px;margin-top:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow);min-width:0}
+.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-top:18px}
+.kpi .l{color:var(--mute);font-size:13px}
+.kpi .v{font-size:26px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2;white-space:nowrap}
+.kpi .s{color:var(--mute);font-size:12.5px}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+.top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.ttl{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis}
+.mute{color:var(--mute);font-size:13px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.on{background:var(--ok)}.off{background:var(--line)}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 8px}
+.kv div{background:var(--soft);border-radius:10px;padding:7px 9px;min-width:0}
+.kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kv span{white-space:nowrap;font-size:12px;color:var(--mute)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mute);margin:2px 4px 2px 0}
+.badge.warn{color:var(--warn)}.badge.ok{color:var(--ok)}
+.chart{position:relative}
+.chart svg{display:block;width:100%;height:220px;overflow:visible}
+.legend{display:flex;gap:16px;font-size:13px;color:var(--mute);margin-bottom:6px;flex-wrap:wrap;align-items:center}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.legend i.rect{height:10px;width:10px;border-radius:3px}
+.tabs{margin-left:auto;display:flex;gap:4px}
+.tabs button{font:inherit;font-size:13px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--mute);cursor:pointer}
+.tabs button.act{background:var(--soft);color:var(--ink);font-weight:600}
+.tip{position:absolute;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-size:13px;box-shadow:var(--shadow);display:none;white-space:nowrap;z-index:2}
+.tip b{font-variant-numeric:tabular-nums}
+.tip .k{display:inline-block;width:12px;height:2px;border-radius:2px;vertical-align:middle;margin-right:6px}
+.spark{display:block;width:100%;height:34px;margin-top:6px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;font-variant-numeric:tabular-nums}
+th,td{text-align:right;padding:6px 8px;border-top:1px solid var(--line);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{color:var(--mute);font-weight:600;border-top:0}
+details summary{cursor:pointer;color:var(--mute);font-size:13.5px;margin-top:8px}
+.login{max-width:380px;margin:30px auto 0;display:flex;flex-direction:column;gap:10px}
+input{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);width:100%}
+.btn{font:inherit;font-weight:600;padding:9px 14px;border-radius:10px;border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer}
+.err{color:var(--bad);font-size:14px;min-height:1em}
+.foot{color:var(--mute);font-size:12.5px;margin-top:22px}
+#lg{width:40px;height:40px;border-radius:10px;object-fit:cover;vertical-align:-8px;margin-right:10px}
+.upl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.upl img{width:56px;height:56px;border-radius:12px;object-fit:cover;background:var(--soft)}
+.upl label,.upl button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="nav" id="nav"></div>
+  <h1><img id="lg" alt="" hidden><span id="h1">🛡️ KroneVPN – Statistik</span></h1>
+  <div class="sub" id="sub">lädt …</div>
+  <div id="main"></div>
+</div>
+<script>
+'use strict';
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const BASE=location.pathname.replace(/\/+$/,'')+'/';
+// Navigation: eingebunden in eine bestehende Werkzeuge-Seite oder eigenstaendig (Link zu den Apps)
+(()=>{const n=document.getElementById('nav');const w=location.pathname.startsWith('/werkzeuge/');
+  n.innerHTML=w?'<a href="/">🏠 Home</a><a href="/werkzeuge/">🧰 Werkzeuge</a>':'<a href="/download/" id="navapps" hidden>📦 Apps</a>'})();
+let RANGE='sec', LAST=null, T=null;
+try{RANGE=localStorage.getItem('kvpn-range')||'sec'}catch(e){}
+
+function bytes(b){const u=['B','KB','MB','GB','TB'];let i=0;b=+b||0;while(b>=1024&&i<u.length-1){b/=1024;i++}return (i?b.toFixed(b<10?2:1):b)+' '+u[i]}
+function rate(Bps){const b=(+Bps||0)*8;return b>=1e9?(b/1e9).toFixed(2)+' Gbit/s':b>=1e6?(b/1e6).toFixed(1)+' Mbit/s':b>=1e3?(b/1e3).toFixed(0)+' kbit/s':b.toFixed(0)+' bit/s'}
+function dur(s){s=Math.max(0,s|0);const d=s/86400|0,h=s%86400/3600|0,m=s%3600/60|0;return d?d+' T '+h+' h':h?h+' h '+m+' min':m?m+' min':s+' s'}
+function ago(t,now){if(!t)return 'nie';return dur(now-t)+' her'}
+function osName(o){return {android:'Android',windows:'Windows',linux:'Linux',macos:'macOS'}[o]||o||'–'}
+
+async function load(){
+  let r,j;
+  try{r=await fetch(BASE+'data.json',{cache:'no-store'});j=await r.json();}
+  catch(e){$('#sub').textContent='Server nicht erreichbar – neuer Versuch in 5 s';clearTimeout(T);T=setTimeout(load,5000);return;}
+  if(r.status===401){BUILT=false;showLogin(j);return;}
+  LAST=j;render(j);clearTimeout(T);T=setTimeout(load,2000);
+}
+
+/* Die Seite wird EINMAL aufgebaut; danach werden nur Texte, Kurven und Karten an Ort und Stelle geaendert
+   (kein Neuaufbau, kein Flackern; offene Tooltips und die aufgeklappte Tabelle bleiben stehen). */
+let BUILT=false, TABKEY='', LOGOV=-1;
+const setT=(el,v)=>{if(el&&el.textContent!==v)el.textContent=v};
+const setH=(el,v)=>{if(el&&el.dataset.h!==v){el.innerHTML=v;el.dataset.h=v}};
+function kpi(id,l,s){return '<div class="card kpi"><div class="l">'+esc(l)+'</div><div class="v" id="'+id+'">–</div><div class="s" id="'+id+'s">'+esc(s||'')+'</div></div>'}
+function build(){
+  $('#main').innerHTML='<div class="kpis">'+kpi('kOn','Verbunden','Geräte gerade online')+kpi('kDown','Download jetzt','Server → Geräte')+kpi('kUp','Upload jetzt','Geräte → Server')+
+   kpi('kToday','Heute','Datenmenge aller Geräte')+kpi('kMonth','Dieser Monat','Datenmenge aller Geräte')+kpi('kSrv','Server','')+'</div>'+
+   '<h2>Datenrate</h2><div class="card"><div class="legend"><span><i style="background:var(--s1)"></i>Download (zu den Geräten)</span><span><i style="background:var(--s2)"></i>Upload (von den Geräten)</span>'+
+   '<div class="tabs" role="group" aria-label="Zeitraum"><button data-r="sec">10 Minuten</button><button data-r="min">24 Stunden</button></div></div><div class="chart" id="chart"></div></div>'+
+   '<h2>Geräte</h2><div class="grid" id="peers"></div>'+
+   '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
+   '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
+   '<div id="uplbox" hidden><h2>Eigenes Bild</h2><div class="card"><div class="upl"><img id="uplprev" alt="" hidden>'+
+   '<label>Bild auswählen …<input type="file" id="uplf" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>'+
+   '<button id="upldel" hidden>Bild entfernen</button><span class="mute" id="uplmsg">PNG, JPG, WebP oder GIF, höchstens 2 MB. Erscheint auf der Download- und Statistik-Seite. Ändern geht nur hier auf dem Server (localhost).</span></div></div></div>'+
+   '<div class="foot" id="foot"></div>';
+  const tabs=()=>document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('act',x.dataset.r===RANGE));
+  document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{RANGE=b.dataset.r;try{localStorage.setItem('kvpn-range',RANGE)}catch(e){}tabs();LC.key='';render(LAST)});
+  tabs();BUILT=true;TABKEY='';LC.key='';DC.key='';LOGOV=-1;
+  $('#uplf').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('#uplmsg').textContent='lade hoch …';
+    try{const r=await fetch(BASE+'logo',{method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});const k=await r.json().catch(()=>({}));
+      $('#uplmsg').textContent=k.ok?'Gespeichert.':(k.err||('Fehler '+r.status));}catch(x){$('#uplmsg').textContent=x.message}
+    e.target.value='';load()};
+  $('#upldel').onclick=async()=>{await fetch(BASE+'logo',{method:'DELETE'}).catch(()=>{});$('#uplmsg').textContent='Bild entfernt.';load()};
+}
+
+function render(d){
+  if(!BUILT)build();
+  const on=d.peers.filter(p=>p.online), now=d.now, s=d.server;
+  if(s.logo!==LOGOV){LOGOV=s.logo;const src=s.logo?BASE+'logo?v='+s.logo:'';
+    const lg=$('#lg');lg.hidden=!s.logo;if(s.logo)lg.src=src;
+    if(s.logo)$('#fav').href=src;const pv=$('#uplprev');if(pv){pv.hidden=!s.logo;if(s.logo)pv.src=src}const dl=$('#upldel');if(dl)dl.hidden=!s.logo}
+  $('#uplbox').hidden=!d.local;
+  const na=$('#navapps');if(na)na.hidden=!s.downloads;
+  if(s.name){setT($('#h1'),(s.logo?'':'🛡️ ')+s.name+' – Statistik');if(document.title!==s.name+' – Statistik')document.title=s.name+' – Statistik'}
+  const down=d.peers.reduce((a,p)=>a+p.rate_tx,0), up=d.peers.reduce((a,p)=>a+p.rate_rx,0);
+  const today=d.peers.reduce((a,p)=>a+p.today[0]+p.today[1],0), month=d.peers.reduce((a,p)=>a+p.month[0]+p.month[1],0);
+  setT($('#sub'),on.length+' von '+d.peers.length+' Geräten verbunden (max. '+d.max_peers+') · aktualisiert sich alle 2 Sekunden');
+  setT($('#kOn'),on.length+' / '+d.peers.length);setT($('#kDown'),rate(down));setT($('#kUp'),rate(up));
+  setT($('#kToday'),bytes(today));setT($('#kMonth'),bytes(month));
+  setT($('#kSrv'),s.cpu_pct.toFixed(1)+' % CPU');setT($('#kSrvs'),s.rss_mb.toFixed(0)+' MB RAM · '+s.queues+' Queues / '+s.cores+' Kerne');
+  lineChart($('#chart'),RANGE==='sec'?d.sec:d.min,RANGE==='sec'?1:60,now);
+  peers(d.peers,now);
+  dayChart($('#days'),d.days.slice().reverse());
+  daysTable($('#dtable'),d);
+  setT($('#foot'),(s.name||'KroneVPN')+' '+s.version+' · läuft seit '+dur(now-s.started)+' · Tunnel '+s.net4+(s.net6?' / '+s.net6:'')+' · MTU '+s.mtu+' · Last '+s.load+
+   (s.tun_drops?' · '+s.tun_drops+' Pakete verworfen (Gerät zu langsam)':'')+' · '+s.url);
+}
+
+/* Geraete-Karten: je Geraet einmal angelegt, danach nur Werte aendern */
+function peers(list,now){
+  const box=$('#peers');
+  if(!list.length){setH(box,'<div class="card mute">Noch kein Gerät angelegt. Auf dem Server: <code>kvpn-server add "Mein Handy"</code></div>');return}
+  if(box.dataset.h){box.innerHTML='';delete box.dataset.h}
+  const want=new Set(list.map(p=>p.name));
+  box.querySelectorAll(':scope>.card[data-peer]').forEach(c=>{if(!want.has(c.dataset.peer))c.remove()});
+  list.forEach((p,idx)=>{
+    let c=[...box.children].find(x=>x.dataset.peer===p.name);
+    if(!c){c=document.createElement('div');c.className='card';c.dataset.peer=p.name;c.innerHTML=
+      '<div class="top"><div style="min-width:0"><div class="ttl"><span class="dot" data-f="dot" aria-hidden="true"></span><span data-f="name"></span></div><div class="mute" data-f="sub"></div></div>'+
+      '<div class="mute" style="text-align:right;white-space:nowrap" data-f="ip"></div></div><div data-f="badges"></div>'+
+      '<div class="kv"><div><span>Download</span><b data-f="down"></b></div><div><span>Upload</span><b data-f="up"></b></div><div><span>Ping</span><b data-f="ping"></b></div>'+
+      '<div><span>Heute</span><b data-f="today"></b></div><div><span>Monat</span><b data-f="month"></b></div><div><span>Gesamt</span><b data-f="total"></b></div></div>'+
+      '<svg class="spark" viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="Datenrate der letzten 2 Minuten"><polyline data-f="spark" fill="none" stroke="var(--s1)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'+
+      '<div class="mute" data-f="foot"></div>';}
+    if(box.children[idx]!==c)box.insertBefore(c,box.children[idx]||null);   // Reihenfolge nur bei Bedarf korrigieren
+    const f=k=>c.querySelector('[data-f="'+k+'"]'), i=p.info||{};
+    const dot=f('dot'),cls='dot '+(p.online?'on':'off');if(dot.getAttribute('class')!==cls)dot.setAttribute('class',cls);
+    setT(f('name'),p.name);setT(f('ip'),p.ip4);
+    setT(f('sub'),p.online?'verbunden seit '+dur(now-p.since)+' · von '+(i.remote||''):'getrennt · zuletzt gesehen '+ago(p.last_seen,now));
+    let tls='';
+    if(i.tls_issuer){tls=i.tls_trusted?'<span class="badge ok" title="Normales, öffentlich vertrauenswürdiges Zertifikat">✓ TLS direkt</span>'
+      :'<span class="badge warn" title="Eine Firewall bricht HTTPS auf (z. B. Sophos). Die VPN-Daten bleiben trotzdem verschlüsselt – Noise prüft den Server.">⚠ HTTPS-Inspektion: '+esc(i.tls_issuer)+'</span>';}
+    setH(f('badges'),(p.online?'<span class="badge">'+esc(osName(i.os))+' · v'+esc(i.ver)+'</span>':'')+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+(p.online?tls:''));
+    setT(f('down'),p.online?rate(p.rate_tx):'–');setT(f('up'),p.online?rate(p.rate_rx):'–');setT(f('ping'),p.online&&p.rtt_ms?p.rtt_ms.toFixed(0)+' ms':'–');
+    setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
+    const a=p.spark||[],n=a.length,m=Math.max(1,...a);
+    f('spark').setAttribute('points',n<2?'':a.map((v,k)=>(k/(n-1)*100).toFixed(2)+','+(32-v/m*30).toFixed(2)).join(' '));
+    setT(f('foot'),'Verbindungen: '+p.handshakes+(p.spoofed?' · '+p.spoofed+' gefälschte Pakete verworfen':''));
+  });
+}
+
+/* Linien-Diagramm (eine Achse, zwei Reihen) mit Fadenkreuz-Tooltip.
+   Das SVG entsteht einmal; bei neuen Daten werden nur Kurven und Achsenbeschriftung neu gesetzt. */
+function niceMax(v){if(v<=0)return 1;const e=Math.pow(10,Math.floor(Math.log10(v))),f=v/e;return (f<=1?1:f<=2?2:f<=5?5:10)*e}
+const LC={key:'',hover:null};
+function lineChart(el,data,step,now){
+  const W=el.clientWidth||600,H=220,L=74,R=10,Tp=10,B=24,n=data.length;
+  if(n<2){LC.key='';el.innerHTML='<div class="mute" style="padding:30px 0">Noch zu wenige Messwerte – kommt in ein paar Sekunden.</div>';return}
+  const key=W+'|'+step;
+  if(LC.key!==key){                                   // Geruest nur bei neuer Breite oder anderem Zeitraum
+    LC.key=key;LC.hover=null;
+    el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="Datenrate: Download und Upload"><g class="ax"></g>'+
+      '<path class="p1" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round"/><path class="p0" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round"/>'+
+      '<line class="xh" y1="'+Tp+'" y2="'+(H-B)+'" stroke="var(--mute)" stroke-width="1" visibility="hidden"/>'+
+      '<circle class="d1" r="4" fill="var(--s1)" stroke="var(--card)" stroke-width="2" visibility="hidden"/><circle class="d2" r="4" fill="var(--s2)" stroke="var(--card)" stroke-width="2" visibility="hidden"/>'+
+      '<rect class="hit" x="'+L+'" y="0" width="'+(W-L-R)+'" height="'+H+'" fill="transparent" tabindex="0"/></svg><div class="tip"></div>';
+    const svg=el.querySelector('svg'),hit=el.querySelector('.hit');
+    const idx=e=>{const r=svg.getBoundingClientRect(),px=(e.clientX-r.left)/r.width*W;return Math.max(0,Math.min(LC.n-1,Math.round((px-L)/(W-L-R)*(LC.n-1))))};
+    hit.addEventListener('pointermove',e=>{LC.hover=idx(e);LC.show()});
+    hit.addEventListener('pointerleave',()=>{LC.hover=null;LC.hide()});hit.addEventListener('blur',()=>{LC.hover=null;LC.hide()});
+    hit.addEventListener('focus',()=>{LC.hover=LC.n-1;LC.show()});
+    hit.addEventListener('keydown',e=>{if(LC.hover==null)return;if(e.key==='ArrowLeft')LC.hover=Math.max(0,LC.hover-1);if(e.key==='ArrowRight')LC.hover=Math.min(LC.n-1,LC.hover+1);LC.show()});
+  }
+  const max=niceMax(Math.max(...data.map(v=>Math.max(v[0],v[1])*8)));
+  const x=i=>L+(W-L-R)*i/(n-1), y=v=>Tp+(H-Tp-B)*(1-(v*8)/max);
+  let g='';
+  for(let k=0;k<=4;k++){const yy=Tp+(H-Tp-B)*k/4;g+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'" stroke="var(--grid)"/>'+
+    '<text x="'+(L-8)+'" y="'+(yy+4)+'" text-anchor="end" font-size="11" fill="var(--mute)">'+rate(max*(1-k/4)/8)+'</text>';}
+  const span=(n-1)*step, NL=W<520?2:4;
+  for(let k=0;k<=NL;k++){const i=Math.round((n-1)*k/NL),dt=new Date((now-(n-1-i)*step)*1000);
+    g+='<text x="'+x(i)+'" y="'+(H-6)+'" text-anchor="'+(k==0?'start':k==NL?'end':'middle')+'" font-size="11" fill="var(--mute)">'+dt.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit',second:span<=900?'2-digit':undefined})+'</text>';}
+  const ax=el.querySelector('.ax');if(ax.dataset.h!==g){ax.innerHTML=g;ax.dataset.h=g}
+  const path=s=>data.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+','+y(v[s]).toFixed(1)).join('');
+  el.querySelector('.p1').setAttribute('d',path(1));el.querySelector('.p0').setAttribute('d',path(0));
+  const tip=el.querySelector('.tip'),xh=el.querySelector('.xh'),d1=el.querySelector('.d1'),d2=el.querySelector('.d2');
+  Object.assign(LC,{n,show(){const i=Math.min(LC.hover,n-1),v=data[i],t=new Date((now-(n-1-i)*step)*1000);
+      [xh,d1,d2].forEach(e=>e.setAttribute('visibility','visible'));
+      xh.setAttribute('x1',x(i));xh.setAttribute('x2',x(i));d1.setAttribute('cx',x(i));d1.setAttribute('cy',y(v[1]));d2.setAttribute('cx',x(i));d2.setAttribute('cy',y(v[0]));
+      tip.innerHTML='<div class="mute">'+t.toLocaleTimeString('de-DE')+(step>1?' (Minutenmittel)':'')+'</div><div><span class="k" style="background:var(--s1)"></span><b>'+rate(v[1])+'</b> Download</div><div><span class="k" style="background:var(--s2)"></span><b>'+rate(v[0])+'</b> Upload</div>';
+      tip.style.display='block';const px=x(i)/W*el.clientWidth;tip.style.left=Math.min(Math.max(0,px+12),el.clientWidth-tip.offsetWidth)+'px';tip.style.top='8px'},
+    hide(){[xh,d1,d2].forEach(e=>e.setAttribute('visibility','hidden'));tip.style.display='none'}});
+  if(LC.hover!=null)LC.show();                      // Tooltip bleibt beim Aktualisieren stehen
+}
+
+/* Tages-Balken: Download und Upload gestapelt, 2px Abstand. Geruest nur bei neuen Tagen/Breite, sonst nur Balkenhoehen. */
+const DC={key:'',days:[]};
+function dayChart(el,days){
+  if(!days.length){DC.key='';el.innerHTML='<div class="mute" style="padding:20px 0">Noch keine Daten.</div>';return}
+  const W=el.clientWidth||600,H=200,L=74,R=6,Tp=8,B=24,n=days.length,cw=(W-L-R)/n,bw=Math.max(4,Math.min(36,cw-4));
+  DC.days=days;
+  const key=W+'|'+days.map(d=>d.date).join(',');
+  if(DC.key!==key){
+    DC.key=key;
+    let g='<g class="ax"></g>';
+    days.forEach((d,i)=>{const cx=L+cw*(i+.5);
+      g+='<path class="bd" fill="var(--s1)"/><path class="bu" fill="var(--s2)"/>'+
+         '<rect x="'+(cx-cw/2)+'" y="'+Tp+'" width="'+cw+'" height="'+(H-Tp-B)+'" fill="transparent" data-i="'+i+'" class="dh" tabindex="0"/>';
+      if(n<=10||i%Math.ceil(n/8)===0||i===n-1)g+='<text x="'+cx+'" y="'+(H-6)+'" text-anchor="middle" font-size="11" fill="var(--mute)">'+d.date.slice(8)+'.'+d.date.slice(5,7)+'.</text>';});
+    el.innerHTML='<svg viewBox="0 0 '+W+' '+H+'" style="height:200px" role="img" aria-label="Datenmenge je Tag">'+g+'</svg><div class="tip"></div>';
+    const tip=el.querySelector('.tip'),svg=el.querySelector('svg');
+    el.querySelectorAll('.dh').forEach(r=>{const f=()=>{const d=DC.days[+r.dataset.i];if(!d)return;
+      tip.innerHTML='<div class="mute">'+d.date.split('-').reverse().join('.')+'</div><div><span class="k" style="background:var(--s1)"></span><b>'+bytes(d.tx)+'</b> Download</div><div><span class="k" style="background:var(--s2)"></span><b>'+bytes(d.rx)+'</b> Upload</div>';
+      tip.style.display='block';const bb=r.getBoundingClientRect(),sb=svg.getBoundingClientRect();tip.style.left=Math.min(Math.max(0,bb.left-sb.left+bb.width),el.clientWidth-tip.offsetWidth)+'px';tip.style.top='8px';r.setAttribute('fill','rgba(127,127,127,.08)');DC.open=f};
+      const h=()=>{tip.style.display='none';r.setAttribute('fill','transparent');DC.open=null};
+      r.addEventListener('pointerenter',f);r.addEventListener('focus',f);r.addEventListener('pointerleave',h);r.addEventListener('blur',h);});
+  }
+  const max=niceMax(Math.max(...days.map(d=>d.rx+d.tx))), y=v=>(H-Tp-B)*v/max;
+  let g='';
+  for(let k=0;k<=4;k++){const yy=Tp+(H-Tp-B)*k/4;g+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+yy+'" y2="'+yy+'" stroke="var(--grid)"/><text x="'+(L-8)+'" y="'+(yy+4)+'" text-anchor="end" font-size="11" fill="var(--mute)">'+bytes(max*(1-k/4))+'</text>';}
+  const ax=el.querySelector('.ax');if(ax.dataset.h!==g){ax.innerHTML=g;ax.dataset.h=g}
+  const bd=el.querySelectorAll('.bd'),bu=el.querySelectorAll('.bu');
+  days.forEach((d,i)=>{const x0=L+cw*(i+.5)-bw/2,base=H-B,hd=y(d.tx),hu=y(d.rx),gap=hd>0&&hu>0?2:0;
+    bd[i].setAttribute('d',hd>0?bar(x0,base-hd,bw,hd,hu>0?0:Math.min(4,hd)):'');
+    bu[i].setAttribute('d',hu>0?bar(x0,base-hd-gap-hu,bw,hu,Math.min(4,hu)):'');});
+  if(DC.open)DC.open();                              // offener Tooltip zeigt die neuen Werte
+}
+function bar(x,y,w,h,r){r=Math.min(r,w/2,h);return 'M'+x+','+(y+h)+'V'+(y+r)+'Q'+x+','+y+' '+(x+r)+','+y+'H'+(x+w-r)+'Q'+(x+w)+','+y+' '+(x+w)+','+(y+r)+'V'+(y+h)+'Z'}
+function daysTable(el,d){
+  const names=d.peers.map(p=>p.name), key=d.days.map(x=>x.date).join(',')+'|'+names.join(',');
+  if(TABKEY!==key){                                   // Geruest nur bei neuen Tagen/Geraeten
+    TABKEY=key;
+    el.innerHTML='<table><thead><tr><th>Tag</th><th>Download</th><th>Upload</th>'+names.map(n=>'<th>'+esc(n)+'</th>').join('')+'</tr></thead><tbody>'+
+      d.days.map(x=>'<tr><td>'+esc(x.date.split('-').reverse().join('.'))+'</td>'+'<td></td>'.repeat(2+names.length)+'</tr>').join('')+'</tbody></table>';
+  }
+  const rows=el.querySelectorAll('tbody tr');
+  d.days.forEach((x,i)=>{const c=rows[i].children;setT(c[1],bytes(x.tx));setT(c[2],bytes(x.rx));
+    names.forEach((n,k)=>{const v=x.per[n];setT(c[3+k],v?bytes(v[0]+v[1]):'–')})});
+}
+
+function showLogin(j){
+  clearTimeout(T);BUILT=false;$('#sub').textContent='Von außerhalb des Heimnetzes nur mit Passwort';
+  $('#main').innerHTML='<form class="card login" id="lf"><div class="ttl">🔒 Anmelden</div>'+
+   (j.password_set?'<input id="pw" type="password" placeholder="Passwort" autocomplete="current-password" required><div class="err" id="le"></div><button class="btn">Anmelden</button>'
+   :'<div class="mute">Kein Passwort festgelegt – die Statistik ist nur aus dem Heimnetz oder über das VPN erreichbar. Passwort setzen auf dem Server: <code>kvpn-server password …</code></div>')+'</form>';
+  const f=$('#lf');if(!j.password_set)return;
+  f.onsubmit=async e=>{e.preventDefault();$('#le').textContent='';
+    try{const r=await fetch(BASE+'login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw:$('#pw').value})});const k=await r.json();
+      if(k.ok)load();else $('#le').textContent=k.err||'Fehler';}catch(er){$('#le').textContent=er.message}};
+}
+let RZ=0;window.addEventListener('resize',()=>{clearTimeout(RZ);RZ=setTimeout(()=>{if(LAST&&BUILT)render(LAST)},150)});
+load();
+</script>
+</body>
+</html>

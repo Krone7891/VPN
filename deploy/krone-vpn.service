@@ -1,0 +1,17 @@
+[Unit]
+Description=KroneVPN Server (VPN ueber HTTPS/443)
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/kvpn-server run
+Restart=always
+RestartSec=2
+StateDirectory=krone-vpn
+LimitNOFILE=65536
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

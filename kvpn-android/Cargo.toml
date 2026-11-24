@@ -1,0 +1,15 @@
+[package]
+name = "kvpn-android"
+version.workspace = true
+edition.workspace = true
+description = "KroneVPN Kern fuer die Android-App (JNI)"
+
+[lib]
+name = "kronevpn"
+crate-type = ["cdylib"]
+
+[dependencies]
+kvpn = { path = "../kvpn" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+jni = { version = "0.21", default-features = false }
+serde_json = "1"

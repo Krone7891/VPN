@@ -1,0 +1,24 @@
+#include <winuser.h>
+1 RT_MANIFEST "kronevpn.manifest"
+1 ICON "kronevpn.ico"
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040704B0"
+    BEGIN
+      VALUE "CompanyName", "KroneVPN"
+      VALUE "FileDescription", "KroneVPN"
+      VALUE "FileVersion", "1.0.0"
+      VALUE "ProductName", "KroneVPN"
+      VALUE "ProductVersion", "1.0.0"
+      VALUE "OriginalFilename", "KroneVPN.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0407, 1200
+  END
+END

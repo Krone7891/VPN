@@ -1,0 +1,291 @@
+//! Server-Konfiguration (/etc/krone-vpn/server.toml)
+
+use kvpn::crypto::Key32;
+use serde::{Deserialize, Serialize};
+use std::net::{Ipv4Addr, Ipv6Addr};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    /// Adresse, auf der der Server lauscht (hinter nginx: 127.0.0.1:8101)
+    #[serde(default = "d_listen")]
+    pub listen: String,
+    /// Adresse fuer die Clients (landet im Verbindungscode)
+    pub public_url: String,
+    /// privater Server-Schluessel (Base64) – geheim halten!
+    pub private_key: String,
+    #[serde(default = "d_tun")]
+    pub tun: String,
+    /// IPv4-Netz im Tunnel; Server = .1, Geraete = .2 bis .9
+    #[serde(default = "d_net4")]
+    pub net4: String,
+    /// IPv6-Netz im Tunnel (leer = kein IPv6 im Tunnel; IPv6 der Geraete wird dann blockiert statt durchgelassen)
+    #[serde(default = "d_net6")]
+    pub net6: String,
+    #[serde(default = "d_dns")]
+    pub dns: Vec<String>,
+    #[serde(default = "d_mtu")]
+    pub mtu: u16,
+    /// NAT, Weiterleitung und MSS-Anpassung selbst einrichten (iptables/ip6tables)
+    #[serde(default = "d_true")]
+    pub nat: bool,
+    /// TUN-Warteschlangen (0 = eine je CPU-Kern, hoechstens 8)
+    #[serde(default)]
+    pub queues: usize,
+    /// Passwort fuer die Statistik-Seite von aussen (leer = nur aus Heimnetz/VPN)
+    #[serde(default)]
+    pub stats_password: String,
+    #[serde(default = "d_state")]
+    pub state_dir: String,
+    /// Name des VPN (erscheint in den Apps, auf der Statistik- und Download-Seite)
+    #[serde(default)]
+    pub vpn_name: String,
+    /// lokale Webseite (Statistik + Downloads) nur auf diesem Rechner, ohne TLS und ohne Passwort:
+    /// http://localhost:8180 (leer = aus). Der VPN-Tunnel laeuft hier nicht.
+    #[serde(default = "d_local")]
+    pub local_listen: String,
+    /// Ordner mit den Apps fuer /download/ (leer = keine Download-Seite)
+    #[serde(default)]
+    pub downloads_dir: String,
+    /// optional: TLS selbst machen (ohne nginx davor), Pfade zu PEM-Dateien
+    #[serde(default)]
+    pub tls_cert: String,
+    #[serde(default)]
+    pub tls_key: String,
+    #[serde(default, rename = "peer")]
+    pub peers: Vec<Peer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Peer {
+    pub name: String,
+    pub public_key: String,
+    /// letzte Stelle der Adresse (2..=9)
+    pub index: u8,
+}
+
+fn d_listen() -> String {
+    "127.0.0.1:8101".into()
+}
+fn d_local() -> String {
+    "127.0.0.1:8180".into()
+}
+fn d_tun() -> String {
+    "kvpn0".into()
+}
+fn d_net4() -> String {
+    "10.77.0.0/24".into()
+}
+fn d_net6() -> String {
+    "fd77:6b76::/64".into()
+}
+fn d_dns() -> Vec<String> {
+    vec!["1.1.1.1".into(), "9.9.9.9".into(), "2606:4700:4700::1111".into()]
+}
+fn d_mtu() -> u16 {
+    1400
+}
+fn d_true() -> bool {
+    true
+}
+fn d_state() -> String {
+    "/var/lib/krone-vpn".into()
+}
+
+pub const FIRST_INDEX: u8 = 2;
+
+impl Config {
+    pub fn new(public_url: String, private_key: String) -> Self {
+        let mut c: Config = toml::from_str(&format!("public_url = {:?}\nprivate_key = {:?}\n", public_url, private_key)).unwrap();
+        c.public_url = public_url;
+        c
+    }
+
+    pub fn load(path: &str) -> Result<Self, String> {
+        let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e} (zuerst 'kvpn-server init' ausfuehren)"))?;
+        let c: Config = toml::from_str(&s).map_err(|e| format!("{path}: {e}"))?;
+        c.check()?;
+        Ok(c)
+    }
+
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let body = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let text = format!(
+            "# KroneVPN Server – Konfiguration\n# Geraete verwalten: kvpn-server add <name> | remove <name> | list   (Aenderungen gelten sofort)\n# private_key ist geheim!\n\n{body}"
+        );
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let tmp = format!("{path}.tmp");
+        std::fs::write(&tmp, text).map_err(|e| format!("{tmp}: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+        std::fs::rename(&tmp, path).map_err(|e| format!("{path}: {e}"))
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        self.server_key()?;
+        self.net4()?;
+        self.net6()?;
+        kvpn::transport::parse_url(&self.public_url)?;
+        if self.peers.len() > kvpn::proto::MAX_PEERS {
+            return Err(format!("hoechstens {} Geraete erlaubt", kvpn::proto::MAX_PEERS));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for p in &self.peers {
+            kvpn::code::key_from_b64(&p.public_key).map_err(|e| format!("Geraet {}: {e}", p.name))?;
+            if !(FIRST_INDEX..FIRST_INDEX + kvpn::proto::MAX_PEERS as u8).contains(&p.index) {
+                return Err(format!("Geraet {}: index muss {}..{} sein", p.name, FIRST_INDEX, FIRST_INDEX + 7));
+            }
+            if !seen.insert(p.index) {
+                return Err(format!("index {} doppelt vergeben", p.index));
+            }
+        }
+        if !(1280..=9000).contains(&self.mtu) {
+            return Err("mtu muss zwischen 1280 und 9000 liegen".into());
+        }
+        Ok(())
+    }
+
+    pub fn display_name(&self) -> &str {
+        if self.vpn_name.trim().is_empty() { "KroneVPN" } else { self.vpn_name.trim() }
+    }
+
+    /// einzelnen Wert setzen (fuer Installer): kvpn-server set <schluessel> <wert>
+    pub fn set(&mut self, key: &str, val: &str) -> Result<(), String> {
+        match key {
+            "listen" => self.listen = val.into(),
+            "local_listen" => self.local_listen = val.into(),
+            "public_url" => self.public_url = val.into(),
+            "vpn_name" | "name" => {
+                if val.chars().count() > 40 || val.contains(['"', '\n', '/', '\\']) {
+                    return Err("Name: hoechstens 40 Zeichen, ohne \" / \\".into());
+                }
+                self.vpn_name = val.trim().into()
+            }
+            "downloads_dir" => self.downloads_dir = val.into(),
+            "tls_cert" => self.tls_cert = val.into(),
+            "tls_key" => self.tls_key = val.into(),
+            "stats_password" => self.stats_password = val.into(),
+            "state_dir" => self.state_dir = val.into(),
+            "dns" => self.dns = val.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect(),
+            "mtu" => self.mtu = val.parse().map_err(|_| "mtu: Zahl erwartet".to_string())?,
+            "nat" => self.nat = matches!(val, "true" | "1" | "ja" | "an"),
+            "net4" => self.net4 = val.into(),
+            "net6" => self.net6 = val.into(),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6)")),
+        }
+        self.check()
+    }
+
+    pub fn server_key(&self) -> Result<Key32, String> {
+        kvpn::code::key_from_b64(&self.private_key)
+    }
+
+    /// (Netzadresse, Praefix)
+    pub fn net4(&self) -> Result<(Ipv4Addr, u8), String> {
+        match kvpn::util::parse_cidr(&self.net4)? {
+            (std::net::IpAddr::V4(a), p) if p <= 28 => Ok((Ipv4Addr::from(u32::from(a) & (!0u32 << (32 - p))), p)),
+            _ => Err("net4 muss ein IPv4-Netz bis /28 sein".into()),
+        }
+    }
+
+    pub fn net6(&self) -> Result<Option<(Ipv6Addr, u8)>, String> {
+        if self.net6.trim().is_empty() {
+            return Ok(None);
+        }
+        match kvpn::util::parse_cidr(&self.net6)? {
+            (std::net::IpAddr::V6(a), p) if p <= 120 => Ok(Some((Ipv6Addr::from(u128::from(a) & (!0u128 << (128 - p))), p))),
+            _ => Err("net6 muss ein IPv6-Netz bis /120 sein".into()),
+        }
+    }
+
+    pub fn ip4(&self, index: u8) -> Ipv4Addr {
+        Ipv4Addr::from(u32::from(self.net4().unwrap().0) + index as u32)
+    }
+
+    pub fn ip6(&self, index: u8) -> Option<Ipv6Addr> {
+        self.net6().unwrap().map(|(n, _)| Ipv6Addr::from(u128::from(n) + index as u128))
+    }
+
+    pub fn free_index(&self) -> Option<u8> {
+        (FIRST_INDEX..FIRST_INDEX + kvpn::proto::MAX_PEERS as u8).find(|i| !self.peers.iter().any(|p| p.index == *i))
+    }
+
+    pub fn welcome(&self, p: &Peer) -> kvpn::proto::Welcome {
+        let (_, p4) = self.net4().unwrap();
+        kvpn::proto::Welcome {
+            name: p.name.clone(),
+            ip4: format!("{}/{}", self.ip4(p.index), p4),
+            ip6: match (self.ip6(p.index), self.net6().unwrap()) {
+                (Some(a), Some((_, p6))) => format!("{a}/{p6}"),
+                _ => String::new(),
+            },
+            dns: self.dns.clone(),
+            mtu: self.mtu,
+        }
+    }
+
+    pub fn client_config(&self, p: &Peer, private_key: &Key32) -> kvpn::code::ClientConfig {
+        let w = self.welcome(p);
+        kvpn::code::ClientConfig {
+            name: p.name.clone(),
+            url: self.public_url.clone(),
+            server_pub: kvpn::code::key_to_b64(&kvpn::crypto::public_from_private(&self.server_key().unwrap())),
+            private_key: kvpn::code::key_to_b64(private_key),
+            ip4: w.ip4,
+            ip6: w.ip6,
+            dns: w.dns,
+            mtu: w.mtu,
+            title: self.vpn_name.clone(),
+            proxy: String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn addresses_and_limits() {
+        let (k, _) = kvpn::crypto::generate_keypair();
+        let mut c = Config::new("wss://vpn.example.de/api/v1/stream".into(), kvpn::code::key_to_b64(&k));
+        c.check().unwrap();
+        assert_eq!(c.listen, "127.0.0.1:8101");
+        assert_eq!(c.local_listen, "127.0.0.1:8180");
+        for n in 0..8 {
+            let i = c.free_index().unwrap();
+            let (_, pubk) = kvpn::crypto::generate_keypair();
+            c.peers.push(Peer { name: format!("g{n}"), public_key: kvpn::code::key_to_b64(&pubk), index: i });
+        }
+        assert!(c.free_index().is_none());
+        c.check().unwrap();
+        assert_eq!(c.ip4(2).to_string(), "10.77.0.2");
+        assert_eq!(c.ip6(9).unwrap().to_string(), "fd77:6b76::9");
+        let w = c.welcome(&c.peers[0]);
+        assert_eq!(w.ip4, "10.77.0.2/24");
+        assert_eq!(w.ip6, "fd77:6b76::2/64");
+        let (_, pubk) = kvpn::crypto::generate_keypair();
+        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5 });
+        assert!(c.check().is_err());
+        c.peers.pop();
+        c.set("vpn_name", "Potzplitz VPN").unwrap();
+        c.set("listen", "0.0.0.0:443").unwrap();
+        assert!(c.set("vpn_name", "a/b").is_err());
+        assert!(c.set("gibtsnicht", "x").is_err());
+        assert_eq!(c.client_config(&c.peers[0], &[7; 32]).display_name(), "Potzplitz VPN");
+        let (_, pubk) = kvpn::crypto::generate_keypair();
+        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5 });
+        // speichern/laden
+        let dir = std::env::temp_dir().join(format!("kvpn-test-{}", std::process::id()));
+        let p = dir.join("server.toml");
+        c.peers.pop();
+        c.save(p.to_str().unwrap()).unwrap();
+        let d = Config::load(p.to_str().unwrap()).unwrap();
+        assert_eq!(d.peers, c.peers);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
