@@ -290,6 +290,14 @@ SJ '{"admin_password":"Neues-Geheim-99"}' | grep -q 'Admin-Passwort geändert' &
   && ! ns kv-cli1 curl -s -m 5 -b "$W/adm1" "$A/data.json" | grep -q '"local":true' && ns kv-cli1 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"Neues-Geheim-99"}' "$A/login" | grep -q '"ok":true' \
   && ok "Webseite: Admin-Passwort geaendert (dieser Browser bleibt angemeldet, andere muessen neu anmelden)" || bad "Webseite Admin-Passwort aendern"
 SJ '{"vpn_name":"","max_devices":8}' >/dev/null
+# Version auf der Webseite
+VER=$(grep -m1 '^version' "$R/Cargo.toml" | cut -d'"' -f2)
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"apps\":\"$VER\"" && ok "Webseite: App-Version $VER angezeigt" || bad "data.json ohne App-Version"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"ver\":\"$VER\"" && ok "Webseite: App-Version je Geraet" || bad "data.json ohne Geraete-Version"
+mkdir -p "$W/dlpage"; echo test > "$W/dlpage/KroneVPN.apk"
+"$BIN/kvpn-server" set downloads_dir "$W/dlpage" >/dev/null; sleep 3
+ns kv-srv curl -s -m 3 http://127.0.0.1:8180/download/ | grep -q "Version $VER" && ok "Download-Seite zeigt Version $VER" || bad "Download-Seite ohne Version"
+"$BIN/kvpn-server" set downloads_dir "" >/dev/null
 ns kv-net curl -s -m 3 "http://10.201.0.1:8180/" >/dev/null 2>&1 && bad "Admin-Seite ausserhalb des VPN erreichbar!" || ok "ausserhalb des Tunnels nicht erreichbar"
 "$BIN/kvpn-server" admin-passwort --loeschen >/dev/null; sleep 4
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"setup":true' && ok "admin-passwort --loeschen: abgemeldet, neu festlegen moeglich" || bad "loeschen"

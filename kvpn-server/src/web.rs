@@ -568,6 +568,7 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
     let want = pct_decode(rest.trim_start_matches('/'));
     if want.is_empty() {
         let name = html_esc(cfg.display_name());
+        let ver = html_esc(&apps_version(&cfg));
         let lv = logo_version(sh);
         let (logo_img, icon) = if lv > 0 {
             (format!("<img class=\"lg\" src=\"logo?v={lv}\" alt=\"\">"), format!("<link rel=\"icon\" href=\"logo?v={lv}\">"))
@@ -583,7 +584,7 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
         };
         let cards: String = files.iter().map(|(n, sz)| {
             let (ic, os, how) = kind(n);
-            format!("<a class=\"dl\" href=\"{}\" download><span class=\"ic\">{ic}</span><span><b>{}</b><span class=\"m\">{os} · {:.1} MB</span><span class=\"h\">{}</span></span></a>",
+            format!("<a class=\"dl\" href=\"{}\" download><span class=\"ic\">{ic}</span><span><b>{}</b><span class=\"m\">{os} · Version {ver} · {:.1} MB</span><span class=\"h\">{}</span></span></a>",
                 pct_encode(n), html_esc(n), *sz as f64 / 1048576.0, html_esc(how))
         }).collect();
         let body = format!(r#"<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>{name} – Apps</title>{icon}
@@ -593,8 +594,8 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
 .w{{max-width:760px;margin:0 auto;padding:28px 16px 50px}}h1{{font-size:28px;margin:0}}.sub{{color:var(--mute);margin:4px 0 20px}}
 .dl{{display:flex;gap:14px;align-items:flex-start;text-decoration:none;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-top:12px}}
 .dl:hover{{border-color:var(--acc)}}.ic{{font-size:30px;line-height:1}}.dl b{{display:block;font-size:17px}}.m{{display:block;color:var(--mute);font-size:13.5px}}.h{{display:block;font-size:14px;margin-top:6px}}
-.n{{color:var(--mute);font-size:13.5px;margin-top:22px}}.lg{{width:44px;height:44px;border-radius:10px;object-fit:cover;vertical-align:-10px;margin-right:10px}}</style></head><body><div class="w"><h1>{logo_img}{name}</h1>
-<div class="sub">Apps zum Herunterladen. Den persönlichen Verbindungscode bekommst du vom Betreiber dieses Servers.</div>{cards}
+.n{{color:var(--mute);font-size:13.5px;margin-top:22px}}.v{{display:inline-block;font-size:12.5px;font-weight:600;padding:1px 9px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--ink);margin-right:6px}}.lg{{width:44px;height:44px;border-radius:10px;object-fit:cover;vertical-align:-10px;margin-right:10px}}</style></head><body><div class="w"><h1>{logo_img}{name}</h1>
+<div class="sub"><span class="v">Version {ver}</span> Apps zum Herunterladen. Den persönlichen Verbindungscode bekommst du vom Betreiber dieses Servers.</div>{cards}
 <div class="n">Verbinden kann sich nur, wer einen Verbindungscode hat – die Apps allein enthalten nichts Geheimes.</div></div></body></html>"#);
         return respond(s, "200 OK", "text/html; charset=utf-8", "", body.as_bytes()).await;
     }
@@ -615,6 +616,14 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
         return;
     }
     respond(s, "200 OK", ctype, &extra, &data).await
+}
+
+/// aktuelle App-Version: die freigegebene (falls neuer als der Server), sonst die des Servers
+pub fn apps_version(cfg: &crate::config::Config) -> String {
+    match crate::updates::offered(cfg) {
+        Some(m) if kvpn::update::newer(&m.version, kvpn::VERSION) => m.version,
+        _ => kvpn::VERSION.to_string(),
+    }
 }
 
 fn proc_cpu_seconds() -> f64 {
@@ -700,6 +709,7 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
         "update": {
             "offered": crate::updates::offered(&cfg).map(|m| m.version).unwrap_or_default(),
             "pending": crate::updates::pending(&cfg).map(|m| m.version).unwrap_or_default(),
+            "apps": apps_version(&cfg),
             "repo": cfg.update_repo,
         },
         "peers": list,

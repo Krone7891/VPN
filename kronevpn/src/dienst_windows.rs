@@ -645,13 +645,62 @@ pub fn record_copy() {
     let _ = std::fs::write(copies_file(), keep.join("\r\n") + "\r\n");
 }
 
+fn is_exe(p: &Path) -> bool {
+    p.extension().map(|e| e.eq_ignore_ascii_case("exe")).unwrap_or(false)
+}
+
+/// "KroneVPN (1).exe.old", "KroneVPN.exe.old.old.old" … – Reste vom Ersetzen bzw. Aktualisieren
+fn is_old_name(name: &str) -> bool {
+    let l = name.to_ascii_lowercase();
+    match l.find(".exe.old") {
+        Some(i) => l[i + 4..].split('.').skip(1).all(|x| x == "old"),
+        None => false,
+    }
+}
+
+/// alte Reste in einem Ordner loeschen – nur eigene (KroneVPN-Versionsangaben). Laeuft das alte Programm noch, ist die
+/// Datei gesperrt und bleibt bis zum naechsten Durchgang liegen.
+fn remove_old_files(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !is_old_name(&name) {
+            continue;
+        }
+        let p = e.path();
+        if !matches!(version_info(&p), Some((product, _, _)) if product == "KroneVPN") {
+            continue;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            n += 1;
+        }
+    }
+    if n > 0 {
+        say(&format!("{n} alte KroneVPN-Datei(en) (*.old) in {} geloescht", dir.display()));
+    }
+}
+
 /// aeltere KroneVPN-Programme (laufende und gemerkte Kopien) durch diese Version ersetzen
 fn update_copies(seen: &mut std::collections::HashMap<PathBuf, std::time::SystemTime>) {
     let Ok(me) = std::env::current_exe() else { return };
     let me = std::fs::canonicalize(&me).unwrap_or(me);
     let mut cands = running_exes();
     cands.extend(std::fs::read_to_string(copies_file()).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()).map(|l| PathBuf::from(l.trim())));
+    // Reste frueherer Ersetzungen wegraeumen (*.exe.old, auch die Ketten *.exe.old.old… aus 1.0.6–1.0.10)
+    let mut dirs: Vec<PathBuf> = cands.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+    dirs.push(prog_dir());
+    dirs.sort();
+    dirs.dedup();
+    for d in &dirs {
+        remove_old_files(d);
+    }
     for p in cands {
+        // nur echte Programme: ein laufendes Programm, das umbenannt wurde, meldet Windows unter dem neuen Namen
+        // (KroneVPN.exe.old) – das ist der Rest einer Ersetzung, keine weitere Kopie
+        if !is_exe(&p) {
+            continue;
+        }
         let Ok(m) = std::fs::metadata(&p) else { continue };
         let Ok(mtime) = m.modified() else { continue };
         if seen.get(&p) == Some(&mtime) {

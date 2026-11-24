@@ -75,7 +75,11 @@ aktualisiert sie sich ab Android 12 ohne Rückfrage. (Bis 1.0.9 konnte die Rück
 
 5. Bei der Freigabe werden auch die Apps auf der Download-Seite erneuert. Unter Windows bringt der Dienst außerdem
    ältere Kopien von KroneVPN.exe (z. B. im Download-Ordner) auf die neue Version – beim nächsten Start ist dann
-   die neue Oberfläche da.
+   die neue Oberfläche da. Reste davon (`*.exe.old`) räumt er selbst weg, sobald das alte Programm beendet ist.
+   (1.0.6–1.0.10 konnten dabei bei einem noch laufenden alten Programm alle 30 s eine weitere Datei
+   `KroneVPN.exe.old.old…` anlegen – ab 1.0.11 behoben, die überzähligen Dateien werden automatisch gelöscht.)
+   Die Statistik-Seite zeigt oben die Server-Version und an jedem Gerät seine App-Version (gelb = Update ausstehend),
+   die Download-Seite die Version der Apps.
 
 Signiert wird beim Bauen mit einem geheimen Schlüssel, der nie auf dem Server liegt – selbst ein übernommener Server
 kann den Geräten keine fremden Programme unterschieben. Anderes Repo/Zweig: `kvpn-server set update_repo besitzer/name`,

@@ -36,6 +36,7 @@ h2{font-size:17px;margin:26px 0 10px}
 .kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kv span{white-space:nowrap;font-size:12px;color:var(--mute)}
 .badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mute);margin:2px 4px 2px 0}
+.vtag{font-size:12.5px;font-weight:600;padding:2px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--mute);margin-left:10px;vertical-align:4px;white-space:nowrap}
 .badge.warn{color:var(--warn)}.badge.ok{color:var(--ok)}
 .chart{position:relative}
 .chart svg{display:block;width:100%;height:220px;overflow:visible}
@@ -84,7 +85,7 @@ dialog.code textarea{width:100%;box-sizing:border-box;font:12px ui-monospace,mon
 <body>
 <div class="wrap">
   <div class="nav" id="nav"></div>
-  <h1><img id="lg" alt="" hidden><span id="h1">🛡️ KroneVPN – Statistik</span></h1>
+  <h1><img id="lg" alt="" hidden><span id="h1">🛡️ KroneVPN – Statistik</span><span class="vtag" id="vtag" hidden></span></h1>
   <div class="sub" id="sub">lädt …</div>
   <div id="main"></div>
 </div>
@@ -103,6 +104,7 @@ function bytes(b){const u=['B','KB','MB','GB','TB'];let i=0;b=+b||0;while(b>=102
 function rate(Bps){const b=(+Bps||0)*8;return b>=1e9?(b/1e9).toFixed(2)+' Gbit/s':b>=1e6?(b/1e6).toFixed(1)+' Mbit/s':b>=1e3?(b/1e3).toFixed(0)+' kbit/s':b.toFixed(0)+' bit/s'}
 function dur(s){s=Math.max(0,s|0);const d=s/86400|0,h=s%86400/3600|0,m=s%3600/60|0;return d?d+' T '+h+' h':h?h+' h '+m+' min':m?m+' min':s+' s'}
 function ago(t,now){if(!t)return 'nie';return dur(now-t)+' her'}
+function newer(a,b){const p=s=>String(s||'').split('.').map(x=>parseInt(x)||0),x=p(a),y=p(b);for(let i=0;i<Math.max(x.length,y.length);i++){if((x[i]||0)!==(y[i]||0))return (x[i]||0)>(y[i]||0)}return false}
 function osName(o){return {android:'Android',windows:'Windows',linux:'Linux',macos:'macOS'}[o]||o||'–'}
 
 async function load(){
@@ -171,6 +173,9 @@ function render(d){
   if(ub){ub.hidden=!u.pending;if(u.pending){setT($('#updt'),'Neue App-Version '+u.pending+' auf GitHub');
     setT($('#upds'),'Verteilt wird gerade: '+(u.offered||'noch keine')+'. Die neue Version geht erst nach deiner Freigabe an die Geräte'+(d.local?'.':' – auf dem Server: kvpn-server update (oder hier unter http://localhost:8180).'));
     $('#updok').hidden=!d.local}}
+  const vt=$('#vtag'),av=(d.update&&d.update.apps)||s.version;vt.hidden=false;
+  setT(vt,'v'+s.version+(av!==s.version?' · Apps v'+av:''));vt.title='Server-Version '+s.version+' · App-Version für die Geräte: '+av+(d.update&&d.update.pending?' · auf GitHub schon '+d.update.pending:'');
+  APPV=av;
   const na=$('#navapps');if(na)na.hidden=!s.downloads;
   if(s.name){setT($('#h1'),(s.logo?'':'🛡️ ')+s.name+' – Statistik');if(document.title!==s.name+' – Statistik')document.title=s.name+' – Statistik'}
   const down=d.peers.reduce((a,p)=>a+p.rate_tx,0), up=d.peers.reduce((a,p)=>a+p.rate_rx,0);
@@ -189,7 +194,7 @@ function render(d){
 }
 
 /* Geraete-Karten: je Geraet einmal angelegt, danach nur Werte aendern */
-let LOCAL=false;
+let LOCAL=false, APPV='';
 /* gespeicherten Verbindungscode eines Geraets zeigen (nur lokale Seite) */
 async function showCode(name){
   let dlg=$('#codedlg');
@@ -289,6 +294,13 @@ async function approveUpdate(){
     else{b.disabled=false;b.textContent='Jetzt an die Geräte verteilen';setT($('#upds'),r.err||'Fehler')}}
   catch(e){b.disabled=false;b.textContent='Jetzt an die Geräte verteilen'}
 }
+/* App-Version des Geraets: gruen = aktuell, gelb = aelter als die verteilte Version (auch getrennt: zuletzt gemeldet) */
+function verBadge(p,i){
+  if(!i.ver)return '';
+  const old=APPV&&newer(APPV,i.ver);
+  return '<span class="badge'+(old?' warn':' ok')+'" title="'+(old?'Update auf '+esc(APPV)+' ausstehend – kommt beim nächsten Verbinden':'aktuelle Version')+'">'+
+    (p.online?'':'zuletzt ')+esc(osName(i.os))+' · v'+esc(i.ver)+(old?' · Update ausstehend':' ✓')+'</span>';
+}
 function peers(list,now){
   const box=$('#peers');
   if(!list.length){setH(box,'<div class="card mute">Noch kein Gerät angelegt. Auf dem Server: <code>kvpn-server add "Mein Handy"</code></div>');return}
@@ -313,7 +325,7 @@ function peers(list,now){
     let tls='';
     if(i.tls_issuer){tls=i.tls_trusted?'<span class="badge ok" title="Normales, öffentlich vertrauenswürdiges Zertifikat">✓ TLS direkt</span>'
       :'<span class="badge warn" title="Eine Firewall bricht HTTPS auf (z. B. Sophos). Die VPN-Daten bleiben trotzdem verschlüsselt – Noise prüft den Server.">⚠ HTTPS-Inspektion: '+esc(i.tls_issuer)+'</span>';}
-    setH(f('badges'),(p.user?'<span class="badge" title="Benutzer">👤 '+esc(p.user)+'</span>':'')+(p.online?'<span class="badge">'+esc(osName(i.os))+' · v'+esc(i.ver)+'</span>':'')+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+
+    setH(f('badges'),(p.user?'<span class="badge" title="Benutzer">👤 '+esc(p.user)+'</span>':'')+verBadge(p,i)+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+
       (p.online&&i.cipher==='aes256gcm'?'<span class="badge ok" title="Daten mit AES-256-GCM verschlüsselt">AES-256</span>':'')+(p.online?tls:''));
     setT(f('down'),p.online?rate(p.rate_tx):'–');setT(f('up'),p.online?rate(p.rate_rx):'–');setT(f('ping'),p.online&&p.rtt_ms?p.rtt_ms.toFixed(0)+' ms':'–');
     setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
