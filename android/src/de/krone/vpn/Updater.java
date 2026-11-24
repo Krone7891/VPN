@@ -1,5 +1,8 @@
 package de.krone.vpn;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -29,6 +32,33 @@ final class Updater {
     /** wartet auf Bestaetigung durch den Nutzer */
     static volatile Intent confirm;
     static volatile String message = "";
+
+    static final String ACTION_INSTALL = "de.krone.vpn.INSTALL_UPDATE";
+
+    /**
+     * Hinweis in der Benachrichtigungsleiste. Noetig, weil Android aus dem Hintergrund keine Rueckfrage oeffnen darf:
+     * Wurde die App von Hand (Browser/Dateien) installiert, muss Android das erste Update einmal bestaetigen lassen –
+     * danach aktualisiert sie sich (ab Android 12) ohne Rueckfrage.
+     */
+    static void notifyUser(Context ctx, String title, String text, boolean install) {
+        try {
+            NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+            nm.createNotificationChannel(new NotificationChannel("updates", "App-Updates", NotificationManager.IMPORTANCE_HIGH));
+            Intent open = new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            if (install) open.setAction(ACTION_INSTALL);
+            PendingIntent pi = PendingIntent.getActivity(ctx, 8, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification n = new Notification.Builder(ctx, "updates")
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build();
+            nm.notify(42, n);
+        } catch (Exception ignored) {
+            // ohne Erlaubnis fuer Benachrichtigungen: die App zeigt den Hinweis beim Oeffnen
+        }
+    }
 
     static void install(Context ctx, String path, String version, boolean byUser) {
         if (version.isEmpty() || version.equals(installing) || (!byUser && version.equals(failed))) return;
@@ -76,17 +106,12 @@ final class Updater {
                 Intent c = intent.getParcelableExtra(Intent.EXTRA_INTENT);
                 confirm = c;
                 message = "Update " + ver + " bereit – bitte „Installieren“ bestätigen";
-                if (c != null) {
-                    try {
-                        c.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                        ctx.startActivity(c);
-                    } catch (Exception ignored) {
-                        // aus dem Hintergrund nicht erlaubt: die App zeigt einen Knopf
-                    }
-                }
+                // Rueckfrage aus dem Hintergrund oeffnen geht meist nicht -> Benachrichtigung + Knopf in der App
+                notifyUser(ctx, "Update " + ver + " bereit", "Tippen und „Installieren“ bestätigen (nur einmal nötig)", true);
             } else if (st == PackageInstaller.STATUS_SUCCESS) {
                 confirm = null;
                 message = "";
+                ((NotificationManager) ctx.getSystemService(NotificationManager.class)).cancel(42);
             } else {
                 confirm = null;
                 installing = "";
@@ -95,6 +120,7 @@ final class Updater {
                 message = st == PackageInstaller.STATUS_FAILURE_ABORTED
                         ? "Update " + ver + " abgebrochen – über „Update installieren“ nachholen"
                         : "Update " + ver + " nicht installiert" + (m != null ? ": " + m : "");
+                if (st != PackageInstaller.STATUS_FAILURE_ABORTED) notifyUser(ctx, "Update " + ver + " nicht installiert", m != null ? m : "Details in der App", false);
             }
         }
     }

@@ -17,6 +17,8 @@ pub struct SessInfo {
     pub upd: bool,
     /// Verschluesselung der Daten ("chacha20" oder "aes256gcm")
     pub cipher: String,
+    /// an das Geraet vollstaendig uebertragene App-Version (Update)
+    pub upd_sent: String,
 }
 
 /// Zaehler eines Geraets (bleiben ueber Neuverbindungen erhalten). rx = vom Geraet, tx = zum Geraet.

@@ -65,6 +65,11 @@ kvpn-server update     # neue App-Version an Handy/PC verteilen – mit Rückfra
    über die verschlüsselte VPN-Verbindung. Verbundene Geräte bekommen sie sofort, andere beim nächsten Verbinden.
 4. Die Apps prüfen die Signatur noch einmal selbst und spielen das Update ein: Windows/Linux ersetzen sich und starten
    neu, Android installiert es (ab Android 12 ohne Rückfrage, sonst einmal „Installieren“ tippen).
+Kommt ein Update an? `kvpn-server status` zeigt je Gerät System, App-Version und Update-Stand („wird angeboten“,
+„übertragen – wird installiert“, „aktuell“). Android: Wurde die App von Hand installiert, muss Android das **erste**
+Update einmal bestätigen – die App zeigt dafür eine Benachrichtigung „Update bereit“ (antippen → „Installieren“);
+danach aktualisiert sie sich ab Android 12 ohne Rückfrage.
+
 5. Bei der Freigabe werden auch die Apps auf der Download-Seite erneuert. Unter Windows bringt der Dienst außerdem
    ältere Kopien von KroneVPN.exe (z. B. im Download-Ordner) auf die neue Version – beim nächsten Start ist dann
    die neue Oberfläche da.
@@ -88,6 +93,14 @@ der Container übernimmt Änderungen sofort. Protokoll: `docker logs -f krone-vp
 | `https://<adresse>/download/` | Apps mit deinem Namen (`<Name>.apk`, `<Name>.exe`, Linux) | offen – die Apps enthalten nichts Geheimes |
 | `https://<adresse>/stats` | Statistik (bei `--hinter-nginx`: `/vpn-statistik`) | Passwort aus `/etc/krone-vpn/statistik-passwort.txt` |
 | **`http://localhost:8180`** | Statistik + Downloads **auf dem Server selbst**, ohne Passwort, mit **„Eigenes Bild" hochladen** | nur lokal |
+
+**Admin-Seite im VPN (einfacher):** Mit dem VPN verbunden im Browser **`http://10.77.0.1:8180`** öffnen (Android-App:
+„Admin-Seite öffnen“). Beim ersten Aufruf legst du ein Passwort fest (mindestens 8 Zeichen, gespeichert nur als
+PBKDF2-Hash); danach meldest du dich damit von jedem Gerät im VPN an, der Browser bleibt ein Jahr angemeldet. Dort geht
+alles wie auf der lokalen Seite (Update freigeben, Codes, Höchstzahl, Bild). Nur für verbundene Geräte erreichbar.
+Passwort neu: `kvpn-server admin-passwort '<neu>'`, vergessen: `kvpn-server admin-passwort --loeschen`,
+abschalten: `kvpn-server einstellungen --admin-vpn aus`. Tipp: gleich nach dem Update selbst das Passwort festlegen –
+wer die Seite zuerst öffnet, legt es fest.
 
 Die lokale Seite gibt es **nur auf dem Server selbst** (sie lauscht nur auf 127.0.0.1). Vom eigenen PC aus:
 `ssh -L 8180:localhost:8180 root@<server>` und dann im Browser `http://localhost:8180` öffnen (das Fenster mit der
@@ -154,6 +167,7 @@ kvpn-server einstellungen --benutzer an --aes256 an --leistung aus --max 12
 | `--benutzer an\|aus` | **an** | **Benutzerverwaltung (SQLite)**: Geräte stehen in `benutzer.db` neben `server.toml` (nur root lesbar). Benutzer anlegen, Geräte zuordnen, sperren, Ablaufdatum, Verlauf. Beim Einschalten werden vorhandene Geräte übernommen, beim Ausschalten zurückgeschrieben. |
 | `--aes256 an\|aus` | aus | Daten im Tunnel mit **AES-256-GCM** statt ChaCha20-Poly1305 (beide 256 Bit). Gilt für Apps ab 1.0.6, ältere bleiben automatisch bei ChaCha20. Von außen nicht zu sehen – Sophos & Co. merken davon nichts. |
 | `--leistung an\|aus` | aus | **Leistungsmodus**: alle CPU-Kerne (eine TUN-Warteschlange je Kern, mehr Threads) – mehr Durchsatz, mehr Last. Aus = sparsam (1 Warteschlange, 2 Threads; reicht für jeden Internetanschluss). Gilt nach Neustart des Servers. |
+| `--admin-vpn an\|aus` | an | Admin-Seite im VPN unter `http://10.77.0.1:8180` mit Passwort (siehe „Webseiten“) |
 | `--max <anzahl>` | 8 | höchstens so viele Geräte (bis 250) |
 
 Mit Benutzerverwaltung:

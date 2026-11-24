@@ -62,6 +62,10 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(cBg);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         build();
+        // Android 13+: einmal fragen, ob die App Hinweise zeigen darf (z. B. "Update bereit")
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);
+        }
         handleIntent(getIntent());
     }
 
@@ -73,6 +77,11 @@ public class MainActivity extends Activity {
 
     /** kronevpn://v1/... aus einem gescannten QR-Code oder Link */
     private void handleIntent(Intent i) {
+        // Benachrichtigung "Update bereit" angetippt -> Rueckfrage von Android oeffnen
+        if (i != null && Updater.ACTION_INSTALL.equals(i.getAction())) {
+            ui.post(this::installUpdate);
+            return;
+        }
         if (i == null || i.getData() == null) return;
         String code = i.getData().toString();
         if (code.startsWith("kronevpn://")) importCode(code);
@@ -227,6 +236,9 @@ public class MainActivity extends Activity {
         Button stats = button("Statistik im Browser öffnen", false);
         stats.setOnClickListener(v -> openStats());
         c3.addView(stats);
+        Button admin = button("Admin-Seite öffnen (im VPN)", false);
+        admin.setOnClickListener(v -> openAdmin());
+        c3.addView(admin);
         TextView help = text("Den Code erzeugt der Server mit  kvpn-server add \"Name\". Am einfachsten den QR-Code mit der Kamera scannen – die App öffnet sich dann von selbst.\n\n"
                 + "KroneVPN läuft über HTTPS (Port 443) und kommt dadurch auch durch strenge Firmen-Firewalls (z. B. Sophos). "
                 + "Alle Daten sind zusätzlich Ende-zu-Ende verschlüsselt (Noise/ChaCha20) – auch wenn die Firewall HTTPS aufbricht.", 13, cMute, false);
@@ -537,6 +549,26 @@ public class MainActivity extends Activity {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://" + host + "/stats")));
         } catch (Exception e) {
             Toast.makeText(this, "Kein Browser gefunden", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Admin-Seite des Servers im Tunnel: http://<Netz>.1:8180 (nur wenn verbunden, Passwort beim ersten Mal festlegen) */
+    private void openAdmin() {
+        if (KroneVpnService.handle == 0) {
+            Toast.makeText(this, "Zuerst verbinden – die Admin-Seite gibt es nur im VPN", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            String[] a = new JSONObject(Native.parse(code())).optString("ip4").split("/");
+            int p = Integer.parseInt(a[1]);
+            long ip = 0;
+            for (String x : a[0].split("\\.")) ip = ip * 256 + Integer.parseInt(x);
+            long net = p == 0 ? 0 : (ip & (0xFFFFFFFFL << (32 - p)) & 0xFFFFFFFFL);
+            long srv = net + 1;
+            String host = (srv >> 24 & 255) + "." + (srv >> 16 & 255) + "." + (srv >> 8 & 255) + "." + (srv & 255);
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("http://" + host + ":8180/")));
+        } catch (Exception e) {
+            Toast.makeText(this, "Admin-Seite nicht zu öffnen", Toast.LENGTH_SHORT).show();
         }
     }
 

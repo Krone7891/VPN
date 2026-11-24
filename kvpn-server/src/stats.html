@@ -328,7 +328,21 @@ function daysTable(el,d){
 }
 
 function showLogin(j){
-  clearTimeout(T);BUILT=false;$('#sub').textContent='Von außerhalb des Heimnetzes nur mit Passwort';
+  clearTimeout(T);BUILT=false;
+  if(j.admin){                                          // Admin-Seite im VPN
+    $('#sub').textContent='Admin-Seite im VPN – nur für verbundene Geräte';
+    $('#main').innerHTML='<form class="card login" id="lf"><div class="ttl">🔒 '+(j.setup?'Admin-Passwort festlegen':'Admin-Anmeldung')+'</div>'+
+     (j.setup?'<div class="mute">Erster Aufruf: lege jetzt ein Passwort fest (mindestens 8 Zeichen). Danach meldest du dich damit von jedem Gerät im VPN an; der Browser bleibt angemeldet.</div>'+
+       '<input id="pw" type="password" placeholder="Neues Passwort" autocomplete="new-password" minlength="8" required><input id="pw2" type="password" placeholder="Passwort wiederholen" autocomplete="new-password" minlength="8" required>'
+      :'<input id="pw" type="password" placeholder="Admin-Passwort" autocomplete="current-password" required><div class="mute">Passwort vergessen? Auf dem Server: <code>kvpn-server admin-passwort --loeschen</code></div>')+
+     '<div class="err" id="le"></div><button class="btn">'+(j.setup?'Festlegen und anmelden':'Anmelden')+'</button></form>';
+    $('#lf').onsubmit=async e=>{e.preventDefault();$('#le').textContent='';
+      if(j.setup&&$('#pw').value!==$('#pw2').value){$('#le').textContent='Die Passwörter sind nicht gleich';return}
+      try{const r=await fetch(BASE+(j.setup?'admin-setup':'login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw:$('#pw').value})});const k=await r.json();
+        if(k.ok)load();else $('#le').textContent=k.err||'Fehler';}catch(er){$('#le').textContent=er.message}};
+    return;
+  }
+  $('#sub').textContent='Von außerhalb des Heimnetzes nur mit Passwort';
   $('#main').innerHTML='<form class="card login" id="lf"><div class="ttl">🔒 Anmelden</div>'+
    (j.password_set?'<input id="pw" type="password" placeholder="Passwort" autocomplete="current-password" required><div class="err" id="le"></div><button class="btn">Anmelden</button>'
    :'<div class="mute">Kein Passwort festgelegt – die Statistik ist nur aus dem Heimnetz oder über das VPN erreichbar. Passwort setzen auf dem Server: <code>kvpn-server password …</code></div>')+'</form>';

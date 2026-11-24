@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
     --name=*) NAME=${1#--name=} ;;
     --bild|--logo) BILD=${2:-}; shift ;;
     --bild=*|--logo=*) BILD=${1#*=} ;;
-    --benutzer|--aes256|--leistung|--max) SETS+=("$1" "${2:-}"); shift ;;
+    --benutzer|--aes256|--leistung|--admin-vpn|--max) SETS+=("$1" "${2:-}"); shift ;;
     --einstellungen) ASK=1 ;;
     --ja|-y|--yes) YES=1 ;;
     -h|--help) sed -n 2,22p "$0"; exit 0 ;;

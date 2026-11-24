@@ -157,6 +157,9 @@ ns kv-mitm "$BIN/kronevpn" --config "$W/code3" --proxy 10.200.21.1:8080 --test >
 
 echo "== Test 7b: Android-Kern (JNI-Bibliothek der APK, Host-Build) mit uebergebenem TUN-fd wie VpnService"
 ROOTD=$(cd "$(dirname "$0")/.." && pwd)
+# aktuellen Stand des Android-Kerns bauen (sonst wuerde ein alter Build getestet)
+export PATH="$PATH:$HOME/.cargo/bin:/root/.cargo/bin${SUDO_USER:+:$(getent passwd "$SUDO_USER" | cut -d: -f6)/.cargo/bin}"
+command -v javac >/dev/null && command -v cargo >/dev/null && { bash "$ROOTD/tests/jni/build.sh" >/dev/null 2>&1 || echo "  (JNI-Build fehlgeschlagen)"; }
 if [ -f "$ROOTD/target/release/libkronevpn.so" ] && [ -d "$ROOTD/target/jni" ]; then
   ns kv-cli9 python3 "$ROOTD/tests/jni/run_with_tun.py" kvpn-c0 10.77.0.5/24 10.201.0.0/24 \
     java -Djava.library.path="$ROOTD/target/release" -cp "$ROOTD/target/jni" de.krone.vpn.JniTest {fd} "$W/code4" 6 > "$W/jni.txt" 2>&1 &
@@ -242,6 +245,24 @@ waitping kv-cli7 60 && ok "Ablauf entfernt -> wieder verbunden" || bad "nach Abl
 "$BIN/kvpn-server" verlauf geraet7 | grep -q "verbunden von" && "$BIN/kvpn-server" verlauf geraet7 | grep -q "getrennt" && ok "Verlauf: $("$BIN/kvpn-server" verlauf geraet7 | wc -l) Eintraege fuer geraet7" || bad "Verlauf leer"
 [ -f "$W/benutzer.db" ] && ! grep -q '^\[\[peer\]\]' "$W/server.toml" && ok "Geraete stehen in benutzer.db (nicht mehr in server.toml)" || bad "benutzer.db fehlt oder Geraete noch in server.toml"
 
+echo "== Test 10c: Admin-Seite im VPN (http://10.77.0.1:8180, Passwort beim ersten Aufruf)"
+A=http://10.77.0.1:8180
+ns kv-cli1 curl -s -m 5 "$A/" | grep -q "showLogin" && ok "Admin-Seite im VPN erreichbar" || bad "Admin-Seite im VPN nicht erreichbar"
+ns kv-cli1 curl -s -m 5 "$A/data.json" | grep -q '"setup":true' && ok "erster Aufruf: Passwort festlegen" || bad "kein Einrichten: $(ns kv-cli1 curl -s -m 5 "$A/data.json")"
+ns kv-cli1 curl -s -m 5 "$A/codes" | grep -q '"codes"' && bad "Codes ohne Anmeldung abrufbar!" || ok "ohne Anmeldung keine Codes"
+ns kv-cli1 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"kurz"}' "$A/admin-setup" | grep -q '"ok":false' && ok "zu kurzes Passwort abgelehnt" || bad "kurzes Passwort angenommen"
+ns kv-cli1 curl -s -m 5 -c "$W/adm1" -H 'Content-Type: application/json' -d '{"pw":"Geheim-1234"}' "$A/admin-setup" | grep -q '"ok":true' && ok "Passwort festgelegt (Browser bleibt angemeldet)" || bad "admin-setup"
+grep -q '^admin_password = "pbkdf2-sha256\$' "$W/server.toml" && ! grep -q 'Geheim-1234' "$W/server.toml" && ok "gespeichert nur als PBKDF2-Hash" || bad "Passwort nicht als Hash gespeichert"
+ns kv-cli1 curl -s -m 5 -b "$W/adm1" "$A/data.json" | grep -q '"local":true' && ok "angemeldet: volle Admin-Seite (wie localhost)" || bad "nach Festlegen nicht angemeldet"
+ns kv-cli2 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"Boese-0000"}' "$A/admin-setup" | grep -q '"ok":true' && bad "Passwort ein zweites Mal festlegbar!" || ok "zweites Festlegen abgelehnt"
+ns kv-cli2 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"falsch-123"}' "$A/login" | grep -q '"ok":false' && ok "falsches Passwort abgelehnt" || bad "falsches Passwort angenommen"
+ns kv-cli2 curl -s -m 5 -c "$W/adm2" -H 'Content-Type: application/json' -d '{"pw":"Geheim-1234"}' "$A/login" | grep -q '"ok":true' && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/codes" | grep -q '"codes"' \
+  && ok "anderes Geraet: mit dem Passwort angemeldet, Codes sichtbar" || bad "Anmeldung vom zweiten Geraet"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" -X POST "$A/max/8" | grep -q '"ok":true' && ok "Admin im VPN darf Einstellungen aendern (Hoechstzahl)" || bad "Admin /max"
+ns kv-net curl -s -m 3 "http://10.201.0.1:8180/" >/dev/null 2>&1 && bad "Admin-Seite ausserhalb des VPN erreichbar!" || ok "ausserhalb des Tunnels nicht erreichbar"
+"$BIN/kvpn-server" admin-passwort --loeschen >/dev/null; sleep 4
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"setup":true' && ok "admin-passwort --loeschen: abgemeldet, neu festlegen moeglich" || bad "loeschen"
+
 echo "== Test 11: Verbindungscodes wieder anzeigen"
 [ "$("$BIN/kvpn-server" code geraet1 | grep '^kronevpn://')" = "$(cat "$W/code1")" ] && ok "kvpn-server code zeigt den Code wieder (mit QR-Code)" || bad "kvpn-server code"
 ns kv-srv curl -s -m 3 http://127.0.0.1:8180/codes > "$W/codes.json"
@@ -292,6 +313,20 @@ if [ -f "$KEY" ]; then
   cmp -s "$W/mirror/dl/Mein VPN-linux" "$G/dist/kronevpn-linux" && grep -q '"version": "99.0.0"' "$W/mirror/files.json" && ok "Download-Seite bei der Freigabe mit erneuert (auch umbenannte Datei, files.json)" || bad "Download-Seite nicht erneuert: $(ls "$W/mirror/dl") $(cat "$W/mirror/files.json")"
   grep -q "Update 99.0.0 uebertragen" "$W/log.kv-srv-kvpn-server" && ok "Server: $(grep -o 'App-Update 99.0.0 freigegeben.*' "$W/log.kv-srv-kvpn-server" | head -1)" || bad "Server-Log ohne Uebertragung"
   ! grep -q "NEUE VERSION" "$W"/log.kv-cli1-kronevpn 2>/dev/null && ok "Geraete mit --kein-update bleiben unveraendert" || bad "--kein-update ignoriert"
+  # Android-Kern (wie die App): Update ueber den Tunnel laden und als update.apk ablegen
+  if [ -f "$ROOTD/target/release/libkronevpn.so" ] && [ -d "$ROOTD/target/jni" ]; then
+    "$BIN/kvpn-server" add "jni-handy" | grep '^kronevpn://' > "$W/code-jni"
+    sleep 4   # Server uebernimmt das neue Geraet
+    mkdir -p "$W/jniupd"
+    ns kv-cli9 python3 "$ROOTD/tests/jni/run_with_tun.py" kvpn-c0 10.77.0.20/24 10.201.0.0/24 \
+      java -Djava.library.path="$ROOTD/target/release" -cp "$ROOTD/target/jni" de.krone.vpn.JniTest {fd} "$W/code-jni" 2 "$W/jniupd" > "$W/jniupd.txt" 2>&1
+    grep -q '"update_version":"99.0.0"' "$W/jniupd.txt" && cmp -s "$W/jniupd/update.apk" "$G/dist/kronevpn-linux" \
+      && ok "Android-Kern: Update 99.0.0 ueber den Tunnel geladen, geprueft und als update.apk abgelegt (wie in der App)" \
+      || bad "Android-Kern Update: $(grep -o 'UPDATE=.*' "$W/jniupd.txt" | cut -c1-300)"
+    ns kv-srv "$BIN/kvpn-server" status > "$W/status.txt" 2>&1
+    grep -q "jni-handy.*99.0.0 uebertragen" "$W/status.txt" && ok "kvpn-server status zeigt: $(grep jni-handy "$W/status.txt" | sed 's/  */ /g')" || bad "status: $(cat "$W/status.txt")"
+    "$BIN/kvpn-server" remove jni-handy >/dev/null
+  fi
   unset KVPN_UPDATE_URL
 else
   echo "  (uebersprungen: kein Signier-Schluessel $KEY)"

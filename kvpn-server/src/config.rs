@@ -73,6 +73,12 @@ pub struct Config {
     /// Die Geraete stehen dann in der Datenbank statt hier.
     #[serde(default = "d_true")]
     pub users: bool,
+    /// Admin-Seite auch im VPN: http://<Server im Tunnel>:<Port der lokalen Seite>, z. B. http://10.77.0.1:8180
+    #[serde(default = "d_true")]
+    pub admin_vpn: bool,
+    /// Passwort dafuer als PBKDF2-Hash (leer = wird beim ersten Aufruf im VPN festgelegt)
+    #[serde(default)]
+    pub admin_password: String,
     /// gesperrte/abgelaufene Geraete (nur Benutzerverwaltung; belegen Plaetze und Adressen)
     #[serde(skip)]
     pub inactive: Vec<Peer>,
@@ -166,6 +172,15 @@ impl Config {
         }
         c.check()?;
         Ok(c)
+    }
+
+    /// Adresse der Admin-Seite im VPN (Server-Adresse im Tunnel, Port wie die lokale Seite)
+    pub fn admin_addr(&self) -> Option<std::net::SocketAddr> {
+        if !self.admin_vpn {
+            return None;
+        }
+        let port = self.local_listen.parse::<std::net::SocketAddr>().map(|a| a.port()).unwrap_or(8180);
+        Some(std::net::SocketAddr::from((self.ip4(1), port)))
     }
 
     /// alle Geraete (auch gesperrte)
@@ -266,8 +281,9 @@ impl Config {
             "aes256" | "aes" => self.aes256 = on_off(val)?,
             "performance" | "leistung" | "leistungsmodus" => self.performance = on_off(val)?,
             "users" | "benutzer" | "benutzerverwaltung" => self.users = on_off(val)?,
+            "admin_vpn" | "admin" => self.admin_vpn = on_off(val)?,
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn)")),
         }
         self.check()
     }

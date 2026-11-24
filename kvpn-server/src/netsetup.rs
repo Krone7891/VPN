@@ -81,6 +81,11 @@ pub fn setup(cfg: &Config) {
         let a6 = format!("{a6}/{p6}");
         run(&["ip", "-6", "addr", "replace", &a6, "dev", tun, "nodad"]);
     }
+    // Admin-Seite im VPN: Zugriff aus dem Tunnel erlauben (falls eine Firewall eingehend sperrt)
+    if let Some(a) = cfg.admin_addr() {
+        let (ip, port) = (a.ip().to_string(), a.port().to_string());
+        ensure("iptables", "filter", "INPUT", true, &["-i", tun, "-d", &ip, "-p", "tcp", "--dport", &port, "-j", "ACCEPT", "-m", "comment", "--comment", "krone-vpn"]);
+    }
     if !cfg.nat {
         log!("NAT/Weiterleitung: ausgeschaltet (nat = false)");
         return;
@@ -129,10 +134,14 @@ pub fn setup(cfg: &Config) {
 }
 
 pub fn teardown(cfg: &Config) {
+    let tun = cfg.tun.as_str();
+    if let Some(a) = cfg.admin_addr() {
+        let (ip, port) = (a.ip().to_string(), a.port().to_string());
+        remove("iptables", "filter", "INPUT", &["-i", tun, "-d", &ip, "-p", "tcp", "--dport", &port, "-j", "ACCEPT", "-m", "comment", "--comment", "krone-vpn"]);
+    }
     if !cfg.nat {
         return;
     }
-    let tun = cfg.tun.as_str();
     for r in rules(cfg) {
         let net = r.net.as_str();
         remove(r.tool, "nat", "POSTROUTING", &["-s", net, "!", "-o", tun, "-j", "MASQUERADE", "-m", "comment", "--comment", "krone-vpn"]);

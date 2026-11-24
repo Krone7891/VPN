@@ -19,6 +19,7 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 sha2 = "0.10"
 libc = "0.2"
 rand = "0.9"
+ring = "0.17"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [target.'cfg(target_env = "musl")'.dependencies]

@@ -49,7 +49,7 @@ while [ $# -gt 0 ]; do
     --hinter-nginx|--behind-nginx) NGINX=--hinter-nginx ;;
     --docker) MODE=--docker ;;
     --systemd) MODE=--systemd ;;
-    --benutzer|--aes256|--leistung|--max) SETS+=("$1" "${2:-}"); shift ;;
+    --benutzer|--aes256|--leistung|--admin-vpn|--max) SETS+=("$1" "${2:-}"); shift ;;
     --ja|-y|--yes) YES=1 ;;
     -h|--help) sed -n 2,25p "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Unbekannte Option: $1 (Hilfe: --help)"; exit 2 ;;

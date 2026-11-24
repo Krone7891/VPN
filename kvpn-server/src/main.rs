@@ -14,6 +14,7 @@
 //!
 //! Konfiguration: /etc/krone-vpn/server.toml (anderer Ort: --config <datei> oder KVPN_CONFIG)
 
+mod admin;
 mod config;
 mod netsetup;
 mod server;
@@ -39,7 +40,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--max N]\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         kvpn::VERSION
     );
     std::process::exit(2)
@@ -71,6 +72,8 @@ fn main() {
         "zuordnen" | "assign" => cmd_assign(&cfg_path, &args[1..]),
         "verlauf" | "log" | "events" => cmd_events(&cfg_path, &args[1..]),
         "einstellungen" | "settings" => cmd_settings(&cfg_path, &args[1..]),
+        "admin-passwort" | "admin-password" => cmd_admin_pw(&cfg_path, &args[1..]),
+        "status" => cmd_status(&cfg_path),
         "remove" | "rm" => cmd_remove(&cfg_path, &args[1..].join(" ")),
         "list" | "ls" => cmd_list(&cfg_path),
         "code" | "codes" | "show" | "zeigen" => cmd_code(&cfg_path, &args[1..].join(" ")),
@@ -481,6 +484,28 @@ fn cmd_run(cfg_path: String) {
                 Err(e) => log!("Hinweis: lokale Webseite {} nicht moeglich ({e}) – anderen Port: kvpn-server set local_listen 127.0.0.1:<port>", cfg.local_listen),
             }
         }
+        // Admin-Seite im VPN (nur fuer verbundene Geraete, mit Passwort)
+        if let Some(addr) = cfg.admin_addr() {
+            match tokio::net::TcpListener::bind(addr).await {
+                Ok(l) => {
+                    log!(
+                        "Admin-Seite im VPN: http://{addr}/  ({})",
+                        if cfg.admin_password.is_empty() { "Passwort wird beim ersten Aufruf festgelegt" } else { "mit Passwort" }
+                    );
+                    let sha = sh.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            let Ok((sock, peer)) = l.accept().await else {
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                                continue;
+                            };
+                            tokio::spawn(server::handle_admin(sha.clone(), sock, peer));
+                        }
+                    });
+                }
+                Err(e) => log!("Hinweis: Admin-Seite im VPN ({addr}) nicht moeglich: {e}"),
+            }
+        }
         let sh2 = sh.clone();
         let accept = async move {
             loop {
@@ -720,6 +745,7 @@ fn cmd_settings(path: &str, args: &[String]) {
         (&["--benutzer", "--benutzerverwaltung", "--users"][..], "users"),
         (&["--aes256", "--aes"][..], "aes256"),
         (&["--leistung", "--leistungsmodus", "--performance"][..], "performance"),
+        (&["--admin-vpn", "--admin"][..], "admin_vpn"),
         (&["--max", "--max-geraete"][..], "max_devices"),
     ] {
         if let Some(v) = take_opt(&mut args, keys) {
@@ -738,6 +764,11 @@ fn cmd_settings(path: &str, args: &[String]) {
             ("users", "Benutzerverwaltung (SQLite: Benutzer, sperren, Ablaufdatum, Verlauf)", onoff(cfg.users).to_string()),
             ("aes256", "AES-256-GCM statt ChaCha20 fuer die Daten (Apps ab 1.0.6)", onoff(cfg.aes256).to_string()),
             ("performance", "Leistungsmodus (alle CPU-Kerne, mehr Durchsatz, mehr Last)", onoff(cfg.performance).to_string()),
+            (
+                "admin_vpn",
+                "Admin-Seite im VPN (http://<server-im-vpn>:8180, mit Passwort)",
+                onoff(cfg.admin_vpn).to_string(),
+            ),
             ("max_devices", "Hoechstzahl Geraete", cfg.max_devices.to_string()),
         ] {
             loop {
@@ -761,21 +792,96 @@ fn cmd_settings(path: &str, args: &[String]) {
             continue;
         }
         let mut c = Config::load(path).unwrap_or_else(|e| die(e));
-        let before = c.performance;
+        let before = (c.performance, c.admin_vpn);
         c.set(k, v).unwrap_or_else(|e| die(e));
         c.save(path).unwrap_or_else(|e| die(e));
-        restart |= *k == "performance" && c.performance != before;
+        restart |= (c.performance, c.admin_vpn) != before;
     }
     let c = Config::load(path).unwrap_or_else(|e| die(e));
     println!(
-        "Einstellungen: Benutzerverwaltung {} · AES-256 {} · Leistungsmodus {} · hoechstens {} Geraete ({} angelegt)",
+        "Einstellungen: Benutzerverwaltung {} · AES-256 {} · Leistungsmodus {} · Admin-Seite im VPN {} · hoechstens {} Geraete ({} angelegt)",
         onoff(c.users),
         onoff(c.aes256),
         onoff(c.performance),
+        c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_else(|| "aus".into()),
         c.max_devices,
         c.device_count()
     );
     if restart {
-        println!("Leistungsmodus gilt nach einem Neustart des Servers: systemctl restart krone-vpn   (Docker: docker restart krone-vpn)");
+        println!("Leistungsmodus/Admin-Seite gelten nach einem Neustart des Servers: systemctl restart krone-vpn   (Docker: docker restart krone-vpn)");
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ Admin-Seite, Status
+
+fn cmd_admin_pw(path: &str, args: &[String]) {
+    let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let addr = cfg.admin_addr().map(|a| format!("http://{a}")).unwrap_or_else(|| "aus (einschalten: kvpn-server einstellungen --admin-vpn an)".into());
+    match args.first().map(|s| s.as_str()) {
+        None => {
+            println!("Admin-Seite im VPN: {addr}");
+            println!("Passwort: {}", if cfg.admin_password.is_empty() { "noch keins – wird beim ersten Aufruf im VPN festgelegt" } else { "festgelegt" });
+            println!("Neu setzen: kvpn-server admin-passwort '<neues>'   ·   vergessen: kvpn-server admin-passwort --loeschen");
+        }
+        Some("--loeschen") | Some("--delete") | Some("--reset") => {
+            cfg.admin_password.clear();
+            cfg.save(path).unwrap_or_else(|e| die(e));
+            println!("Admin-Passwort geloescht – beim naechsten Aufruf von {addr} wird ein neues festgelegt. Alle Anmeldungen sind abgemeldet.");
+        }
+        Some(_) => {
+            let pw = args.join(" ");
+            admin::check_new(&pw).unwrap_or_else(|e| die(e));
+            cfg.admin_password = admin::hash(&pw);
+            cfg.save(path).unwrap_or_else(|e| die(e));
+            println!("Admin-Passwort gesetzt ({addr}). Alle bisherigen Anmeldungen sind abgemeldet.");
+        }
+    }
+}
+
+/// Geraete mit App-Version und Update-Stand (fragt den laufenden Server ueber die lokale Seite)
+fn cmd_status(path: &str) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let addr = cfg.local_listen.trim().to_string();
+    let get = || -> Result<serde_json::Value, String> {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect_timeout(&addr.parse().map_err(|e| format!("{addr}: {e}"))?, std::time::Duration::from_secs(3)).map_err(|e| e.to_string())?;
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).ok();
+        write!(s, "GET /data.json HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").map_err(|e| e.to_string())?;
+        let mut b = Vec::new();
+        s.read_to_end(&mut b).map_err(|e| e.to_string())?;
+        let t = String::from_utf8_lossy(&b);
+        let body = t.split_once("\r\n\r\n").map(|x| x.1).unwrap_or("");
+        serde_json::from_str(body).map_err(|e| e.to_string())
+    };
+    let d = get().unwrap_or_else(|e| die(format!("Server laeuft nicht oder lokale Seite nicht erreichbar ({addr}): {e}")));
+    let offered = d["update"]["offered"].as_str().unwrap_or("").to_string();
+    let pending = d["update"]["pending"].as_str().unwrap_or("");
+    println!("{} {} · App-Updates: verteilt {}{}", cfg.display_name(), d["server"]["version"].as_str().unwrap_or(""),
+        if offered.is_empty() { "noch keine".to_string() } else { offered.clone() },
+        if pending.is_empty() { String::new() } else { format!(" · auf GitHub wartet {pending} auf Freigabe (kvpn-server update)") });
+    println!("  {:<24} {:<8} {:<10} {:<9} {}", "Geraet", "online", "System", "Version", "Update");
+    for p in d["peers"].as_array().cloned().unwrap_or_default() {
+        let i = &p["info"];
+        let ver = i["ver"].as_str().unwrap_or("");
+        let os = i["os"].as_str().unwrap_or("");
+        let upd = if ver.is_empty() {
+            "seit Server-Start nicht verbunden".to_string()
+        } else if !i["upd_sent"].as_str().unwrap_or("").is_empty() {
+            format!("{} uebertragen – wird installiert", i["upd_sent"].as_str().unwrap_or(""))
+        } else if !offered.is_empty() && kvpn::update::newer(&offered, ver) && !i["upd"].as_bool().unwrap_or(false) {
+            "kein Auto-Update (abgeschaltet oder App vor 1.0.1 – dann einmal von Hand installieren)".to_string()
+        } else if !offered.is_empty() && kvpn::update::newer(&offered, ver) {
+            format!("{offered} wird beim Verbinden angeboten")
+        } else {
+            "aktuell".to_string()
+        };
+        println!(
+            "  {:<24} {:<8} {:<10} {:<9} {}",
+            p["name"].as_str().unwrap_or(""),
+            if p["online"].as_bool().unwrap_or(false) { "ja" } else { "nein" },
+            os,
+            ver,
+            upd
+        );
     }
 }

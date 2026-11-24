@@ -185,7 +185,7 @@ pub async fn handle_conn<S>(sh: Arc<Shared>, s: S, peer: SocketAddr)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    handle_http(sh, s, peer, true).await
+    handle_http(sh, s, peer, true, false).await
 }
 
 /// lokale Webseite (http://localhost:8180): nur Statistik und Downloads, kein Tunnel, keine fremden Absender
@@ -193,10 +193,18 @@ pub async fn handle_local<S>(sh: Arc<Shared>, s: S, peer: SocketAddr)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    handle_http(sh, s, peer, false).await
+    handle_http(sh, s, peer, false, false).await
 }
 
-async fn handle_http<S>(sh: Arc<Shared>, mut s: S, peer: SocketAddr, tunnel_ok: bool)
+/// Admin-Seite im VPN (nur fuer verbundene Geraete, mit Passwort)
+pub async fn handle_admin<S>(sh: Arc<Shared>, s: S, peer: SocketAddr)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    handle_http(sh, s, peer, false, true).await
+}
+
+async fn handle_http<S>(sh: Arc<Shared>, mut s: S, peer: SocketAddr, tunnel_ok: bool, vpn_admin: bool)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -238,7 +246,17 @@ where
         tunnel(sh, ws, remote).await;
         return;
     }
-    crate::web::handle(&sh, &mut s, &method, &path, &headers, remote, tunnel_ok && peer.ip().is_loopback(), !tunnel_ok).await;
+    if vpn_admin {
+        // nur aus dem Tunnel-Netz
+        let inside = match (remote, cfg.net4()) {
+            (IpAddr::V4(a), Ok((n, p))) => p == 0 || (u32::from(a) ^ u32::from(n)) >> (32 - p as u32) == 0,
+            _ => false,
+        };
+        if !inside {
+            return;
+        }
+    }
+    crate::web::handle(&sh, &mut s, &method, &path, &headers, remote, tunnel_ok && peer.ip().is_loopback(), !tunnel_ok && !vpn_admin, vpn_admin).await;
 }
 
 // ------------------------------------------------------------------------------------------------ Tunnel
@@ -314,6 +332,9 @@ where
     st.handshakes.fetch_add(1, Relaxed);
     st.connected_since.store(now_secs(), Relaxed);
     st.last_seen.store(now_secs(), Relaxed);
+    // schon uebertragenes Update merken, bis das Geraet mit der neuen Version kommt
+    let prev_sent = st.info.lock().unwrap().upd_sent.clone();
+    let upd_sent = if !prev_sent.is_empty() && kvpn::update::newer(&prev_sent, &hello.ver) { prev_sent } else { String::new() };
     *st.info.lock().unwrap() = SessInfo {
         remote: remote.to_string(),
         os: hello.os.clone(),
@@ -323,6 +344,7 @@ where
         via_proxy: hello.via_proxy,
         upd: hello.upd,
         cipher: if welcome.cipher.is_empty() { "chacha20".into() } else { welcome.cipher.clone() },
+        upd_sent,
     };
     let inspect = if !hello.tls_issuer.is_empty() && !hello.tls_trusted {
         format!(" – TLS-Zertifikat nicht oeffentlich vertrauenswuerdig (Aussteller: {}) – HTTPS-Inspektion?", hello.tls_issuer)
@@ -385,6 +407,7 @@ where
     let tun = sh.tuns[(sid as usize) % sh.tuns.len()].clone();
     let upd_sending = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let peer_name = prt.peer.name.clone();
+    let st_upd = st.clone();
     let mut receiver = tokio::spawn(async move {
         loop {
             let msg = match tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
@@ -426,7 +449,7 @@ where
                     if let Some(u) = &upd {
                         if !upd_sending.swap(true, Relaxed) {
                             let from = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
-                            tokio::spawn(send_update(u.path.clone(), u.version.clone(), from, ctrl_tx.clone(), peer_name.clone()));
+                            tokio::spawn(send_update(u.path.clone(), u.version.clone(), from, ctrl_tx.clone(), peer_name.clone(), st_upd.clone()));
                         }
                     }
                 }
@@ -508,7 +531,7 @@ fn update_offer(cfg: &Config, os: &str, ver: &str) -> Option<UpdFile> {
 }
 
 /// Update-Datei stueckweise ueber die Verbindung senden (Gegendruck ueber den Steuer-Kanal; endet mit der Verbindung)
-async fn send_update(path: std::path::PathBuf, version: String, from: usize, ctrl: mpsc::Sender<Vec<u8>>, name: String) {
+async fn send_update(path: std::path::PathBuf, version: String, from: usize, ctrl: mpsc::Sender<Vec<u8>>, name: String, st: Arc<PeerStats>) {
     let Ok(data) = tokio::fs::read(&path).await else { return };
     let mut off = from.min(data.len());
     while off < data.len() {
@@ -524,6 +547,7 @@ async fn send_update(path: std::path::PathBuf, version: String, from: usize, ctr
         off = end;
     }
     log!("{name}: Update {version} uebertragen ({} KB)", (data.len() - from.min(data.len())) / 1024);
+    st.info.lock().unwrap().upd_sent = version;
 }
 
 // ------------------------------------------------------------------------------------------------ Hintergrund

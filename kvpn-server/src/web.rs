@@ -49,10 +49,22 @@ pub async fn handle<S>(
     remote: IpAddr,
     via_nginx: bool,
     local: bool,
+    vpn_admin: bool,
 ) where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let p = path.trim_end_matches('/');
+    // Admin-Seite im VPN: erst nach Anmeldung (Passwort wird beim ersten Aufruf festgelegt), dann wie die lokale Seite
+    let local = if vpn_admin {
+        let cfg = sh.cfg();
+        let authed = !cfg.admin_password.is_empty() && cookie(headers, "kvpn_admin").map(|c| c == crate::admin::token(&cfg)).unwrap_or(false);
+        if !authed {
+            return admin_gate(sh, s, method, p, headers).await;
+        }
+        true
+    } else {
+        local
+    };
     if p == "/logo" || p.ends_with("/logo") {
         return logo(sh, s, method, headers, local).await;
     }
@@ -141,7 +153,8 @@ pub async fn handle<S>(
         return respond(s, "200 OK", "application/json", &c, br#"{"ok":true}"#).await;
     }
     if p.ends_with("/logout") && method == "POST" {
-        return respond(s, "200 OK", "application/json", "Set-Cookie: kvpn_stats=; Path=/; Max-Age=0\r\n", br#"{"ok":true}"#).await;
+        let c = if vpn_admin { "Set-Cookie: kvpn_admin=; Path=/; Max-Age=0\r\n" } else { "Set-Cookie: kvpn_stats=; Path=/; Max-Age=0\r\n" };
+        return respond(s, "200 OK", "application/json", c, br#"{"ok":true}"#).await;
     }
     if (method == "GET" || method == "HEAD") && (p == "/download" || p.starts_with("/download/")) {
         return downloads(sh, s, &p["/download".len()..], method == "HEAD").await;
@@ -150,6 +163,77 @@ pub async fn handle<S>(
         return respond(s, "200 OK", "text/html; charset=utf-8", "", PAGE.as_bytes()).await;
     }
     respond(s, "404 Not Found", "text/html; charset=utf-8", "", b"<!doctype html><title>404 Not Found</title><h1>Not Found</h1>").await;
+}
+
+// ------------------------------------------------------------------ Admin-Seite im VPN (noch nicht angemeldet)
+
+async fn read_pw<S: AsyncRead + Unpin>(s: &mut S, headers: &HashMap<String, String>) -> String {
+    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0).min(2048);
+    let mut body = vec![0u8; len];
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_exact(&mut body)).await;
+    serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|v| v["pw"].as_str().map(String::from)).unwrap_or_default()
+}
+
+fn admin_cookie(cfg: &crate::config::Config) -> String {
+    format!("Set-Cookie: kvpn_admin={}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict\r\n", crate::admin::token(cfg))
+}
+
+async fn admin_gate<S: AsyncRead + AsyncWrite + Unpin>(sh: &Arc<Shared>, s: &mut S, method: &str, p: &str, headers: &HashMap<String, String>) {
+    let cfg = sh.cfg();
+    if p.ends_with("/data.json") || p == "data.json" {
+        let b = json!({"login": true, "admin": true, "setup": cfg.admin_password.is_empty(), "password_set": !cfg.admin_password.is_empty()}).to_string();
+        return respond(s, "401 Unauthorized", "application/json; charset=utf-8", "", b.as_bytes()).await;
+    }
+    if p.ends_with("/login") && method == "POST" {
+        let pw = read_pw(s, headers).await;
+        if !login_allowed(sh) {
+            return respond(s, "429 Too Many Requests", "application/json", "", br#"{"ok":false,"err":"Zu viele Versuche - bitte 1 Minute warten"}"#).await;
+        }
+        let ok = !cfg.admin_password.is_empty() && {
+            let (h, pw2) = (cfg.admin_password.clone(), pw.clone());
+            tokio::task::spawn_blocking(move || crate::admin::verify(&h, &pw2)).await.unwrap_or(false)
+        };
+        if !ok {
+            login_failed(sh);
+            crate::log!("Admin-Seite im VPN: falsches Passwort");
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            return respond(s, "200 OK", "application/json", "", br#"{"ok":false,"err":"Falsches Passwort"}"#).await;
+        }
+        return respond(s, "200 OK", "application/json", &admin_cookie(&cfg), br#"{"ok":true}"#).await;
+    }
+    if p.ends_with("/admin-setup") && method == "POST" {
+        let pw = read_pw(s, headers).await;
+        if !cfg.admin_password.is_empty() {
+            return respond(s, "200 OK", "application/json", "", br#"{"ok":false,"err":"Es ist schon ein Passwort festgelegt - bitte anmelden"}"#).await;
+        }
+        if let Err(e) = crate::admin::check_new(&pw) {
+            return respond(s, "200 OK", "application/json", "", json!({"ok": false, "err": e}).to_string().as_bytes()).await;
+        }
+        let path = sh.cfg_path.clone();
+        let r = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut c = crate::config::Config::load(&path)?;
+            if !c.admin_password.is_empty() {
+                return Err("Es ist schon ein Passwort festgelegt - bitte anmelden".into());
+            }
+            c.admin_password = crate::admin::hash(&pw);
+            c.save(&path)
+        })
+        .await
+        .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(e) = r {
+            return respond(s, "200 OK", "application/json", "", json!({"ok": false, "err": e}).to_string().as_bytes()).await;
+        }
+        sh.reload();
+        crate::log!("Admin-Seite im VPN: Passwort festgelegt");
+        return respond(s, "200 OK", "application/json", &admin_cookie(&sh.cfg()), br#"{"ok":true}"#).await;
+    }
+    if (method == "GET" || method == "HEAD") && (p == "/logo" || p.ends_with("/logo")) {
+        return logo(sh, s, method, headers, false).await;
+    }
+    if method == "GET" && (p.is_empty() || p == "/" || p.starts_with("/stats") || p.starts_with("/statistik")) {
+        return respond(s, "200 OK", "text/html; charset=utf-8", "", PAGE.as_bytes()).await;
+    }
+    respond(s, "401 Unauthorized", "application/json", "", br#"{"ok":false,"err":"Bitte zuerst anmelden"}"#).await
 }
 
 // ------------------------------------------------------------------ eigenes Bild (Logo)
