@@ -282,6 +282,36 @@ pub fn set_user_max(db: &Connection, name: &str, max: i64) -> Result<bool, Strin
 }
 
 /// Eintrag im Verlauf (Fehler werden ignoriert – der Verlauf ist nur Zusatz). Aeltere als 90 Tage fliegen raus.
+/// Benutzerverwaltung ein-/ausschalten (Geraete wandern zwischen server.toml und benutzer.db).
+/// `None` = war schon so, sonst eine Meldung fuer den Admin.
+pub fn switch(cfg_path: &str, on: bool) -> Result<Option<String>, String> {
+    let mut cfg = crate::config::Config::load(cfg_path)?;
+    if cfg.users == on {
+        return Ok(None);
+    }
+    if on {
+        let db = open(cfg_path)?;
+        let (added, removed) = sync(&db, &cfg.peers)?;
+        cfg.users = true;
+        cfg.save(cfg_path)?;
+        Ok(Some(format!(
+            "Benutzerverwaltung an: Geraete stehen jetzt in {} ({added} uebernommen{}).",
+            db_path(cfg_path).display(),
+            if removed > 0 { format!(", {removed} inzwischen entfernte geloescht") } else { String::new() }
+        )))
+    } else {
+        let n = cfg.inactive.len();
+        cfg.users = false;
+        cfg.inactive.clear();
+        cfg.save(cfg_path)?;
+        let mut m = format!("Benutzerverwaltung aus: {} aktive Geraete stehen wieder in {cfg_path}.", cfg.peers.len());
+        if n > 0 {
+            m += &format!(" Hinweis: {n} gesperrte/abgelaufene Geraet(e) bleiben nur in der Datenbank (und sind damit gesperrt).");
+        }
+        Ok(Some(m))
+    }
+}
+
 pub fn log_event(cfg_path: &str, device: &str, event: &str) {
     if let Ok(db) = open(cfg_path) {
         let _ = db.execute("INSERT INTO events(ts, device, event) VALUES (?1, ?2, ?3)", params![now(), device, event]);

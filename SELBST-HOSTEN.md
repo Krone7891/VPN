@@ -170,6 +170,12 @@ kvpn-server einstellungen --benutzer an --aes256 an --leistung aus --max 12
 | `--admin-vpn an\|aus` | an | Admin-Seite im VPN unter `http://10.77.0.1:8180` mit Passwort (siehe „Webseiten“) |
 | `--max <anzahl>` | 8 | höchstens so viele Geräte (bis 250) |
 
+**Auf der Webseite einstellen:** Alles davon geht auch auf der Admin-Seite (im VPN `http://10.77.0.1:8180` oder lokal
+`http://localhost:8180`) im Bereich **„Einstellungen“**: Name des VPN, Höchstzahl, Schalter für Benutzerverwaltung,
+AES-256, Leistungsmodus und Admin-Seite im VPN, dazu **Admin-Passwort ändern**. Brauchen Leistungsmodus oder Admin-Seite
+einen Neustart, erscheint der Knopf **„Server jetzt neu starten“** (geht, wenn der Server als systemd-Dienst oder in
+Docker läuft; die Geräte sind ein paar Sekunden getrennt und verbinden sich von selbst wieder).
+
 Mit Benutzerverwaltung:
 
 ```bash

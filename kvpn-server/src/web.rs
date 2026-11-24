@@ -105,6 +105,37 @@ pub async fn handle<S>(
         };
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
     }
+    // Einstellungen auf der Webseite (wie kvpn-server einstellungen) – nur lokal bzw. Admin im VPN
+    if p.ends_with("/settings.json") || (method == "POST" && (p.ends_with("/settings") || p.ends_with("/restart"))) {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Nur auf der Admin-Seite (im VPN oder lokal)"}"#).await;
+        }
+        if p.ends_with("/restart") {
+            if !can_restart() {
+                return respond(s, "200 OK", "application/json; charset=utf-8", "", r#"{"ok":false,"err":"Der Server läuft nicht als Dienst (systemd/Docker) und würde nicht von selbst wieder starten – bitte von Hand neu starten."}"#.as_bytes()).await;
+            }
+            crate::log!("Neustart ueber die Webseite angefordert");
+            respond(s, "200 OK", "application/json", "", br#"{"ok":true}"#).await;
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                // normales Beenden (raeumt Firewall-Regeln auf); systemd (Restart=always) bzw. Docker startet neu
+                unsafe { libc::kill(libc::getpid(), libc::SIGTERM) };
+            });
+            return;
+        }
+        let body = if method == "POST" { read_json(s, headers).await } else { serde_json::Value::Null };
+        let sh2 = sh.clone();
+        let r = tokio::task::spawn_blocking(move || settings(&sh2, &body)).await.unwrap_or_else(|e| Err(e.to_string()));
+        let (b, extra) = match r {
+            Ok((v, pw_changed)) => {
+                // neues Admin-Passwort: Anmeldung im VPN gleich auf das neue Passwort umstellen
+                let extra = if pw_changed && vpn_admin { admin_cookie(&sh.cfg()) } else { String::new() };
+                (v, extra)
+            }
+            Err(e) => (json!({"ok": false, "err": e}), String::new()),
+        };
+        return respond(s, "200 OK", "application/json; charset=utf-8", &extra, b.to_string().as_bytes()).await;
+    }
     // gespeicherte Verbindungscodes mit QR-Code – nur auf der lokalen Seite (http://localhost:8180), nie von aussen
     // Benutzerverwaltung auf der Webseite: Benutzer und Geraete sperren/entsperren (nur lokal bzw. Admin im VPN)
     if p.ends_with("/users.json") || (p.ends_with("/manage") && method == "POST") {
@@ -236,6 +267,94 @@ fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde
         .map(|u| json!({"name": u.name, "note": u.note, "disabled": u.disabled, "devices": u.devices, "max": u.max_devices}))
         .collect();
     Ok(json!({"ok": true, "enabled": true, "users": users, "devices": devices, "msg": done}))
+}
+
+// ------------------------------------------------------------------ Einstellungen (Webseite)
+
+/// laeuft der Server unter systemd oder in Docker (startet nach dem Beenden von selbst wieder)?
+fn can_restart() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some() || std::path::Path::new("/.dockerenv").exists() || std::env::var_os("KVPN_RESTART_OK").is_some()
+}
+
+fn settings_json(sh: &Shared) -> serde_json::Value {
+    let c = sh.cfg();
+    json!({
+        "ok": true,
+        "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn,
+        "admin_url": c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_default(),
+        "admin_password_set": !c.admin_password.is_empty(),
+        "max_devices": c.max_devices, "max_possible": c.capacity().unwrap_or(0), "devices": c.device_count(),
+        "vpn_name": c.display_name(),
+        "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot,
+        "can_restart": can_restart(),
+        "msg": "",
+    })
+}
+
+/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, max_devices?, vpn_name?, admin_password?}
+/// Rueckgabe: (Einstellungen + Meldung, Admin-Passwort geaendert)
+fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value, bool), String> {
+    if !body.is_object() {
+        return Ok((settings_json(sh), false));
+    }
+    let path = &sh.cfg_path;
+    let mut msgs: Vec<String> = Vec::new();
+    let flag = |k: &str| body.get(k).and_then(|v| v.as_bool());
+    if let Some(on) = flag("users") {
+        if let Some(m) = crate::users::switch(path, on)? {
+            crate::log!("Webseite: {m}");
+            msgs.push(if on { "Benutzerverwaltung an".into() } else { "Benutzerverwaltung aus".into() });
+        }
+    }
+    let mut c = crate::config::Config::load(path)?;
+    let before = c.clone();
+    let mut pw_changed = false;
+    for (k, v) in [("aes256", flag("aes256")), ("performance", flag("performance")), ("admin_vpn", flag("admin_vpn"))] {
+        if let Some(v) = v {
+            c.set(k, if v { "an" } else { "aus" })?;
+        }
+    }
+    if let Some(n) = body.get("max_devices") {
+        let n = n.as_u64().map(|n| n.to_string()).or_else(|| n.as_str().map(|s| s.trim().to_string())).unwrap_or_default();
+        c.set("max_devices", &n)?;
+    }
+    if let Some(n) = body.get("vpn_name").and_then(|v| v.as_str()) {
+        if n.trim() != c.display_name() {
+            c.set("vpn_name", n)?;
+        }
+    }
+    if let Some(pw) = body.get("admin_password").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        crate::admin::check_new(pw)?;
+        c.admin_password = crate::admin::hash(pw);
+        pw_changed = true;
+    }
+    let onoff = |b: bool| if b { "an" } else { "aus" };
+    if c.aes256 != before.aes256 {
+        msgs.push(format!("AES-256 {} (gilt für neue Verbindungen)", onoff(c.aes256)));
+    }
+    if c.performance != before.performance {
+        msgs.push(format!("Leistungsmodus {}", onoff(c.performance)));
+    }
+    if c.admin_vpn != before.admin_vpn {
+        msgs.push(format!("Admin-Seite im VPN {}", onoff(c.admin_vpn)));
+    }
+    if c.max_devices != before.max_devices {
+        msgs.push(format!("höchstens {} Geräte", c.max_devices));
+    }
+    if c.vpn_name != before.vpn_name {
+        msgs.push(format!("Name \"{}\"", c.display_name()));
+    }
+    if pw_changed {
+        msgs.push("Admin-Passwort geändert".into());
+    }
+    c.save(path)?;
+    sh.reload();
+    if !msgs.is_empty() {
+        crate::log!("Webseite: Einstellungen geändert – {}", msgs.join(", "));
+    }
+    let mut v = settings_json(sh);
+    v["msg"] = json!(if msgs.is_empty() { "Nichts geändert".to_string() } else { format!("Gespeichert: {}", msgs.join(" · ")) });
+    Ok((v, pw_changed))
 }
 
 // ------------------------------------------------------------------ Admin-Seite im VPN (noch nicht angemeldet)

@@ -269,6 +269,27 @@ ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"k
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"user","name":"Tester","action":"sperren"}' "$A/manage" | grep -q '"disabled":true' \
   && ns kv-cli2 curl -s -m 5 -b "$W/adm2" -H 'Content-Type: application/json' -d '{"kind":"user","name":"Tester","action":"entsperren"}' "$A/manage" | grep -q '"ok":true' \
   && ok "Webseite: Benutzer sperren und entsperren" || bad "Webseite Benutzer sperren"
+# Einstellungen auf der Webseite
+SJ() { ns kv-cli2 curl -s -m 8 -b "$W/adm2" -c "$W/adm2" -H 'Content-Type: application/json' -d "$1" "$A/settings"; }
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/settings.json" | grep -q '"users":true' && ok "Webseite: Einstellungen abrufbar" || bad "settings.json: $(ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/settings.json" | head -c 200)"
+ns kv-cli1 curl -s -m 5 "$A/settings.json" | grep -q '"ok":true' && bad "Einstellungen ohne Anmeldung abrufbar!" || ok "Einstellungen ohne Anmeldung nicht abrufbar"
+ns kv-cli1 curl -sk -m 5 -H 'Content-Type: application/json' -d '{"vpn_name":"Boese"}' https://vpn.test/settings | grep -q '"ok":true' && bad "Einstellungen von aussen aenderbar!" || ok "Einstellungen ueber die oeffentliche Seite abgelehnt"
+SJ '{"vpn_name":"Test VPN","max_devices":12}' | grep -q '"msg":"Gespeichert: höchstens 12 Geräte · Name' && grep -q '^vpn_name = "Test VPN"' "$W/server.toml" && grep -q '^max_devices = 12' "$W/server.toml" \
+  && ok "Webseite: Name und Hoechstzahl gespeichert" || bad "Webseite Name/Hoechstzahl: $(SJ '{}' | head -c 300)"
+SJ '{"max_devices":2}' | grep -q '"ok":false' && ok "Webseite: zu kleine Hoechstzahl abgelehnt" || bad "max 2 angenommen"
+P0=$(grep -q '^performance = true' "$W/server.toml" && echo true || echo false); P1=$([ $P0 = true ] && echo false || echo true)
+SJ "{\"performance\":$P1}" | grep -q '"restart_needed":true' && SJ "{\"performance\":$P0}" | grep -q '"restart_needed":false' \
+  && ok "Webseite: Leistungsmodus umgeschaltet -> 'Neustart noetig' wird angezeigt (und wieder weg)" || bad "Webseite Leistungsmodus/Neustart"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" -X POST "$A/restart" | grep -q 'nicht als Dienst' && ok "Neustart ohne systemd/Docker abgelehnt (wuerde nicht wieder starten)" || bad "restart ohne Dienst"
+SJ '{"users":false}' | grep -q '"users":false' && grep -q '^\[\[peer\]\]' "$W/server.toml" && sleep 2 && ns kv-cli6 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 \
+  && ok "Webseite: Benutzerverwaltung aus -> Geraete wieder in server.toml, bleiben verbunden" || bad "Webseite Benutzerverwaltung aus"
+SJ '{"users":true}' | grep -q '"users":true' && ! grep -q '^\[\[peer\]\]' "$W/server.toml" && "$BIN/kvpn-server" benutzer | grep -q Tester \
+  && ok "Webseite: Benutzerverwaltung wieder an (Benutzer bleiben erhalten)" || bad "Webseite Benutzerverwaltung an"
+SJ '{"admin_password":"kurz"}' | grep -q '"ok":false' && ok "Webseite: zu kurzes Admin-Passwort abgelehnt" || bad "kurzes Admin-Passwort angenommen"
+SJ '{"admin_password":"Neues-Geheim-99"}' | grep -q 'Admin-Passwort geändert' && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"local":true' \
+  && ! ns kv-cli1 curl -s -m 5 -b "$W/adm1" "$A/data.json" | grep -q '"local":true' && ns kv-cli1 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"Neues-Geheim-99"}' "$A/login" | grep -q '"ok":true' \
+  && ok "Webseite: Admin-Passwort geaendert (dieser Browser bleibt angemeldet, andere muessen neu anmelden)" || bad "Webseite Admin-Passwort aendern"
+SJ '{"vpn_name":"","max_devices":8}' >/dev/null
 ns kv-net curl -s -m 3 "http://10.201.0.1:8180/" >/dev/null 2>&1 && bad "Admin-Seite ausserhalb des VPN erreichbar!" || ok "ausserhalb des Tunnels nicht erreichbar"
 "$BIN/kvpn-server" admin-passwort --loeschen >/dev/null; sleep 4
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"setup":true' && ok "admin-passwort --loeschen: abgemeldet, neu festlegen moeglich" || bad "loeschen"

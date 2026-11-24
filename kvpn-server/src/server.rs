@@ -44,6 +44,8 @@ pub struct Shared {
     pub hist: Mutex<Hist>,
     pub started: u64,
     pub queues: usize,
+    /// (Leistungsmodus, Admin-Seite im VPN) wie beim Start – Aenderungen daran gelten erst nach einem Neustart
+    pub boot: (bool, bool),
     pub tun_drops: AtomicU64,
     handshake_slots: Semaphore,
     login_fail: Mutex<(u64, u32)>,
@@ -61,6 +63,7 @@ impl Shared {
             sessions: Mutex::new(HashMap::new()),
             last_ts: Mutex::new(HashMap::new()),
             queues: tuns.len(),
+            boot: (cfg.performance, cfg.admin_addr().is_some()),
             tuns,
             next_sid: AtomicU64::new(1),
             hist: Mutex::new(hist),

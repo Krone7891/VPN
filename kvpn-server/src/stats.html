@@ -60,6 +60,17 @@ input{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--li
 .err{color:var(--bad);font-size:14px;min-height:1em}
 .foot{color:var(--mute);font-size:12.5px;margin-top:22px}
 #lg{width:40px;height:40px;border-radius:10px;object-fit:cover;vertical-align:-8px;margin-right:10px}
+.set{display:flex;align-items:center;gap:14px;padding:12px 0;border-top:1px solid var(--line)}.set:first-child{border-top:0;padding-top:2px}
+.set .t{flex:1;min-width:0}.set .t b{display:block;font-weight:600}.set .t span{font-size:13px;color:var(--mute)}
+.set input[type=text],.set input[type=number]{width:12em;flex:none}.set input[type=number]{width:6em}
+.set .pw{display:flex;gap:8px;flex-wrap:wrap;flex:none}.set .pw input{width:11em}
+input.sw{appearance:none;-webkit-appearance:none;width:44px;height:26px;padding:0;border:0;border-radius:99px;background:var(--line);position:relative;cursor:pointer;flex:none;transition:background .15s}
+input.sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.3);transition:left .15s}
+input.sw:checked{background:var(--acc)}input.sw:checked::after{left:21px}input.sw:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.tag{font-size:11.5px;padding:1px 7px;border-radius:99px;background:var(--soft);color:var(--mute);margin-left:6px;font-weight:500;vertical-align:1px}
+.setfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+#setrs{margin-top:12px;padding:12px 14px;border-radius:12px;border:1px solid var(--warn);display:flex;gap:12px;align-items:center;flex-wrap:wrap}#setrs[hidden]{display:none}
+@media (max-width:620px){.set{flex-wrap:wrap}.set input[type=text]{width:100%}.set .pw,.set .pw input{width:100%}}
 .upl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.upl img{width:56px;height:56px;border-radius:12px;object-fit:cover;background:var(--soft)}
 .upl label,.upl button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer}
 .btn2{font:inherit;font-size:13px;padding:5px 11px;border-radius:9px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer;margin-top:8px}
@@ -115,14 +126,23 @@ function build(){
    '<div class="tabs" role="group" aria-label="Zeitraum"><button data-r="sec">10 Minuten</button><button data-r="min">24 Stunden</button></div></div><div class="chart" id="chart"></div></div>'+
    '<div id="updbox" class="card" hidden style="margin-top:14px;border-color:var(--acc)"><b id="updt"></b><div class="mute" id="upds" style="margin-top:4px"></div>'+
    '<button class="btn" id="updok" hidden style="margin-top:10px">Jetzt an die Geräte verteilen</button></div>'+
-   '<h2>Geräte</h2><div id="maxbox" class="card" hidden style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
-   '<span>Höchstens</span><input id="maxn" type="number" min="1" style="width:5.5em;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--soft);color:var(--ink);font:inherit">'+
-   '<span>Geräte erlauben</span><button class="btn2" id="maxok" type="button" style="margin:0">Speichern</button><span class="mute" id="maxmsg"></span></div>'+
-   '<div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
+   '<h2>Geräte</h2><div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
    '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte sperren</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
    '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
+   '<div id="setbox" hidden><h2>Einstellungen</h2><form class="card" id="setf" autocomplete="off">'+
+   '<div class="set"><div class="t"><b>Name des VPN</b><span>erscheint in den Apps, auf den Webseiten und in neuen Codes</span></div><input type="text" id="s_name" maxlength="40"></div>'+
+   '<div class="set"><div class="t"><b>Höchstzahl Geräte</b><span id="s_maxi"></span></div><input type="number" id="s_max" min="1"></div>'+
+   '<div class="set"><div class="t"><b>Benutzerverwaltung</b><span>Benutzer, sperren, Ablaufdatum und Verlauf (SQLite)</span></div><input type="checkbox" class="sw" id="s_users"></div>'+
+   '<div class="set"><div class="t"><b>AES-256-GCM</b><span>statt ChaCha20 für die Daten · gilt für neue Verbindungen, ältere Apps bleiben bei ChaCha20</span></div><input type="checkbox" class="sw" id="s_aes"></div>'+
+   '<div class="set"><div class="t"><b>Leistungsmodus <span class="tag">Neustart</span></b><span>alle CPU-Kerne, mehr Durchsatz, mehr Last</span></div><input type="checkbox" class="sw" id="s_perf"></div>'+
+   '<div class="set"><div class="t"><b>Admin-Seite im VPN <span class="tag">Neustart</span></b><span id="s_admi"></span></div><input type="checkbox" class="sw" id="s_admin"></div>'+
+   '<div class="set"><div class="t"><b>Admin-Passwort ändern</b><span id="s_pwi">mindestens 8 Zeichen · leer lassen = bleibt</span></div><div class="pw">'+
+   '<input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
+   '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
+   '<div id="setrs" hidden><span style="flex:1;min-width:14em"><b>Neustart nötig</b> – Leistungsmodus bzw. Admin-Seite gelten erst nach einem Neustart des Servers. Verbundene Geräte sind dabei kurz (ein paar Sekunden) getrennt.</span>'+
+   '<button type="button" class="btn2" id="s_rs" style="margin:0">Server jetzt neu starten</button></div></form></div>'+
    '<div id="uplbox" hidden><h2>Eigenes Bild</h2><div class="card"><div class="upl"><img id="uplprev" alt="" hidden>'+
    '<label>Bild auswählen …<input type="file" id="uplf" accept="image/png,image/jpeg,image/webp,image/gif" hidden></label>'+
    '<button id="upldel" hidden>Bild entfernen</button><span class="mute" id="uplmsg">PNG, JPG, WebP oder GIF, höchstens 2 MB. Erscheint auf der Download- und Statistik-Seite. Ändern geht nur hier auf dem Server (localhost).</span></div></div></div>'+
@@ -146,10 +166,7 @@ function render(d){
   $('#uplbox').hidden=!d.local;LOCAL=!!d.local;
   const ia=d.inactive||[];setT($('#inact'),ia.length?'Gesperrt oder abgelaufen (Benutzerverwaltung): '+ia.map(x=>x.name+(x.user?' ('+x.user+')':'')).join(', '):'');
   if(LOCAL&&d.settings&&d.settings.users)loadMgmt();else{const m=$('#mgmt');if(m)m.hidden=true}
-  const mb=$('#maxbox');if(d.local){if(mb.hidden){mb.hidden=false;mb.style.display='flex';$('#maxok').onclick=saveMax}
-    const mi=$('#maxn');mi.max=d.max_possible||250;if(document.activeElement!==mi&&!mi.dataset.dirty)mi.value=d.max_peers;
-    mi.oninput=()=>{mi.dataset.dirty=1};
-    if(!$('#maxmsg').dataset.keep)setT($('#maxmsg'),d.peers.length+' angelegt, möglich bis '+(d.max_possible||250))}else{mb.hidden=true;mb.style.display='none'}
+  $('#setbox').hidden=!LOCAL;if(LOCAL)loadSettings();
   const u=d.update||{},ub=$('#updbox');
   if(ub){ub.hidden=!u.pending;if(u.pending){setT($('#updt'),'Neue App-Version '+u.pending+' auf GitHub');
     setT($('#upds'),'Verteilt wird gerade: '+(u.offered||'noch keine')+'. Die neue Version geht erst nach deiner Freigabe an die Geräte'+(d.local?'.':' – auf dem Server: kvpn-server update (oder hier unter http://localhost:8180).'));
@@ -222,12 +239,48 @@ function showMgmt(r){
       if(r.ok){MG_KEY='';showMgmt(r);MG_T=Date.now()}else{setT($('#mgmtmsg'),r.err||'Fehler');b.disabled=false}}
     catch(e){setT($('#mgmtmsg'),'Fehler: '+e.message);b.disabled=false}});
 }
-async function saveMax(){
-  const mi=$('#maxn'),m=$('#maxmsg');m.dataset.keep=1;
-  try{const r=await (await fetch(BASE+'max/'+encodeURIComponent(mi.value),{method:'POST'})).json();
-    setT(m,r.ok?'Gespeichert ✓ – gilt sofort':(r.err||'Fehler'));if(r.ok)delete mi.dataset.dirty}
-  catch(e){setT(m,'Fehler beim Speichern')}
-  setTimeout(()=>{delete m.dataset.keep},5000);
+// Einstellungen (wie kvpn-server einstellungen) – nur lokal bzw. Admin im VPN
+let SET=null,SET_T=0,SET_DIRTY=false;
+async function loadSettings(force){
+  if(!force&&(SET_DIRTY||Date.now()-SET_T<10000))return;SET_T=Date.now();
+  try{const r=await (await fetch(BASE+'settings.json',{cache:'no-store'})).json();if(r.ok)showSettings(r)}catch(e){}
+}
+function showSettings(r){
+  SET=r;const f=$('#setf');
+  if(!f.dataset.init){f.dataset.init=1;f.onsubmit=e=>{e.preventDefault();saveSettings()};
+    f.addEventListener('input',()=>{SET_DIRTY=true});$('#s_rs').onclick=restartServer}
+  if(!SET_DIRTY){$('#s_name').value=r.vpn_name;$('#s_max').value=r.max_devices;$('#s_max').max=r.max_possible||250;
+    $('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn}
+  setT($('#s_maxi'),r.devices+' angelegt, möglich bis '+(r.max_possible||250));
+  setT($('#s_admi'),r.admin_vpn?(r.admin_url?'erreichbar unter '+r.admin_url+' (mit Passwort)':'an'):'aus – dann nur noch lokal auf dem Server');
+  setT($('#s_pwi'),(r.admin_password_set?'festgelegt':'noch keins – wird beim ersten Aufruf im VPN festgelegt')+' · mindestens 8 Zeichen, leer lassen = bleibt');
+  $('#setrs').hidden=!r.restart_needed;$('#s_rs').hidden=!r.can_restart;
+  if(r.restart_needed&&!r.can_restart)setT($('#setrs').firstChild,'Neustart nötig – bitte auf dem Server: systemctl restart krone-vpn (Docker: docker restart krone-vpn)');
+}
+function viaVpn(){return !/^(localhost|127\.|\[?::1)/.test(location.hostname)}
+async function saveSettings(){
+  if(!SET)return;const m=$('#s_msg'),b={};
+  const name=$('#s_name').value.trim(),max=+$('#s_max').value,pw=$('#s_pw').value,pw2=$('#s_pw2').value;
+  if(name!==SET.vpn_name)b.vpn_name=name;if(max!==SET.max_devices)b.max_devices=max;
+  [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
+  if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}b.admin_password=pw}
+  if(!Object.keys(b).length){setT(m,'Nichts geändert');SET_DIRTY=false;return}
+  if(b.admin_vpn===false&&viaVpn()&&!confirm('Admin-Seite im VPN ausschalten? Nach dem Neustart ist diese Seite nur noch lokal auf dem Server erreichbar.'))return;
+  if(b.users===false&&!confirm('Benutzerverwaltung ausschalten? Aktive Geräte bleiben, gesperrte und abgelaufene Geräte bleiben gesperrt (nur in der Datenbank).'))return;
+  const btn=$('#s_ok');btn.disabled=true;setT(m,'Speichert …');
+  try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();
+    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
+    else setT(m,r.err||'Fehler')}
+  catch(e){setT(m,'Fehler: '+e.message)}
+  btn.disabled=false;
+}
+async function restartServer(){
+  if(!confirm('Server jetzt neu starten? Verbundene Geräte sind ein paar Sekunden getrennt und verbinden sich dann von selbst wieder.'))return;
+  const b=$('#s_rs'),m=$('#s_msg'),was=LAST&&LAST.server.started;b.disabled=true;b.textContent='Startet neu …';
+  try{const r=await (await fetch(BASE+'restart',{method:'POST'})).json();if(!r.ok){setT(m,r.err||'Fehler');b.disabled=false;b.textContent='Server jetzt neu starten';return}}catch(e){}
+  for(let i=0;i<40;i++){await new Promise(x=>setTimeout(x,1500));
+    try{const j=await (await fetch(BASE+'data.json',{cache:'no-store'})).json();if(j.server&&j.server.started!==was){setT(m,'Server neu gestartet ✓');break}}catch(e){}}
+  b.disabled=false;b.textContent='Server jetzt neu starten';loadSettings(true);
 }
 async function approveUpdate(){
   const b=$('#updok');b.disabled=true;b.textContent='Lädt von GitHub und prüft …';

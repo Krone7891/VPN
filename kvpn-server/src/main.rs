@@ -574,31 +574,13 @@ fn db_or_die(path: &str) -> (Config, rusqlite::Connection) {
 
 /// Benutzerverwaltung ein-/ausschalten (Geraete wandern zwischen server.toml und benutzer.db)
 fn switch_users(path: &str, on: bool) -> bool {
-    let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
-    if cfg.users == on {
-        return false;
-    }
-    if on {
-        let db = users::open(path).unwrap_or_else(|e| die(e));
-        let (added, removed) = users::sync(&db, &cfg.peers).unwrap_or_else(|e| die(e));
-        cfg.users = true;
-        cfg.save(path).unwrap_or_else(|e| die(e));
-        println!(
-            "Benutzerverwaltung an: Geraete stehen jetzt in {} ({added} uebernommen{}).",
-            users::db_path(path).display(),
-            if removed > 0 { format!(", {removed} inzwischen entfernte geloescht") } else { String::new() }
-        );
-    } else {
-        let n = cfg.inactive.len();
-        cfg.users = false;
-        cfg.inactive.clear();
-        cfg.save(path).unwrap_or_else(|e| die(e));
-        println!("Benutzerverwaltung aus: {} aktive Geraete stehen wieder in {path}.", cfg.peers.len());
-        if n > 0 {
-            println!("Hinweis: {n} gesperrte/abgelaufene Geraet(e) bleiben nur in der Datenbank (und sind damit gesperrt).");
+    match users::switch(path, on).unwrap_or_else(|e| die(e)) {
+        Some(m) => {
+            println!("{m}");
+            true
         }
+        None => false,
     }
-    true
 }
 
 fn cmd_users(path: &str, args: &[String]) {
