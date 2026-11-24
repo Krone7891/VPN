@@ -127,7 +127,7 @@ ns kv-cli1 curl -sk -m 3 https://vpn.test/ | grep -q "normale Webseite" && ok "H
 
 echo "== Test 2: Verbindungstest (--test) und voller Tunnel"
 ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --test > "$W/test1.txt" 2>&1 && ok "Handshake ueber TLS/443: $(grep -o 'Handshake in [0-9]* ms' "$W/test1.txt")" || { bad "Verbindungstest"; cat "$W/test1.txt"; }
-bg ns kv-cli1 "$BIN/kronevpn" --config "$W/code1"
+bg ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --kein-update
 sleep 3
 ns kv-cli1 ping -c 3 -W 2 10.201.0.2 > "$W/ping1.txt" 2>&1 && ok "ping durch den Tunnel: $(tail -1 "$W/ping1.txt" | cut -d= -f2)" || { bad "ping durch den Tunnel"; cat "$W/ping1.txt"; tail -20 "$W"/log.*; }
 [ "$(ns kv-cli1 curl -s -m 5 http://10.201.0.2/)" = "hallo aus dem internet" ] && ok "HTTP durch den Tunnel" || bad "HTTP durch den Tunnel"
@@ -164,7 +164,7 @@ if [ -f "$ROOTD/target/release/libkronevpn.so" ] && [ -d "$ROOTD/target/jni" ]; 
 else echo "  [--]     JNI-Test uebersprungen (cargo build --release -p kvpn-android und javac fehlen)"; fi
 
 echo "== Test 4: alle 8 Geraete gleichzeitig"
-for i in $(seq 2 8); do bg ns "kv-cli$i" "$BIN/kronevpn" --config "$W/code$i"; done
+for i in $(seq 2 8); do bg ns "kv-cli$i" "$BIN/kronevpn" --config "$W/code$i" --kein-update; done
 sleep 4
 n=0; for i in $(seq 1 8); do ns "kv-cli$i" ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && n=$((n+1)); done
 [ $n -eq 8 ] && ok "8 von 8 Geraeten gleichzeitig online" || bad "nur $n von 8 Geraeten online"
@@ -208,6 +208,48 @@ n=0; for i in $(seq 1 8); do ns "kv-cli$i" ping -c 2 -W 2 10.201.0.2 >/dev/null 
 echo "== Test 10: Geraet entfernen -> sofort getrennt"
 "$BIN/kvpn-server" remove geraet8 >/dev/null; sleep 5
 ns kv-cli8 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "entferntes Geraet noch verbunden" || ok "entferntes Geraet getrennt"
+
+echo "== Test 11: Verbindungscodes wieder anzeigen"
+[ "$("$BIN/kvpn-server" code geraet1 | grep '^kronevpn://')" = "$(cat "$W/code1")" ] && ok "kvpn-server code zeigt den Code wieder (mit QR-Code)" || bad "kvpn-server code"
+ns kv-srv curl -s -m 3 http://127.0.0.1:8180/codes > "$W/codes.json"
+grep -qF "$(cat "$W/code2")" "$W/codes.json" && grep -q '<svg' "$W/codes.json" && ok "lokale Seite: Codes mit QR-Code" || bad "lokale Seite /codes: $(head -c 200 "$W/codes.json")"
+[ "$(ns kv-srv curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8101/codes)" = 403 ] && ok "Codes von aussen gesperrt (403)" || bad "Codes von aussen abrufbar"
+rm -f "$W"/codes/*.key
+"$BIN/kvpn-server" code geraet2 >/dev/null 2>&1 && bad "Code ohne gespeicherten Schluessel?" || ok "alte Geraete ohne gespeicherten Code werden erkannt"
+"$BIN/kvpn-server" import "$(cat "$W/code2")" >/dev/null && [ "$("$BIN/kvpn-server" code geraet2 | grep '^kronevpn://')" = "$(cat "$W/code2")" ] && ok "Code vom Geraet uebernommen (import) und wieder anzeigbar" || bad "import"
+"$BIN/kvpn-server" import "$(cat "$W/code-fremd")" >/dev/null 2>&1 && bad "fremder Code importiert" || ok "fremder Code wird beim Import abgelehnt"
+[ "$("$BIN/kronevpn" --config "$W/code3" --code < /dev/null | grep '^kronevpn://')" = "$(cat "$W/code3")" ] && ok "PC-App: --code zeigt den gespeicherten Code" || bad "kronevpn --code"
+
+echo "== Test 12: App-Update nur von GitHub und erst nach Freigabe auf dem Server"
+KEY=${KVPN_UPDATE_KEY:-$HOME/.kronevpn/update-ed25519.pk8}
+if [ -f "$KEY" ]; then
+  G=$W/gh; mkdir -p "$G/dist" "$W/upd"
+  printf '#!/bin/sh\necho "NEUE VERSION $*" > %s/updated.txt\nexec sleep 600\n' "$W" > "$G/dist/kronevpn-linux"; chmod +x "$G/dist/kronevpn-linux"
+  KVPN_UPDATE_VERSION=99.0.0 "$BIN/kvpn-server" update-sign "$KEY" "$G/dist" >/dev/null
+  bg python3 -m http.server 8999 --bind 127.0.0.1 --directory "$G"      # steht hier fuer raw.githubusercontent.com
+  export KVPN_UPDATE_URL=http://127.0.0.1:8999
+  sleep 1
+  pkill -f "code7 --kein-update"; sleep 1
+  cp "$BIN/kronevpn" "$W/upd/kronevpn"
+  bg ns kv-cli7 "$W/upd/kronevpn" --config "$W/code7"
+  sleep 5
+  ns kv-cli7 ping -c 1 -W 2 10.201.0.2 >/dev/null 2>&1 && [ ! -f "$W/updated.txt" ] && ok "Geraet verbunden, ohne Freigabe kein Update" || bad "Update ohne Freigabe?"
+  echo n | "$BIN/kvpn-server" update > "$W/upd-n.txt" 2>&1
+  grep -q "Version 99.0.0" "$W/upd-n.txt" && grep -q "Nicht verteilt" "$W/upd-n.txt" && ok "kvpn-server update zeigt 99.0.0 und wartet auf Bestaetigung" || bad "update (nein): $(cat "$W/upd-n.txt")"
+  sleep 4; [ ! -f "$W/updated.txt" ] && ok "abgelehnt -> nichts verteilt" || bad "trotz Ablehnung verteilt"
+  cp "$G/dist/update.json" "$W/uj"; sed -i 's/99.0.0/99.0.1/' "$G/dist/update.json"
+  "$BIN/kvpn-server" update --ja > "$W/upd-f.txt" 2>&1 && bad "gefaelschte Liste angenommen" || ok "gefaelschte Liste abgelehnt: $(grep -o 'Signatur[^–]*' "$W/upd-f.txt" | head -1)"
+  cp "$W/uj" "$G/dist/update.json"
+  "$BIN/kvpn-server" update --ja > "$W/upd-y.txt" 2>&1 && ok "Freigabe: $(grep -o 'Version 99.0.0 ist freigegeben' "$W/upd-y.txt")" || bad "Freigabe: $(cat "$W/upd-y.txt")"
+  for i in $(seq 1 30); do [ -f "$W/updated.txt" ] && break; sleep 1; done
+  [ -f "$W/updated.txt" ] && ok "Geraet hat das Update ueber den Tunnel geladen, geprueft und sich neu gestartet ($(cat "$W/updated.txt"))" || { bad "Update kam nicht an"; tail -5 "$W/log.kv-cli7-kronevpn"; grep -i update "$W/log.kv-srv-kvpn-server" | tail -5; }
+  cmp -s "$W/upd/kronevpn" "$G/dist/kronevpn-linux" && ok "Programmdatei ersetzt" || bad "Programmdatei nicht ersetzt"
+  grep -q "Update 99.0.0 uebertragen" "$W/log.kv-srv-kvpn-server" && ok "Server: $(grep -o 'App-Update 99.0.0 freigegeben.*' "$W/log.kv-srv-kvpn-server" | head -1)" || bad "Server-Log ohne Uebertragung"
+  ! grep -q "NEUE VERSION" "$W"/log.kv-cli1-kronevpn 2>/dev/null && ok "Geraete mit --kein-update bleiben unveraendert" || bad "--kein-update ignoriert"
+  unset KVPN_UPDATE_URL
+else
+  echo "  (uebersprungen: kein Signier-Schluessel $KEY)"
+fi
 
 echo
 grep -h "verbunden von\|abgelehnt\|Inspektion" "$W"/log.kv-srv-kvpn-server 2>/dev/null | tail -5

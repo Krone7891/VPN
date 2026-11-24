@@ -1,0 +1,9 @@
+#!/bin/bash
+# VPN aktualisieren: neueste Version von GitHub holen und einspielen.
+# Name, Domain, Schluessel, Geraete und Docker/systemd bleiben wie sie sind.
+# Die Apps auf Handy und PC bekommen eine neue Version erst, wenn du sie freigibst:  kvpn-server update
+set -euo pipefail
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+REPO=${KVPN_REPO:-@REPO@}
+BRANCH=${KVPN_BRANCH:-main}
+curl -fsSL "https://raw.githubusercontent.com/$REPO/$BRANCH/install.sh" | KVPN_REPO=$REPO KVPN_BRANCH=$BRANCH bash -s -- --ja "$@"

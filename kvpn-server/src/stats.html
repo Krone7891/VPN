@@ -62,6 +62,12 @@ input{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--li
 #lg{width:40px;height:40px;border-radius:10px;object-fit:cover;vertical-align:-8px;margin-right:10px}
 .upl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.upl img{width:56px;height:56px;border-radius:12px;object-fit:cover;background:var(--soft)}
 .upl label,.upl button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer}
+.btn2{font:inherit;font-size:13px;padding:5px 11px;border-radius:9px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer;margin-top:8px}
+dialog.code{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);padding:18px;max-width:min(420px,calc(100vw - 32px))}
+dialog.code::backdrop{background:rgba(0,0,0,.45)}
+dialog.code .qr{background:#fff;border-radius:10px;padding:6px;display:flex;justify-content:center}
+dialog.code .qr svg{width:100%;max-width:300px;height:auto}
+dialog.code textarea{width:100%;box-sizing:border-box;font:12px ui-monospace,monospace;margin-top:10px;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;resize:vertical}
 </style>
 </head>
 <body>
@@ -107,6 +113,8 @@ function build(){
    kpi('kToday','Heute','Datenmenge aller Geräte')+kpi('kMonth','Dieser Monat','Datenmenge aller Geräte')+kpi('kSrv','Server','')+'</div>'+
    '<h2>Datenrate</h2><div class="card"><div class="legend"><span><i style="background:var(--s1)"></i>Download (zu den Geräten)</span><span><i style="background:var(--s2)"></i>Upload (von den Geräten)</span>'+
    '<div class="tabs" role="group" aria-label="Zeitraum"><button data-r="sec">10 Minuten</button><button data-r="min">24 Stunden</button></div></div><div class="chart" id="chart"></div></div>'+
+   '<div id="updbox" class="card" hidden style="margin-top:14px;border-color:var(--acc)"><b id="updt"></b><div class="mute" id="upds" style="margin-top:4px"></div>'+
+   '<button class="btn" id="updok" hidden style="margin-top:10px">Jetzt an die Geräte verteilen</button></div>'+
    '<h2>Geräte</h2><div class="grid" id="peers"></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
@@ -116,7 +124,7 @@ function build(){
    '<div class="foot" id="foot"></div>';
   const tabs=()=>document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('act',x.dataset.r===RANGE));
   document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{RANGE=b.dataset.r;try{localStorage.setItem('kvpn-range',RANGE)}catch(e){}tabs();LC.key='';render(LAST)});
-  tabs();BUILT=true;TABKEY='';LC.key='';DC.key='';LOGOV=-1;
+  tabs();$('#updok').onclick=approveUpdate;BUILT=true;TABKEY='';LC.key='';DC.key='';LOGOV=-1;
   $('#uplf').onchange=async e=>{const f=e.target.files[0];if(!f)return;$('#uplmsg').textContent='lade hoch …';
     try{const r=await fetch(BASE+'logo',{method:'POST',headers:{'Content-Type':f.type||'application/octet-stream'},body:f});const k=await r.json().catch(()=>({}));
       $('#uplmsg').textContent=k.ok?'Gespeichert.':(k.err||('Fehler '+r.status));}catch(x){$('#uplmsg').textContent=x.message}
@@ -130,7 +138,11 @@ function render(d){
   if(s.logo!==LOGOV){LOGOV=s.logo;const src=s.logo?BASE+'logo?v='+s.logo:'';
     const lg=$('#lg');lg.hidden=!s.logo;if(s.logo)lg.src=src;
     if(s.logo)$('#fav').href=src;const pv=$('#uplprev');if(pv){pv.hidden=!s.logo;if(s.logo)pv.src=src}const dl=$('#upldel');if(dl)dl.hidden=!s.logo}
-  $('#uplbox').hidden=!d.local;
+  $('#uplbox').hidden=!d.local;LOCAL=!!d.local;
+  const u=d.update||{},ub=$('#updbox');
+  if(ub){ub.hidden=!u.pending;if(u.pending){setT($('#updt'),'Neue App-Version '+u.pending+' auf GitHub');
+    setT($('#upds'),'Verteilt wird gerade: '+(u.offered||'noch keine')+'. Die neue Version geht erst nach deiner Freigabe an die Geräte'+(d.local?'.':' – auf dem Server: kvpn-server update (oder hier unter http://localhost:8180).'));
+    $('#updok').hidden=!d.local}}
   const na=$('#navapps');if(na)na.hidden=!s.downloads;
   if(s.name){setT($('#h1'),(s.logo?'':'🛡️ ')+s.name+' – Statistik');if(document.title!==s.name+' – Statistik')document.title=s.name+' – Statistik'}
   const down=d.peers.reduce((a,p)=>a+p.rate_tx,0), up=d.peers.reduce((a,p)=>a+p.rate_rx,0);
@@ -148,6 +160,34 @@ function render(d){
 }
 
 /* Geraete-Karten: je Geraet einmal angelegt, danach nur Werte aendern */
+let LOCAL=false;
+/* gespeicherten Verbindungscode eines Geraets zeigen (nur lokale Seite) */
+async function showCode(name){
+  let dlg=$('#codedlg');
+  if(!dlg){dlg=document.createElement('dialog');dlg.id='codedlg';dlg.className='code';document.body.appendChild(dlg);
+    dlg.addEventListener('click',e=>{if(e.target===dlg)dlg.close()})}
+  let item=null;
+  try{const r=await fetch(BASE+'codes',{cache:'no-store'});item=((await r.json()).codes||[]).find(x=>x.name===name)}catch(e){}
+  if(item&&item.code){
+    dlg.innerHTML='<h3 style="margin:0 0 10px">'+esc(name)+'</h3><div class="qr">'+item.svg+'</div>'+
+      '<textarea rows="4" readonly>'+esc(item.code)+'</textarea><div class="mute" style="font-size:12.5px;margin-top:6px">Geheim halten – wer den Code hat, kann sich als dieses Gerät verbinden.</div>'+
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn2" data-a="copy">Kopieren</button><button class="btn" data-a="close">Schließen</button></div>';
+  }else{
+    dlg.innerHTML='<h3 style="margin:0 0 10px">'+esc(name)+'</h3><p class="mute">Für dieses Gerät ist kein Code auf dem Server gespeichert (vor Version 1.0.1 angelegt). '+
+      'Den Code gibt es noch auf dem Gerät: Android-App „Code anzeigen“, Windows <code>KroneVPN.exe --code</code>. Dann auf dem Server merken: <code>kvpn-server import \'&lt;code&gt;\'</code></p>'+
+      '<div style="display:flex;justify-content:flex-end"><button class="btn" data-a="close">Schließen</button></div>';
+  }
+  dlg.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{if(b.dataset.a==='close')dlg.close();else{const t=dlg.querySelector('textarea');t.select();
+    (navigator.clipboard?navigator.clipboard.writeText(t.value):Promise.reject()).then(()=>{b.textContent='Kopiert ✓'},()=>{document.execCommand('copy');b.textContent='Kopiert ✓'})}});
+  dlg.showModal();
+}
+async function approveUpdate(){
+  const b=$('#updok');b.disabled=true;b.textContent='Lädt von GitHub und prüft …';
+  try{const r=await (await fetch(BASE+'update',{method:'POST'})).json();
+    if(r.ok){b.textContent='Version '+r.version+' freigegeben ✓';setT($('#upds'),'Die Geräte bekommen sie in den nächsten Sekunden über den Tunnel.')}
+    else{b.disabled=false;b.textContent='Jetzt an die Geräte verteilen';setT($('#upds'),r.err||'Fehler')}}
+  catch(e){b.disabled=false;b.textContent='Jetzt an die Geräte verteilen'}
+}
 function peers(list,now){
   const box=$('#peers');
   if(!list.length){setH(box,'<div class="card mute">Noch kein Gerät angelegt. Auf dem Server: <code>kvpn-server add "Mein Handy"</code></div>');return}
@@ -162,7 +202,8 @@ function peers(list,now){
       '<div class="kv"><div><span>Download</span><b data-f="down"></b></div><div><span>Upload</span><b data-f="up"></b></div><div><span>Ping</span><b data-f="ping"></b></div>'+
       '<div><span>Heute</span><b data-f="today"></b></div><div><span>Monat</span><b data-f="month"></b></div><div><span>Gesamt</span><b data-f="total"></b></div></div>'+
       '<svg class="spark" viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="Datenrate der letzten 2 Minuten"><polyline data-f="spark" fill="none" stroke="var(--s1)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'+
-      '<div class="mute" data-f="foot"></div>';}
+      '<div class="mute" data-f="foot"></div><button type="button" class="btn2" data-f="codebtn" hidden>Verbindungscode anzeigen</button>';
+      c.querySelector('[data-f="codebtn"]').onclick=()=>showCode(p.name);}
     if(box.children[idx]!==c)box.insertBefore(c,box.children[idx]||null);   // Reihenfolge nur bei Bedarf korrigieren
     const f=k=>c.querySelector('[data-f="'+k+'"]'), i=p.info||{};
     const dot=f('dot'),cls='dot '+(p.online?'on':'off');if(dot.getAttribute('class')!==cls)dot.setAttribute('class',cls);
@@ -176,6 +217,7 @@ function peers(list,now){
     setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
     const a=p.spark||[],n=a.length,m=Math.max(1,...a);
     f('spark').setAttribute('points',n<2?'':a.map((v,k)=>(k/(n-1)*100).toFixed(2)+','+(32-v/m*30).toFixed(2)).join(' '));
+    f('codebtn').hidden=!LOCAL;
     setT(f('foot'),'Verbindungen: '+p.handshakes+(p.spoofed?' · '+p.spoofed+' gefälschte Pakete verworfen':''));
   });
 }

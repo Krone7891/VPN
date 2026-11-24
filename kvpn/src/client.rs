@@ -103,6 +103,8 @@ pub struct ClientOptions {
     pub reconnect: Option<Arc<tokio::sync::Notify>>,
     /// wird nach jedem erfolgreichen Handshake aufgerufen
     pub on_connected: Option<Arc<dyn Fn(&crate::proto::Welcome, &TransportInfo) + Send + Sync>>,
+    /// automatische Aktualisierung (None = aus)
+    pub update: Option<Arc<crate::update::Updater>>,
 }
 
 static LAST_TS: AtomicU64 = AtomicU64::new(0);
@@ -126,6 +128,17 @@ pub async fn connect_once(
     protect: &Option<ProtectFn>,
     dns: &transport::DnsCache,
 ) -> Result<(transport::Ws, Sealer, Opener, Welcome, TransportInfo), String> {
+    connect_once_with(cfg, proxy, protect, dns, false).await
+}
+
+/// wie `connect_once`; `upd` = dem Server melden, dass sich diese App selbst aktualisieren kann
+pub async fn connect_once_with(
+    cfg: &ClientConfig,
+    proxy: Option<&Proxy>,
+    protect: &Option<ProtectFn>,
+    dns: &transport::DnsCache,
+    upd: bool,
+) -> Result<(transport::Ws, Sealer, Opener, Welcome, TransportInfo), String> {
     let (mut ws, info) = transport::connect(&cfg.url, proxy, protect, dns).await?;
     let hello = Hello {
         ts: hello_ts(),
@@ -134,6 +147,7 @@ pub async fn connect_once(
         tls_issuer: info.tls_issuer.clone(),
         tls_trusted: info.tls_trusted,
         via_proxy: info.via_proxy,
+        upd,
     };
     let (hs, m1) = crypto::client_init(&cfg.client_key()?, &cfg.server_key()?, &hello).map_err(|e| e.to_string())?;
     ws.send(Message::Binary(m1.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;
@@ -167,7 +181,7 @@ pub async fn run(
     while !*stop.borrow() {
         status.state.store(ST_CONNECTING, Relaxed);
         let attempt = tokio::select! {
-            r = connect_once(&cfg, routes[0].as_ref(), &opts.protect, &opts.dns) => r,
+            r = connect_once_with(&cfg, routes[0].as_ref(), &opts.protect, &opts.dns, opts.update.is_some()) => r,
             _ = stop.changed() => break,
         };
         if attempt.is_err() && routes.len() > 1 {
@@ -183,6 +197,9 @@ pub async fn run(
                     i.server = info.peer.map(|p| p.to_string()).unwrap_or_default();
                     i.last_error.clear();
                 }
+                if let (Some(u), Some(o)) = (&opts.update, &welcome.upd) {
+                    u.offer(o);
+                }
                 if let Some(cb) = &opts.on_connected {
                     cb(&welcome, &info);
                 }
@@ -191,8 +208,13 @@ pub async fn run(
                 status.state.store(ST_CONNECTED, Relaxed);
                 let started = Instant::now();
                 let kick = opts.reconnect.clone();
+                // Netzwechsel-Signal, das schon waehrend des Verbindungsaufbaus kam, ist erledigt:
+                // die neue Verbindung laeuft bereits ueber das aktuelle Netz (sonst sofort wieder getrennt)
+                if let Some(k) = &kick {
+                    let _ = futures_util::FutureExt::now_or_never(k.notified());
+                }
                 let r = tokio::select! {
-                    r = session(ws, sealer, opener, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone()) => r,
+                    r = session(ws, sealer, opener, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone(), opts.update.clone()) => r,
                     _ = async { match &kick { Some(k) => k.notified().await, None => std::future::pending().await } } => {
                         backoff = 0;
                         Err("Netzwerk gewechselt – verbinde neu".to_string())
@@ -238,12 +260,21 @@ pub async fn session(
     tun_out: Arc<dyn TunWriter>,
     status: Arc<Status>,
     mut stop: watch::Receiver<bool>,
+    update: Option<Arc<crate::update::Updater>>,
 ) -> Result<(), String> {
     let (mut sink, mut stream) = ws.split();
     let t0 = Instant::now();
     let st_tx = status.clone();
+    let upd_rx = update.clone();
 
     let mut sender = tokio::spawn(async move {
+        // neuere Version angeboten: Datei (weiter) anfordern
+        if let Some(off) = update.as_ref().and_then(|u| u.request()) {
+            let mut buf = Vec::with_capacity(64);
+            push_record(&mut buf, REC_UPD_GET, &off.to_be_bytes());
+            sealer.seal(&mut buf).map_err(|e| e.to_string())?;
+            sink.send(Message::Binary(buf.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;
+        }
         let mut rx = tun_in.lock().await;
         let mut ping = tokio::time::interval(Duration::from_secs(10));
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -307,6 +338,11 @@ pub async fn session(
                     let now = t0.elapsed().as_micros() as u64;
                     st_rx.rtt_us.store(now.saturating_sub(sent), Relaxed);
                 }
+                REC_UPD_DATA => {
+                    if let Some(u) = &upd_rx {
+                        u.data(data);
+                    }
+                }
                 _ => {}
             })?;
             st_rx.rx_packets.fetch_add(n, Relaxed);
@@ -322,4 +358,26 @@ pub async fn session(
     sender.abort();
     receiver.abort();
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    /// ein Netzwechsel-Signal aus der Aufbauphase darf die neue Verbindung nicht sofort beenden
+    #[tokio::test]
+    async fn altes_netzwechsel_signal_wird_verworfen() {
+        let k = std::sync::Arc::new(tokio::sync::Notify::new());
+        k.notify_one(); // kam waehrend connect_once
+        let _ = futures_util::FutureExt::now_or_never(k.notified());
+        let r = tokio::time::timeout(Duration::from_millis(50), k.notified()).await;
+        assert!(r.is_err(), "altes Signal haette die Verbindung sofort getrennt");
+        // ein neues Signal wirkt weiterhin
+        let k2 = k.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            k2.notify_one();
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(500), k.notified()).await.is_ok());
+    }
 }

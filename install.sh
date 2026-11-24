@@ -14,8 +14,9 @@
 #   --bild datei|url     eigenes Bild (PNG/JPG/WebP/GIF) fuer die Webseiten
 #   --geraet "Name"      gleich ein Geraet anlegen (mehrfach moeglich)
 #   --hinter-nginx       es laeuft schon ein Webserver auf 443
+#   --docker             Server als Docker-Compose-Container (statt systemd-Dienst); --systemd = zurueck
 #   --ja                 keine Rueckfragen (Standardwerte)
-# Erneut ausfuehren = aktualisieren (Schluessel und Geraete bleiben erhalten).
+# Erneut ausfuehren = aktualisieren (Schluessel und Geraete bleiben erhalten), kurz:  kvpn-update
 #
 # Privates GitHub-Repo: mit einem Zugangsschluessel (github.com/settings/tokens, Recht "Contents: read"):
 #   T=github_pat_...; curl -fsSL -H "Authorization: Bearer $T" https://raw.githubusercontent.com/Krone7891/VPN/main/install.sh \
@@ -32,7 +33,7 @@ else
   TARBALL=${KVPN_TARBALL:-https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz}
 fi
 SRC=${KVPN_SRC:-/opt/kronevpn}
-NAME=""; DOMAIN=""; BILD=""; NGINX=""; YES=""; DEVICES=()
+NAME=""; DOMAIN=""; BILD=""; NGINX=""; MODE=""; YES=""; DEVICES=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME=${2:-}; shift ;;
@@ -40,8 +41,10 @@ while [ $# -gt 0 ]; do
     --bild|--logo) BILD=${2:-}; shift ;;
     --geraet|--device) DEVICES+=("${2:-}"); shift ;;
     --hinter-nginx|--behind-nginx) NGINX=--hinter-nginx ;;
+    --docker) MODE=--docker ;;
+    --systemd) MODE=--systemd ;;
     --ja|-y|--yes) YES=1 ;;
-    -h|--help) sed -n 2,19p "$0" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n 2,20p "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Unbekannte Option: $1 (Hilfe: --help)"; exit 2 ;;
   esac
   shift
@@ -89,15 +92,21 @@ ask() {   # variable frage standard
   printf -v "$1" '%s' "${v:-$3}"
 }
 CUR=$(sed -n 's/^vpn_name = "\(.*\)"/\1/p' "${KVPN_CONFIG:-/etc/krone-vpn/server.toml}" 2>/dev/null || true)
+CURD=$(sed -n 's#^public_url = "wss://\([^]/":]*\)/.*#\1#p' "${KVPN_CONFIG:-/etc/krone-vpn/server.toml}" 2>/dev/null || true)
+[[ "$CURD" =~ ^[0-9.]+$ ]] && CURD=""
 ask NAME "Wie soll dein VPN heissen?" "${CUR:-Mein VPN}"
-ask DOMAIN "Domain fuer den Server (leer = oeffentliche IP)" ""
+ask DOMAIN "Domain fuer den Server (leer = oeffentliche IP)" "$CURD"
 ask BILD "Eigenes Bild (Datei oder https-Adresse, leer = keins)" ""
+if [ -z "$MODE" ] && [ -z "$YES" ] && [ ! -f "${KVPN_CONFIG:-/etc/krone-vpn/server.toml}" ]; then
+  DK=""; ask DK "Als Docker-Compose-Container betreiben statt als systemd-Dienst? (j/n)" "n"
+  [[ "$DK" =~ ^[jJyY] ]] && MODE=--docker
+fi
 if [ ${#DEVICES[@]} -eq 0 ] && [ -z "$YES" ]; then
   G=""; ask G "Gleich ein Geraet anlegen? Name (leer = spaeter)" ""; [ -n "$G" ] && DEVICES+=("$G")
 fi
 
 # ---- einrichten
-ARGS=(--name "$NAME"); [ -n "$DOMAIN" ] && ARGS+=("$DOMAIN"); [ -n "$BILD" ] && ARGS+=(--bild "$BILD"); [ -n "$NGINX" ] && ARGS+=("$NGINX")
+ARGS=(--name "$NAME"); [ -n "$DOMAIN" ] && ARGS+=("$DOMAIN"); [ -n "$BILD" ] && ARGS+=(--bild "$BILD"); [ -n "$NGINX" ] && ARGS+=("$NGINX"); [ -n "$MODE" ] && ARGS+=("$MODE")
 bash selfhost.sh "${ARGS[@]}"
 
 KS=${KVPN_BIN:-/usr/local/bin/kvpn-server}

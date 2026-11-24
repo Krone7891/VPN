@@ -57,6 +57,43 @@ pub async fn handle<S>(
     if p == "/logo" || p.ends_with("/logo") {
         return logo(sh, s, method, headers, local).await;
     }
+    // App-Update von GitHub freigeben – nur auf der lokalen Seite
+    if p.ends_with("/update") && method == "POST" {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Freigabe nur lokal auf dem Server (http://localhost:8180) oder mit: kvpn-server update"}"#).await;
+        }
+        let cfg = sh.cfg();
+        let r = tokio::task::spawn_blocking(move || crate::updates::approve(&cfg, &|m| crate::log!("Update: {m}"))).await;
+        let b = match r {
+            Ok(Ok(v)) => {
+                crate::log!("App-Update {v} auf der lokalen Seite freigegeben");
+                json!({"ok": true, "version": v})
+            }
+            Ok(Err(e)) => json!({"ok": false, "err": e}),
+            Err(e) => json!({"ok": false, "err": e.to_string()}),
+        };
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
+    }
+    // gespeicherte Verbindungscodes mit QR-Code – nur auf der lokalen Seite (http://localhost:8180), nie von aussen
+    if p.ends_with("/codes") {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"err":"Nur lokal auf dem Server"}"#).await;
+        }
+        let cfg = sh.cfg();
+        let list: Vec<serde_json::Value> = cfg
+            .peers
+            .iter()
+            .map(|pe| {
+                let code = crate::config::stored_code(&sh.cfg_path, &cfg, pe);
+                let svg = code.as_ref().and_then(|c| qrcode::QrCode::with_error_correction_level(c.as_bytes(), qrcode::EcLevel::L).ok()).map(|q| {
+                    q.render::<qrcode::render::svg::Color>().min_dimensions(260, 260).quiet_zone(true).build()
+                });
+                json!({"name": pe.name, "code": code, "svg": svg})
+            })
+            .collect();
+        let b = json!({"codes": list}).to_string();
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.as_bytes()).await;
+    }
     if p.ends_with("/data.json") || p == "data.json" {
         if !authorized(sh, headers, remote, via_nginx) {
             let b = json!({"login": true, "password_set": !sh.cfg().stats_password.is_empty()}).to_string();
@@ -362,6 +399,11 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
             "load": std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().map(String::from)).unwrap_or_default(),
         },
         "max_peers": MAX_PEERS,
+        "update": {
+            "offered": crate::updates::offered(&cfg).map(|m| m.version).unwrap_or_default(),
+            "pending": crate::updates::pending(&cfg).map(|m| m.version).unwrap_or_default(),
+            "repo": cfg.update_repo,
+        },
         "peers": list,
         "sec": h.sec.iter().map(|(r, t)| [*r, *t]).collect::<Vec<_>>(),
         "min": h.min.iter().map(|(r, t)| [*r, *t]).collect::<Vec<_>>(),

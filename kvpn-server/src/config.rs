@@ -51,6 +51,14 @@ pub struct Config {
     pub tls_cert: String,
     #[serde(default)]
     pub tls_key: String,
+    /// App-Updates kommen nur von diesem GitHub-Repo (dist/update.json, signiert) und erst nach Freigabe
+    #[serde(default = "d_repo")]
+    pub update_repo: String,
+    #[serde(default = "d_branch")]
+    pub update_branch: String,
+    /// regelmaessig bei GitHub nach neuen App-Versionen schauen (nur melden, verteilt wird erst nach Freigabe)
+    #[serde(default = "d_true")]
+    pub update_check: bool,
     #[serde(default, rename = "peer")]
     pub peers: Vec<Peer>,
 }
@@ -86,6 +94,12 @@ fn d_mtu() -> u16 {
 }
 fn d_true() -> bool {
     true
+}
+fn d_repo() -> String {
+    "Krone7891/VPN".into()
+}
+fn d_branch() -> String {
+    "main".into()
 }
 fn d_state() -> String {
     "/var/lib/krone-vpn".into()
@@ -175,7 +189,15 @@ impl Config {
             "nat" => self.nat = matches!(val, "true" | "1" | "ja" | "an"),
             "net4" => self.net4 = val.into(),
             "net6" => self.net6 = val.into(),
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6)")),
+            "update_repo" => {
+                if val.split('/').count() != 2 || val.contains(char::is_whitespace) {
+                    return Err("update_repo: GitHub-Repo als besitzer/name".into());
+                }
+                self.update_repo = val.into()
+            }
+            "update_branch" => self.update_branch = val.into(),
+            "update_check" => self.update_check = matches!(val, "true" | "1" | "ja" | "an"),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check)")),
         }
         self.check()
     }
@@ -225,6 +247,7 @@ impl Config {
             },
             dns: self.dns.clone(),
             mtu: self.mtu,
+            upd: None,
         }
     }
 
@@ -243,6 +266,56 @@ impl Config {
             proxy: String::new(),
         }
     }
+}
+
+// ------------------------------------------------------------------------------------------------ gespeicherte Codes
+
+/// Ordner mit den Geraete-Schluesseln (neben server.toml, nur root lesbar) – damit man Codes spaeter wieder anzeigen kann
+pub fn codes_dir(cfg_path: &str) -> std::path::PathBuf {
+    std::path::Path::new(cfg_path).parent().unwrap_or(std::path::Path::new(".")).join("codes")
+}
+
+fn key_file(cfg_path: &str, public_key_b64: &str) -> Option<std::path::PathBuf> {
+    let k = kvpn::code::key_from_b64(public_key_b64).ok()?;
+    let name: String = k.iter().map(|b| format!("{b:02x}")).collect();
+    Some(codes_dir(cfg_path).join(format!("{name}.key")))
+}
+
+/// privaten Schluessel eines Geraets merken
+pub fn store_key(cfg_path: &str, p: &Peer, private_key: &Key32) -> Result<(), String> {
+    let f = key_file(cfg_path, &p.public_key).ok_or("Schluessel ungueltig")?;
+    let dir = codes_dir(cfg_path);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let tmp = f.with_extension("tmp");
+    std::fs::write(&tmp, kvpn::code::key_to_b64(private_key)).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &f).map_err(|e| format!("{}: {e}", f.display()))
+}
+
+pub fn remove_key(cfg_path: &str, p: &Peer) {
+    if let Some(f) = key_file(cfg_path, &p.public_key) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+/// aktueller Verbindungscode eines Geraets (None = Schluessel nicht gespeichert, z. B. vor Version 1.0.1 angelegt)
+pub fn stored_code(cfg_path: &str, cfg: &Config, p: &Peer) -> Option<String> {
+    let f = key_file(cfg_path, &p.public_key)?;
+    let k = kvpn::code::key_from_b64(&std::fs::read_to_string(f).ok()?).ok()?;
+    // passt der gespeicherte Schluessel noch zum Geraet?
+    if kvpn::code::key_to_b64(&kvpn::crypto::public_from_private(&k)) != p.public_key {
+        return None;
+    }
+    Some(cfg.client_config(p, &k).to_code())
 }
 
 #[cfg(test)]

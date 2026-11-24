@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     fn welcome() -> Welcome {
-        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400 }
+        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400, upd: None }
     }
 
     #[test]

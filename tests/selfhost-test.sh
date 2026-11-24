@@ -49,6 +49,11 @@ variant() {   # name args...
   local k1; k1=$(grep '^private_key' "$C/server.toml")
   KVPN_TEST=1 KVPN_CONFIG=$C/server.toml KVPN_BIN=$C/kvpn-server KVPN_PUBLIC_IP=198.51.100.1 bash "$K/selfhost.sh" "$@" > /dev/null 2>&1
   [ "$k1" = "$(grep '^private_key' "$C/server.toml")" ] && ok "erneuter Aufruf behaelt den Server-Schluessel" || bad "Schluessel geaendert"
+  # Aktualisieren ohne Angaben (wie kvpn-update): Adresse, Domain und "hinter nginx" bleiben
+  local before; before=$(grep -E '^(public_url|listen|tls_cert) ' "$C/server.toml")
+  KVPN_TEST=1 KVPN_CONFIG=$C/server.toml KVPN_BIN=$C/kvpn-server KVPN_PUBLIC_IP=198.51.100.1 bash "$K/selfhost.sh" > /dev/null 2>&1
+  [ "$before" = "$(grep -E '^(public_url|listen|tls_cert) ' "$C/server.toml")" ] && ok "Aktualisieren ohne Angaben behaelt Adresse/Zertifikat/nginx" || bad "Einstellungen beim Aktualisieren geaendert: $(grep -E '^(public_url|listen|tls_cert) ' "$C/server.toml")"
+  [ -x "$C/kvpn-update" ] && grep -q 'Krone7891/VPN' "$C/kvpn-update" && ok "Befehl kvpn-update eingerichtet" || bad "kvpn-update fehlt"
   sed -i "s#^state_dir = .*#state_dir = \"$C/state\"#" "$C/server.toml"
   "$C/kvpn-server" --config "$C/server.toml" add "Laptop" | grep '^kronevpn://' > "$C/code"
   bg ns sh-srv "$C/kvpn-server" --config "$C/server.toml" run

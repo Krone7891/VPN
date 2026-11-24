@@ -33,6 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/Krone7891/VPN/main/install.sh | sud
 | `--bild datei\|url` | eigenes Bild (PNG/JPG/WebP/GIF, max. 2 MB) für die Webseiten |
 | `--geraet "…"` | gleich ein Gerät anlegen (mehrfach möglich) |
 | `--hinter-nginx` | es läuft schon ein Webserver auf 443 – das VPN lauscht intern, der nginx-Ausschnitt wird angezeigt |
+| `--docker` | Server als **Docker-Compose**-Container statt systemd-Dienst (Docker wird bei Bedarf installiert); `--systemd` = zurück |
 | `--ja` | keine Rückfragen |
 
 **Privates Repository?** Dann braucht der Download einen GitHub-Zugangsschlüssel (github.com/settings/tokens →
@@ -45,6 +46,36 @@ curl -fsSL -H "Authorization: Bearer $T" https://raw.githubusercontent.com/Krone
 
 Erneut ausführen = aktualisieren (Schlüssel und Geräte bleiben). Wer das Repo schon geklont hat: `sudo bash install.sh`
 (bzw. direkt `sudo bash selfhost.sh <domain> --name "…"`).
+
+## Aktualisieren
+
+```bash
+kvpn-update            # Server auf den neuesten Stand von GitHub bringen (Name, Domain, Geräte, Docker/systemd bleiben)
+kvpn-server update     # neue App-Version an Handy/PC verteilen – mit Rückfrage
+```
+
+**App-Updates kommen nur von GitHub und erst nach deiner Freigabe:**
+
+1. Der Server schaut alle 6 Stunden im GitHub-Repo nach einer neuen App-Version (`dist/update.json`) und **meldet** sie
+   nur (Log und Statistik-Seite) – verteilt wird noch nichts.
+2. Du gibst sie frei: `kvpn-server update` (zeigt Version und Größen, fragt nach) oder auf der lokalen Seite
+   `http://localhost:8180` mit „Jetzt an die Geräte verteilen“.
+3. Der Server lädt die Apps von GitHub, prüft sie gegen die **signierte** Liste und gibt sie an die Geräte weiter –
+   über die verschlüsselte VPN-Verbindung. Verbundene Geräte bekommen sie sofort, andere beim nächsten Verbinden.
+4. Die Apps prüfen die Signatur noch einmal selbst und spielen das Update ein: Windows/Linux ersetzen sich und starten
+   neu, Android installiert es (ab Android 12 ohne Rückfrage, sonst einmal „Installieren“ tippen).
+
+Signiert wird beim Bauen mit einem geheimen Schlüssel, der nie auf dem Server liegt – selbst ein übernommener Server
+kann den Geräten keine fremden Programme unterschieben. Anderes Repo/Zweig: `kvpn-server set update_repo besitzer/name`,
+`kvpn-server set update_branch …`; nur melden abschalten: `kvpn-server set update_check false`.
+Apps vor Version 1.0.1 können das noch nicht – sie einmal von Hand aktualisieren (`/download/`).
+
+## Docker
+
+`--docker` beim Installieren (oder `sudo bash selfhost.sh --docker`) richtet den Server als Container ein:
+`deploy/docker/docker-compose.yml` (Netz des Servers direkt, `NET_ADMIN`, `/dev/net/tun`, Konfiguration in
+`/etc/krone-vpn`, Daten in `/var/lib/krone-vpn`). Verwaltet wird wie gewohnt mit `kvpn-server …` auf dem Server –
+der Container übernimmt Änderungen sofort. Protokoll: `docker logs -f krone-vpn`. Zurück: `--systemd`.
 
 ## Webseiten
 
@@ -72,8 +103,14 @@ Das **App-Symbol** von EXE/APK ändert man beim eigenen Bauen: `python3 tools/se
 kvpn-server add "Mein Handy"      # zeigt QR-Code + Verbindungscode
 kvpn-server add "Laptop"
 kvpn-server list                  # Übersicht (max. 8)
+kvpn-server code "Laptop"         # Code + QR-Code wieder anzeigen
 kvpn-server remove "Laptop"       # sofort gesperrt
 ```
+
+**Alte Codes wieder anzeigen:** `kvpn-server code "Name"` oder auf der lokalen Seite `http://localhost:8180` beim Gerät
+„Verbindungscode anzeigen“ (mit QR-Code, nur lokal). Geht für alle Geräte, die ab Version 1.0.1 angelegt wurden.
+Ältere Geräte: Code auf dem Gerät anzeigen (Android-App „Code anzeigen“, Windows `KroneVPN.exe --code`) und auf dem
+Server merken: `kvpn-server import '<code>'`.
 
 Die Apps gibt es auf `https://<adresse>/download/` mit deinem Namen (oder in `dist/`). Sie zeigen den Namen deines VPN
 an, sobald der Verbindungscode eingefügt ist.

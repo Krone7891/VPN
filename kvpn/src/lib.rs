@@ -8,6 +8,7 @@ pub mod code;
 pub mod crypto;
 pub mod proto;
 pub mod transport;
+pub mod update;
 pub mod util;
 
 #[cfg(unix)]

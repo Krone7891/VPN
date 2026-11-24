@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -22,6 +23,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -37,8 +39,8 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean dark;
     private int cBg, cCard, cInk, cMute, cAcc, cOk, cWarn, cBad, cSoft;
-    private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle;
-    private Button bMain;
+    private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle, tUpd;
+    private Button bMain, bUpd;
     private View dot;
     private long lastRx = -1, lastTx = -1;
 
@@ -170,6 +172,14 @@ public class MainActivity extends Activity {
         bMain = button("Verbinden", true);
         bMain.setOnClickListener(v -> toggle());
         c1.addView(bMain);
+        tUpd = text("", 13, cAcc, false);
+        tUpd.setPadding(0, dp(10), 0, 0);
+        tUpd.setVisibility(View.GONE);
+        c1.addView(tUpd);
+        bUpd = button("Update installieren", false);
+        bUpd.setVisibility(View.GONE);
+        bUpd.setOnClickListener(v -> installUpdate());
+        c1.addView(bUpd);
         root.addView(c1);
 
         // Live-Werte
@@ -196,6 +206,9 @@ public class MainActivity extends Activity {
         Button paste = button("Verbindungscode einfügen", false);
         paste.setOnClickListener(v -> askCode());
         c3.addView(paste);
+        Button show = button("Code anzeigen (QR-Code + Text)", false);
+        show.setOnClickListener(v -> showCode());
+        c3.addView(show);
         Button always = button("Immer verbunden (Always-on VPN) …", false);
         always.setOnClickListener(v -> {
             try {
@@ -246,6 +259,88 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Speichern", (d, w) -> importCode(in.getText().toString()))
                 .setNegativeButton("Abbrechen", null)
                 .show();
+    }
+
+    /** gespeicherten Code wieder anzeigen: als QR-Code (z. B. fuer ein zweites Geraet) und als Text */
+    private void showCode() {
+        String c = code();
+        if (c == null) {
+            Toast.makeText(this, "Noch kein Verbindungscode gespeichert", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(12), dp(20), dp(4));
+        Bitmap bm = qrBitmap(c);
+        if (bm != null) {
+            ImageView iv = new ImageView(this);
+            iv.setImageBitmap(bm);
+            iv.setAdjustViewBounds(true);
+            box.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        TextView t = text(c, 12, cInk, false);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextIsSelectable(true);
+        t.setPadding(0, dp(10), 0, 0);
+        box.addView(t);
+        TextView warn = text("Geheim halten – wer den Code hat, kann sich als dieses Gerät verbinden. Auf dem Server merken: kvpn-server import '<code>'", 12, cMute, false);
+        warn.setPadding(0, dp(8), 0, 0);
+        box.addView(warn);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle("Verbindungscode")
+                .setView(sv)
+                .setPositiveButton("Kopieren", (d, w) -> {
+                    getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Verbindungscode", c));
+                    Toast.makeText(this, "Code kopiert", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Schließen", null)
+                .show();
+    }
+
+    private Bitmap qrBitmap(String s) {
+        try {
+            String[] rows = Native.qr(s).split("\n");
+            int w = Integer.parseInt(rows[0].trim());
+            int q = 4, scale = 10, size = (w + 2 * q) * scale;
+            int[] px = new int[size * size];
+            java.util.Arrays.fill(px, Color.WHITE);
+            for (int y = 0; y < w; y++) {
+                String r = rows[y + 1];
+                for (int x = 0; x < w; x++) {
+                    if (r.charAt(x) != '1') continue;
+                    for (int dy = 0; dy < scale; dy++) {
+                        int base = ((y + q) * scale + dy) * size + (x + q) * scale;
+                        java.util.Arrays.fill(px, base, base + scale, Color.BLACK);
+                    }
+                }
+            }
+            return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void installUpdate() {
+        Intent c = Updater.confirm;
+        if (c != null) {
+            try {
+                startActivity(c);
+                return;
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            JSONObject j = new JSONObject(Native.status(KroneVpnService.handle));
+            String f = j.optString("update_file", "");
+            if (f.isEmpty()) {
+                Toast.makeText(this, "Update wird noch geladen", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Updater.install(this, f, j.optString("update_version", ""), true);
+        } catch (Exception ignored) {
+        }
     }
 
     private void importCode(String code) {
@@ -407,6 +502,19 @@ public class MainActivity extends Activity {
             tInfo.setText("");
         }
         tErr.setText(err == null ? "" : err);
+
+        // automatische Updates
+        String um = Updater.message;
+        JSONObject u = j == null ? null : j.optJSONObject("update");
+        if (um.isEmpty() && u != null && !u.optString("version").isEmpty() && !u.optBoolean("done")) {
+            long size = u.optLong("size"), got = u.optLong("got");
+            um = "Neue Version " + u.optString("version") + " wird geladen … " + (size > 0 ? got * 100 / size : 0) + " %";
+        }
+        if (um.isEmpty() && u != null && !u.optString("error").isEmpty()) um = u.optString("error");
+        tUpd.setText(um);
+        tUpd.setVisibility(um.isEmpty() ? View.GONE : View.VISIBLE);
+        boolean ready = j != null && !j.optString("update_file").isEmpty();
+        bUpd.setVisibility(Updater.confirm != null || (ready && !Updater.failed.isEmpty()) ? View.VISIBLE : View.GONE);
     }
 
     private static String duration(long s) {

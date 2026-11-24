@@ -4,6 +4,10 @@
 //!   kvpn-server add <name>                                          Geraet anlegen, Verbindungscode + QR-Code ausgeben
 //!   kvpn-server remove <name>                                       Geraet entfernen (wird sofort getrennt)
 //!   kvpn-server list                                                Geraete anzeigen
+//!   kvpn-server code <name>                                         Verbindungscode + QR-Code erneut anzeigen
+//!   kvpn-server import <code>                                       Code eines Geraets uebernehmen (fuer 'code')
+//!   kvpn-server update [--ja]                                       neue App-Version von GitHub freigeben und verteilen
+//!   kvpn-server update-sign <schluessel.pk8> <dist>                 update.json fuer die Apps signieren (beim Bauen)
 //!   kvpn-server password <passwort>                                 Passwort fuer die Statistik von aussen
 //!   kvpn-server set <schluessel> <wert>                             einzelnen Wert setzen (z. B. vpn_name, listen)
 //!   kvpn-server run                                                 Server starten (systemd: krone-vpn.service)
@@ -14,6 +18,7 @@ mod config;
 mod netsetup;
 mod server;
 mod stats;
+mod updates;
 mod web;
 
 // statische Linux-Builds (musl): schneller Speicher-Allokator
@@ -33,7 +38,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name>\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name>\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         kvpn::VERSION
     );
     std::process::exit(2)
@@ -60,6 +65,11 @@ fn main() {
         "add" => cmd_add(&cfg_path, &args[1..].join(" ")),
         "remove" | "rm" => cmd_remove(&cfg_path, &args[1..].join(" ")),
         "list" | "ls" => cmd_list(&cfg_path),
+        "code" | "codes" | "show" | "zeigen" => cmd_code(&cfg_path, &args[1..].join(" ")),
+        "import" => cmd_import(&cfg_path, &args[1..].join(" ")),
+        "update" | "updates" => cmd_update(&cfg_path, &args[1..]),
+        "update-keygen" => cmd_update_keygen(&args[1..]),
+        "update-sign" => cmd_update_sign(&args[1..]),
         "password" => cmd_password(&cfg_path, &args[1..].join(" ")),
         "set" => cmd_set(&cfg_path, &args[1..]),
         "logo" | "bild" => cmd_logo(&cfg_path, &args[1..]),
@@ -111,8 +121,11 @@ fn cmd_add(path: &str, name: &str) {
     let (cpriv, cpub) = kvpn::crypto::generate_keypair();
     let peer = Peer { name: name.to_string(), public_key: kvpn::code::key_to_b64(&cpub), index };
     let code = cfg.client_config(&peer, &cpriv).to_code();
-    cfg.peers.push(peer);
+    cfg.peers.push(peer.clone());
     cfg.check().unwrap_or_else(|e| die(e));
+    if let Err(e) = config::store_key(path, &peer, &cpriv) {
+        eprintln!("Hinweis: Code konnte nicht gespeichert werden ({e}) – 'kvpn-server code' geht dann fuer dieses Geraet nicht");
+    }
     cfg.save(path).unwrap_or_else(|e| die(e));
     println!("{}", qr(&code));
     println!("{}: Geraet '{name}' angelegt (Adresse {}, Platz {} von {}).", cfg.display_name(), cfg.ip4(index), cfg.peers.len(), kvpn::proto::MAX_PEERS);
@@ -130,21 +143,155 @@ fn cmd_add(path: &str, name: &str) {
 
 fn cmd_remove(path: &str, name: &str) {
     let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
-    let before = cfg.peers.len();
-    cfg.peers.retain(|p| !p.name.eq_ignore_ascii_case(name.trim()));
-    if cfg.peers.len() == before {
-        die(format!("kein Geraet '{name}'"));
-    }
+    let Some(peer) = find_peer(&cfg, name) else { die(format!("kein Geraet '{name}'")) };
+    cfg.peers.retain(|p| p != &peer);
     cfg.save(path).unwrap_or_else(|e| die(e));
+    config::remove_key(path, &peer);
     println!("'{name}' entfernt – sein Verbindungscode funktioniert nicht mehr.");
 }
 
 fn cmd_list(path: &str) {
     let cfg = Config::load(path).unwrap_or_else(|e| die(e));
     println!("Server: {}   ({} von {} Plaetzen belegt)", cfg.public_url, cfg.peers.len(), kvpn::proto::MAX_PEERS);
+    let mut missing = 0;
     for p in &cfg.peers {
-        println!("  {:<28} {:<12} {}", p.name, cfg.ip4(p.index), cfg.ip6(p.index).map(|a| a.to_string()).unwrap_or_default());
+        let has = config::stored_code(path, &cfg, p).is_some();
+        missing += (!has) as usize;
+        println!(
+            "  {:<28} {:<12} {:<16} {}",
+            p.name,
+            cfg.ip4(p.index),
+            cfg.ip6(p.index).map(|a| a.to_string()).unwrap_or_default(),
+            if has { "Code: kvpn-server code \"…\"" } else { "Code nur auf dem Geraet" }
+        );
     }
+    if missing > 0 {
+        println!("\nCode wieder anzeigen geht fuer Geraete, die vor Version 1.0.1 angelegt wurden, nur vom Geraet aus:");
+        println!("  Android-App: \"Code anzeigen\" · Windows: KroneVPN.exe --code · danach hier: kvpn-server import '<code>'");
+    }
+}
+
+fn find_peer(cfg: &Config, name: &str) -> Option<Peer> {
+    let n = name.trim().trim_matches('"');
+    cfg.peers.iter().find(|p| p.name.eq_ignore_ascii_case(n)).cloned()
+}
+
+fn cmd_code(path: &str, name: &str) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    if name.trim().is_empty() {
+        println!("Aufruf: kvpn-server code \"<name>\"\n");
+        cmd_list(path);
+        return;
+    }
+    let Some(p) = find_peer(&cfg, name) else { die(format!("kein Geraet '{name}' (siehe kvpn-server list)")) };
+    match config::stored_code(path, &cfg, &p) {
+        Some(code) => {
+            println!("{}", qr(&code));
+            println!("{}: Verbindungscode fuer '{}' (geheim halten):\n\n{code}\n", cfg.display_name(), p.name);
+        }
+        None => die(format!(
+            "fuer '{}' ist kein Code gespeichert (vor Version 1.0.1 angelegt).\n\
+             Den Code gibt es noch auf dem Geraet: Android-App \"Code anzeigen\", Windows: KroneVPN.exe --code\n\
+             Dann hier merken: kvpn-server import '<code>'   – oder neu anlegen: remove + add",
+            p.name
+        )),
+    }
+}
+
+fn cmd_import(path: &str, code: &str) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let c = kvpn::code::ClientConfig::from_code(code.trim()).unwrap_or_else(|e| die(e));
+    let k = c.client_key().unwrap_or_else(|e| die(e));
+    let pubk = kvpn::code::key_to_b64(&kvpn::crypto::public_from_private(&k));
+    let Some(p) = cfg.peers.iter().find(|p| p.public_key == pubk) else {
+        die("dieser Code gehoert zu keinem Geraet dieses Servers (entfernt oder anderer Server)")
+    };
+    config::store_key(path, p, &k).unwrap_or_else(|e| die(e));
+    println!("Code fuer '{}' gemerkt – anzeigen mit: kvpn-server code \"{}\"", p.name, p.name);
+}
+
+/// App-Update von GitHub freigeben: erst zeigen, dann (nach Bestaetigung) laden, pruefen und verteilen
+fn cmd_update(path: &str, args: &[String]) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let yes = args.iter().any(|a| a == "--ja" || a == "-y" || a == "--yes");
+    let off = updates::offered(&cfg).map(|m| m.version);
+    println!("{}: Apps fuer die Geraete kommen von GitHub ({}, Zweig {})", cfg.display_name(), cfg.update_repo, cfg.update_branch);
+    println!("  an die Geraete verteilt: {}", off.clone().unwrap_or_else(|| "noch keine".into()));
+    let found = match updates::check(&cfg) {
+        Ok(f) => f,
+        Err(e) => die(e),
+    };
+    let Some((m, text, sig)) = found else {
+        println!("  auf GitHub: nichts Neueres – alles aktuell.");
+        return;
+    };
+    updates::remember(&cfg, &text, &sig);
+    let files: Vec<String> = m.files.iter().map(|(os, f)| format!("{os} {} KB", f.size / 1024)).collect();
+    println!("  auf GitHub: Version {} ({}) – Signatur gueltig", m.version, files.join(", "));
+    if !yes {
+        print!("\nVersion {} jetzt an die Geraete verteilen? (j/n) ", m.version);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut a = String::new();
+        let _ = std::io::stdin().read_line(&mut a);
+        if !a.trim().to_lowercase().starts_with(['j', 'y']) {
+            println!("Nicht verteilt. Spaeter: kvpn-server update");
+            return;
+        }
+    }
+    match updates::approve(&cfg, &|m| println!("  {m}")) {
+        Ok(v) => println!(
+            "\nVersion {v} ist freigegeben. Verbundene Geraete (ab App-Version 1.0.1) bekommen sie in den naechsten Sekunden,\n\
+             alle anderen beim naechsten Verbinden. Aeltere Apps (1.0.0) einmal von Hand aktualisieren."
+        ),
+        Err(e) => die(e),
+    }
+}
+
+/// neuen Signier-Schluessel fuer Updates (nur beim Bauen noetig, gehoert NICHT auf den Server)
+fn cmd_update_keygen(args: &[String]) {
+    let (Some(k), Some(p)) = (args.first(), args.get(1)) else { die("Aufruf: kvpn-server update-keygen <schluessel.pk8> <update-key.pub>") };
+    if std::path::Path::new(k).exists() {
+        die(format!("{k} gibt es schon"));
+    }
+    let (pk8, pubhex) = kvpn::update::keygen().unwrap_or_else(|e| die(e));
+    if let Some(d) = std::path::Path::new(k).parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    std::fs::write(k, &pk8).unwrap_or_else(|e| die(format!("{k}: {e}")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(k, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::write(p, &pubhex).unwrap_or_else(|e| die(format!("{p}: {e}")));
+    println!("Signier-Schluessel: {k} (geheim, sicher aufbewahren)\noeffentlicher Schluessel: {p} = {pubhex}");
+}
+
+/// update.json fuer die gebauten Apps in <dist> erzeugen und signieren
+fn cmd_update_sign(args: &[String]) {
+    let (Some(k), Some(dist)) = (args.first(), args.get(1)) else { die("Aufruf: kvpn-server update-sign <schluessel.pk8> <dist-ordner>") };
+    let pk8 = std::fs::read(k).unwrap_or_else(|e| die(format!("{k}: {e}")));
+    let mut files = std::collections::BTreeMap::new();
+    for (os, name) in [("android", "KroneVPN.apk"), ("windows", "KroneVPN.exe"), ("linux", "kronevpn-linux")] {
+        let f = std::path::Path::new(dist).join(name);
+        if let Ok(data) = std::fs::read(&f) {
+            files.insert(os.to_string(), kvpn::update::FileEntry { name: name.into(), size: data.len() as u64, sha256: kvpn::update::sha256_hex(&data) });
+        }
+    }
+    if files.is_empty() {
+        die(format!("keine Apps in {dist}"));
+    }
+    let version = std::env::var("KVPN_UPDATE_VERSION").unwrap_or_else(|_| kvpn::VERSION.to_string());
+    let manifest = serde_json::to_string_pretty(&kvpn::update::Manifest { version, files }).unwrap();
+    let (sig, pubhex) = kvpn::update::sign(&pk8, &manifest).unwrap_or_else(|e| die(e));
+    if pubhex != kvpn::update::PUBLIC_KEY_HEX.trim() {
+        die("Schluessel passt nicht zu kvpn/update-key.pub – die Apps wuerden das Update ablehnen (neu bauen?)");
+    }
+    kvpn::update::verify(&manifest, &sig).unwrap_or_else(|e| die(e));
+    let d = std::path::Path::new(dist);
+    std::fs::write(d.join("update.json"), &manifest).unwrap_or_else(|e| die(e));
+    std::fs::write(d.join("update.json.sig"), &sig).unwrap_or_else(|e| die(e));
+    println!("{}/update.json signiert", dist);
 }
 
 fn cmd_set(path: &str, args: &[String]) {

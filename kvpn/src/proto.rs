@@ -15,6 +15,10 @@ pub const REC_PACKET: u8 = 1;
 pub const REC_PING: u8 = 2;
 pub const REC_PONG: u8 = 3;
 pub const REC_PAD: u8 = 4;
+/// Client -> Server: Update-Datei ab Position senden ([position u32 BE])
+pub const REC_UPD_GET: u8 = 5;
+/// Server -> Client: Stueck der Update-Datei ([position u32 BE][daten])
+pub const REC_UPD_DATA: u8 = 6;
 
 /// maximale Groesse eines Klartext-Buendels
 pub const MAX_BUNDLE: usize = 60 * 1024;
@@ -36,6 +40,9 @@ pub struct Hello {
     pub tls_trusted: bool,
     #[serde(default)]
     pub via_proxy: bool,
+    /// Client kann sich selbst aktualisieren (ab 1.0.1)
+    #[serde(default)]
+    pub upd: bool,
 }
 
 /// Nutzdaten der zweiten Handshake-Nachricht (Server -> Client)
@@ -49,6 +56,16 @@ pub struct Welcome {
     pub ip6: String,
     pub dns: Vec<String>,
     pub mtu: u16,
+    /// neuere App-Version liegt auf dem Server bereit (signierte Liste, siehe update.rs)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upd: Option<UpdateOffer>,
+}
+
+/// Update-Angebot: Inhalt von update.json und dessen Ed25519-Signatur (Base64)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateOffer {
+    pub manifest: String,
+    pub sig: String,
 }
 
 /// Datensatz an ein Buendel anhaengen: [art u8][laenge u16 BE][daten]

@@ -6,6 +6,11 @@
 //!   --proxy host:port                 HTTP-Proxy erzwingen (sonst: Systemproxy, dann direkt)
 //!   --routes 10.0.0.0/8,...           nur diese Netze durch den Tunnel (Standard: alles)
 //!   --reset                           gespeicherten Code loeschen
+//!   --code                            gespeicherten Verbindungscode + QR-Code anzeigen (z. B. fuers Handy)
+//!   --kein-update                     nicht automatisch aktualisieren
+//!
+//! Neue Versionen kommen automatisch ueber die VPN-Verbindung (signiert, siehe kvpn::update): das Programm
+//! ersetzt sich selbst und startet neu.
 
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(windows, path = "windows.rs")]
@@ -32,23 +37,27 @@ pub struct Args {
     pub routes: Option<Vec<String>>,
     pub test: bool,
     pub reset: bool,
+    pub show_code: bool,
+    pub no_update: bool,
     pub config: Option<PathBuf>,
     pub tun: String,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, config: None, tun: "kvpn-c0".into() };
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, config: None, tun: "kvpn-c0".into() };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
             "--test" | "--selftest" => a.test = true,
             "--reset" => a.reset = true,
+            "--code" | "--zeige-code" => a.show_code = true,
+            "--kein-update" | "--no-update" => a.no_update = true,
             "--proxy" => a.proxy = it.next(),
             "--routes" => a.routes = it.next().map(|r| r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--config" => a.config = it.next().map(PathBuf::from),
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--config datei]", kvpn::VERSION);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--config datei]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
@@ -143,9 +152,64 @@ fn ways(a: &Args, cfg: &ClientConfig) -> Vec<Option<Proxy>> {
     }
 }
 
+fn qr(text: &str) -> String {
+    match qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L) {
+        Ok(c) => c
+            .render::<qrcode::render::unicode::Dense1x2>()
+            .dark_color(qrcode::render::unicode::Dense1x2::Light)
+            .light_color(qrcode::render::unicode::Dense1x2::Dark)
+            .quiet_zone(true)
+            .build(),
+        Err(_) => "(QR-Code zu gross)".into(),
+    }
+}
+
+/// Datei neben dem Programm: "<programm>.<endung>"
+fn beside_exe(ext: &str) -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let name = exe.file_name()?.to_string_lossy().to_string();
+    Some(exe.with_file_name(format!("{name}.{ext}")))
+}
+
+/// heruntergeladene neue Version an die Stelle des Programms setzen und neu starten
+fn apply_update(new: &std::path::Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let old = beside_exe("old").ok_or("Programmpfad unbekannt")?;
+    let _ = std::fs::remove_file(&old);
+    // ein laufendes Programm darf umbenannt (aber nicht ueberschrieben) werden – auch unter Windows
+    std::fs::rename(&exe, &old).map_err(|e| format!("{}: {e}", exe.display()))?;
+    if let Err(e) = std::fs::rename(new, &exe) {
+        let _ = std::fs::rename(&old, &exe);
+        return Err(format!("{}: {e}", exe.display()));
+    }
+    let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("kronevpn://")).collect();
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = std::process::Command::new(&exe).args(&args).exec();
+        Err(format!("Neustart: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::Command::new(&exe).args(&args).spawn().map_err(|e| format!("Neustart: {e}"))?;
+        std::process::exit(0)
+    }
+}
+
 fn main() {
     let a = parse_args();
+    // Rest eines Updates aufraeumen
+    if let Some(old) = beside_exe("old") {
+        let _ = std::fs::remove_file(old);
+    }
     let cfg = load_config(&a);
+    if a.show_code {
+        let code = cfg.to_code();
+        println!("{}", qr(&code));
+        println!("{} – Verbindungscode fuer '{}' (geheim halten):\n\n{code}\n", cfg.display_name(), cfg.name);
+        println!("Auf dem Server merken (dann geht dort 'kvpn-server code'):  kvpn-server import '<code>'");
+        pause_and_exit(0);
+    }
     let ways = ways(&a, &cfg);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(cores.clamp(2, 8)).enable_all().build().unwrap();
@@ -205,7 +269,30 @@ fn main() {
             let _ = kvpn::transport::preresolve(&dns, &w.host, w.port);
         }
         let p = plat::Platform::setup(&cfg, &a).unwrap_or_else(|e| die(e));
-        let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None };
+        // automatische Updates: neue Version kommt signiert ueber die Verbindung, wird neben das Programm gelegt
+        let (upd_tx, mut upd_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+        let updater = match (a.no_update, beside_exe("new")) {
+            (false, Some(target)) => Some(Arc::new(kvpn::update::Updater::new(move |r: kvpn::update::Ready| {
+                let tmp = target.with_extension("part");
+                let res = std::fs::write(&tmp, &r.data).and_then(|_| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+                    }
+                    std::fs::rename(&tmp, &target)
+                });
+                match res {
+                    Ok(()) => {
+                        println!("\rUpdate auf Version {} geladen und geprueft – starte neu ...                    ", r.version);
+                        let _ = upd_tx.send(target.clone());
+                    }
+                    Err(e) => println!("\rUpdate {} konnte nicht gespeichert werden: {e}", r.version),
+                }
+            }))),
+            _ => None,
+        };
+        let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None, update: updater.clone() };
         let tun_out = p.writer();
         let tun_in = p.take_reader();
         let st = status.clone();
@@ -218,8 +305,16 @@ fn main() {
             let (mut lrx, mut ltx) = (0u64, 0u64);
             let mut last_state = String::new();
             let mut last_err = String::new();
+            let mut upd_shown = String::new();
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Some(u) = &updater {
+                    let us = u.status();
+                    if !us.version.is_empty() && us.version != upd_shown && !us.done {
+                        println!("\rNeue Version {} verfuegbar – wird im Hintergrund geladen ({} KB)          ", us.version, us.size / 1024);
+                        upd_shown = us.version.clone();
+                    }
+                }
                 let rx = st.rx_bytes.load(Relaxed);
                 let tx = st.tx_bytes.load(Relaxed);
                 let state = st.state_name();
@@ -257,12 +352,21 @@ fn main() {
             }
         });
 
-        plat::wait_for_exit().await;
+        let update = tokio::select! {
+            _ = plat::wait_for_exit() => None,
+            f = upd_rx.recv() => f,
+        };
         println!("\nTrenne ...");
         let _ = stop_tx.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
         show.abort();
         p.cleanup();
         println!("Getrennt.");
+        if let Some(f) = update {
+            if let Err(e) = apply_update(&f) {
+                println!("Update konnte nicht eingespielt werden: {e} – bitte Programm neu starten");
+                pause_and_exit(1);
+            }
+        }
     });
 }

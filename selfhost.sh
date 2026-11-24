@@ -9,21 +9,25 @@
 #   bash selfhost.sh vpn.meine-domain.de --hinter-nginx
 #                                            es laeuft schon ein Webserver auf 443: VPN lauscht intern,
 #                                            der nginx-Ausschnitt wird angezeigt
+#   ... --docker                             Server als Docker-Compose-Container statt systemd-Dienst
+#   ... --systemd                            zurueck von Docker zum systemd-Dienst
 #
 # Danach Geraete anlegen:  kvpn-server add "Mein Handy"   (zeigt QR-Code und Verbindungscode)
 # Lokale Webseite (Statistik, Downloads) auf dem Server:  http://localhost:8180
 # Mehrfach aufrufen = aktualisieren (Schluessel und Geraete bleiben erhalten).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-DOMAIN=""; NGINX=0; NAME=""; BILD=""
+DOMAIN=""; NGINX=0; NAME=""; BILD=""; MODE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hinter-nginx|--behind-nginx) NGINX=1 ;;
+    --docker) MODE=docker ;;
+    --systemd) MODE=systemd ;;
     --name) NAME=${2:-}; shift ;;
     --name=*) NAME=${1#--name=} ;;
     --bild|--logo) BILD=${2:-}; shift ;;
     --bild=*|--logo=*) BILD=${1#*=} ;;
-    -h|--help) sed -n 2,15p "$0"; exit 0 ;;
+    -h|--help) sed -n 2,17p "$0"; exit 0 ;;
     -*) echo "Unbekannte Option: $1"; exit 2 ;;
     *) DOMAIN=$1 ;;
   esac
@@ -34,6 +38,15 @@ DL=${KVPN_DOWNLOADS:-/var/lib/krone-vpn/downloads}
 TEST=${KVPN_TEST:-}                          # nur fuer automatische Tests: kein systemd/certbot/Firewall
 [ -n "$TEST" ] || [ "$(id -u)" = 0 ] || { echo "Bitte als root starten (sudo bash selfhost.sh ...)"; exit 1; }
 say() { echo "== $*"; }
+ETC=$(dirname "$CFG")
+# Aktualisieren: bisherige Einrichtung beibehalten (Domain, hinter nginx, Docker), wenn nichts anderes angegeben ist
+if [ -f "$CFG" ]; then
+  OLDHOST=$(sed -n 's#^public_url = "wss://\[\{0,1\}\([^]/"]*\)\]\{0,1\}/.*#\1#p' "$CFG")
+  if [ -z "$DOMAIN" ] && [ -n "$OLDHOST" ] && ! [[ "$OLDHOST" =~ ^[0-9.:]+$ ]]; then DOMAIN=$OLDHOST; fi
+  if [ "$NGINX" = 0 ] && grep -q '^listen = "127\.0\.0\.1:' "$CFG" && grep -q '^tls_cert = ""' "$CFG"; then NGINX=1; fi
+fi
+if [ -z "$MODE" ]; then [ -f "$ETC/.docker" ] && MODE=docker || MODE=systemd; fi
+RESTART="systemctl restart krone-vpn"; [ "$MODE" = docker ] && RESTART="docker restart krone-vpn"
 
 say "1/6 Programm kvpn-server"
 ARCH=$(uname -m)
@@ -47,6 +60,7 @@ fi
 DEST=${KVPN_BIN:-/usr/local/bin/kvpn-server}
 install -m 755 "$BIN" "$DEST.new" && mv -f "$DEST.new" "$DEST"
 K() { "$DEST" --config "$CFG" "$@"; }
+sed "s#@REPO@#${KVPN_REPO:-Krone7891/VPN}#" deploy/kvpn-update > "$(dirname "$DEST")/kvpn-update"; chmod 755 "$(dirname "$DEST")/kvpn-update"
 echo "   $DEST $("$DEST" version)"
 
 say "2/6 Adresse und Zertifikat"
@@ -66,7 +80,7 @@ if [ "$NGINX" = 0 ]; then
   if [ -n "$DOMAIN" ] && ! [[ "$DOMAIN" =~ ^[0-9.:]+$ ]] && [ -z "$TEST" ]; then
     command -v certbot >/dev/null || { apt-get update -qq && apt-get install -y -qq certbot >/dev/null; } || true
     if command -v certbot >/dev/null && certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email \
-         --keep-until-expiring -d "$DOMAIN" --deploy-hook "systemctl restart krone-vpn" >/dev/null 2>&1; then
+         --keep-until-expiring -d "$DOMAIN" --deploy-hook "$RESTART" >/dev/null 2>&1; then
       CERT=/etc/letsencrypt/live/$DOMAIN/fullchain.pem; KEY=/etc/letsencrypt/live/$DOMAIN/privkey.pem
       echo "   Let's-Encrypt-Zertifikat fuer $DOMAIN (verlaengert sich automatisch)"
     else
@@ -107,6 +121,7 @@ K set listen "$LISTEN" >/dev/null
 K set tls_cert "$CERT" >/dev/null
 K set tls_key "$KEY" >/dev/null
 [ -n "$NAME" ] && K set vpn_name "$NAME" >/dev/null
+[ -n "${KVPN_REPO:-}" ] && K set update_repo "$KVPN_REPO" >/dev/null
 NAME=$(sed -n 's/^vpn_name = "\(.*\)"/\1/p' "$CFG"); NAME=${NAME:-KroneVPN}
 PWF=$(dirname "$CFG")/statistik-passwort.txt
 if ! grep -q '^stats_password = "..*"' "$CFG"; then
@@ -127,6 +142,7 @@ mkdir -p "$DL"; find "$DL" -maxdepth 1 -type f -delete
 K set downloads_dir "$DL" >/dev/null
 [ -n "${KVPN_STATE:-}" ] && K set state_dir "$KVPN_STATE" >/dev/null
 ls "$DL" | sed 's/^/   /'
+STATE=$(sed -n 's/^state_dir = "\(.*\)"/\1/p' "$CFG"); STATE=${STATE:-/var/lib/krone-vpn}
 if [ -n "$BILD" ]; then
   if [[ "$BILD" =~ ^https?:// ]]; then
     TMPB=$(mktemp); curl -fsSL -m 30 --max-filesize 2097152 -o "$TMPB" "$BILD" || { echo "   Bild nicht ladbar: $BILD"; TMPB=""; }
@@ -137,12 +153,43 @@ fi
 
 if [ -n "$TEST" ]; then echo "== Testmodus: kein systemd/Firewall"; exit 0; fi
 
-say "5/6 Dienst krone-vpn (systemd)"
-sed "s#/usr/local/bin/kvpn-server run#$DEST --config $CFG run#; s#^Description=.*#Description=$NAME (VPN ueber HTTPS/443)#" deploy/krone-vpn.service > /etc/systemd/system/krone-vpn.service
-systemctl daemon-reload
-systemctl enable krone-vpn >/dev/null 2>&1
-systemctl restart krone-vpn; sleep 1
-systemctl is-active --quiet krone-vpn && echo "   laeuft" || { journalctl -u krone-vpn -n 20 --no-pager; exit 1; }
+if [ "$MODE" = docker ]; then
+  say "5/6 Docker Compose (Container krone-vpn)"
+  if ! docker compose version >/dev/null 2>&1; then
+    echo "   installiere Docker (offizielles Skript get.docker.com) ..."
+    curl -fsSL https://get.docker.com | sh >/dev/null
+  fi
+  [ "$CFG" = /etc/krone-vpn/server.toml ] || { echo "   Docker geht nur mit /etc/krone-vpn/server.toml"; exit 1; }
+  # Weiterleitung auf dem Server selbst einschalten (aus dem Container heraus nicht erlaubt)
+  {
+    echo "net.ipv4.ip_forward = 1"; echo "net.ipv6.conf.all.forwarding = 1"
+    for f in /proc/sys/net/ipv6/conf/*/accept_ra; do
+      n=$(basename "$(dirname "$f")"); [ "$n" = all ] || [ "$n" = default ] || [ "$n" = lo ] && continue
+      [ "$(cat "$f")" = 1 ] && echo "net.ipv6.conf.$n.accept_ra = 2"
+    done
+  } > /etc/sysctl.d/90-krone-vpn.conf
+  sysctl -q -p /etc/sysctl.d/90-krone-vpn.conf || true
+  if systemctl is-enabled --quiet krone-vpn 2>/dev/null; then systemctl disable --now krone-vpn >/dev/null 2>&1; echo "   systemd-Dienst abgeschaltet (laeuft jetzt im Container)"; fi
+  CTX=$STATE/docker; mkdir -p "$CTX"
+  install -m 644 deploy/docker/Dockerfile deploy/docker/docker-compose.yml "$CTX/"
+  install -m 755 "$DEST" "$CTX/kvpn-server"
+  mkdir -p /etc/letsencrypt
+  docker compose -f "$CTX/docker-compose.yml" -p krone-vpn up -d --build --force-recreate 2>&1 | tail -3 | sed 's/^/   /'
+  sleep 2
+  docker ps --filter name=^krone-vpn$ --filter status=running -q | grep -q . && echo "   laeuft (docker logs -f krone-vpn)" || { docker logs --tail 20 krone-vpn; exit 1; }
+  touch "$ETC/.docker"
+else
+  say "5/6 Dienst krone-vpn (systemd)"
+  if [ -f "$ETC/.docker" ]; then
+    docker compose -f "$STATE/docker/docker-compose.yml" -p krone-vpn down >/dev/null 2>&1 || docker rm -f krone-vpn >/dev/null 2>&1 || true
+    rm -f "$ETC/.docker"; echo "   Docker-Container entfernt (laeuft jetzt als systemd-Dienst)"
+  fi
+  sed "s#/usr/local/bin/kvpn-server run#$DEST --config $CFG run#; s#^Description=.*#Description=$NAME (VPN ueber HTTPS/443)#" deploy/krone-vpn.service > /etc/systemd/system/krone-vpn.service
+  systemctl daemon-reload
+  systemctl enable krone-vpn >/dev/null 2>&1
+  systemctl restart krone-vpn; sleep 1
+  systemctl is-active --quiet krone-vpn && echo "   laeuft" || { journalctl -u krone-vpn -n 20 --no-pager; exit 1; }
+fi
 
 say "6/6 Firewall"
 if [ "$NGINX" = 0 ]; then
@@ -167,3 +214,5 @@ echo "Apps fuer Geraete:  https://$URLHOST/download/"
 echo "Statistik:          https://$URLHOST$SP   (Passwort: $(cat "$PWF" 2>/dev/null || echo "siehe stats_password in $CFG"))"
 [ -n "$LOCAL" ] && echo "Lokal auf dem Server (ohne Passwort):  http://localhost:${LOCAL##*:}/   ·   vom PC aus: ssh -L ${LOCAL##*:}:localhost:${LOCAL##*:} root@$HOST  und dann  http://localhost:${LOCAL##*:}/"
 echo "Pruefen am PC:      \"$NAME.exe\" --test"
+[ "$MODE" = docker ] && echo "Docker:             docker logs -f krone-vpn   ·   docker restart krone-vpn"
+echo "Aktualisieren:      kvpn-update   (Server von GitHub)  ·  Apps an die Geraete verteilen: kvpn-server update (mit Freigabe)"

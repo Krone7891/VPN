@@ -73,6 +73,23 @@ impl Shared {
         sh
     }
 
+    /// verbundene Geraete mit aelterer App neu verbinden lassen (bekommen dabei das Update angeboten)
+    pub fn kick_outdated(&self, m: &kvpn::update::Manifest) -> usize {
+        let peers = self.peers.read().unwrap();
+        let sessions = self.sessions.lock().unwrap();
+        let mut n = 0;
+        for (k, p) in peers.iter() {
+            let i = p.stats.info.lock().unwrap().clone();
+            if i.upd && m.files.contains_key(&i.os) && kvpn::update::newer(&m.version, &i.ver) {
+                if let Some((_, kick)) = sessions.get(k) {
+                    kick.notify_one();
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     pub fn cfg(&self) -> Arc<Config> {
         self.cfg.read().unwrap().clone()
     }
@@ -241,7 +258,9 @@ where
         lt.insert(cpub, hello.ts);
     }
     let cfg = sh.cfg();
-    let welcome = cfg.welcome(&prt.peer);
+    let mut welcome = cfg.welcome(&prt.peer);
+    let upd = if hello.upd { update_offer(&cfg, &hello.os, &hello.ver) } else { None };
+    welcome.upd = upd.as_ref().map(|u| u.offer.clone());
     let (m2, mut sealer, mut opener) = match crypto::server_reply(hs, &welcome) {
         Ok(v) => v,
         Err(e) => {
@@ -281,6 +300,7 @@ where
         tls_issuer: hello.tls_issuer.clone(),
         tls_trusted: hello.tls_trusted,
         via_proxy: hello.via_proxy,
+        upd: hello.upd,
     };
     let inspect = if !hello.tls_issuer.is_empty() && !hello.tls_trusted {
         format!(" – TLS-Zertifikat nicht oeffentlich vertrauenswuerdig (Aussteller: {}) – HTTPS-Inspektion?", hello.tls_issuer)
@@ -331,8 +351,13 @@ where
         }
     });
 
+    if let Some(u) = &upd {
+        log!("{}: Update {} -> {} angeboten", prt.peer.name, hello.ver, u.version);
+    }
     let st_rx = st.clone();
     let tun = sh.tuns[(sid as usize) % sh.tuns.len()].clone();
+    let upd_sending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let peer_name = prt.peer.name.clone();
     let mut receiver = tokio::spawn(async move {
         loop {
             let msg = match tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
@@ -370,6 +395,14 @@ where
                     push_record(&mut b, REC_PONG, &data[..8]);
                     let _ = ctrl_tx.try_send(b);
                 }
+                REC_UPD_GET if data.len() >= 4 => {
+                    if let Some(u) = &upd {
+                        if !upd_sending.swap(true, Relaxed) {
+                            let from = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
+                            tokio::spawn(send_update(u.path.clone(), u.version.clone(), from, ctrl_tx.clone(), peer_name.clone()));
+                        }
+                    }
+                }
                 _ => {}
             });
             if ok.is_err() {
@@ -405,15 +438,98 @@ where
     log!("{}: getrennt ({why}) nach {} s", prt.peer.name, started.elapsed().as_secs());
 }
 
+// ------------------------------------------------------------------------------------------------ Updates
+
+struct UpdFile {
+    offer: kvpn::proto::UpdateOffer,
+    path: std::path::PathBuf,
+    version: String,
+}
+
+/// neuere App fuer dieses Geraet? Liegt in <state_dir>/update (update.json + update.json.sig + Dateien)
+fn update_offer(cfg: &Config, os: &str, ver: &str) -> Option<UpdFile> {
+    let dir = std::path::Path::new(&cfg.state_dir).join("update");
+    let manifest = std::fs::read_to_string(dir.join("update.json")).ok()?;
+    let sig = std::fs::read_to_string(dir.join("update.json.sig")).ok()?;
+    let m = match kvpn::update::verify(&manifest, &sig) {
+        Ok(m) => m,
+        Err(e) => {
+            log!("Update in {}: {e}", dir.display());
+            return None;
+        }
+    };
+    if !kvpn::update::newer(&m.version, ver) {
+        return None;
+    }
+    let f = m.files.get(os)?;
+    if f.name.contains(['/', '\\']) || f.name.starts_with('.') {
+        return None;
+    }
+    let path = dir.join(&f.name);
+    match std::fs::metadata(&path) {
+        Ok(md) if md.len() == f.size => {}
+        _ => {
+            log!("Update {}: {} fehlt oder hat die falsche Groesse", m.version, path.display());
+            return None;
+        }
+    }
+    Some(UpdFile { offer: kvpn::proto::UpdateOffer { manifest, sig }, path, version: m.version })
+}
+
+/// Update-Datei stueckweise ueber die Verbindung senden (Gegendruck ueber den Steuer-Kanal; endet mit der Verbindung)
+async fn send_update(path: std::path::PathBuf, version: String, from: usize, ctrl: mpsc::Sender<Vec<u8>>, name: String) {
+    let Ok(data) = tokio::fs::read(&path).await else { return };
+    let mut off = from.min(data.len());
+    while off < data.len() {
+        let end = (off + kvpn::update::CHUNK).min(data.len());
+        let mut rec = Vec::with_capacity(end - off + 4);
+        rec.extend_from_slice(&(off as u32).to_be_bytes());
+        rec.extend_from_slice(&data[off..end]);
+        let mut b = Vec::with_capacity(rec.len() + 16);
+        push_record(&mut b, REC_UPD_DATA, &rec);
+        if ctrl.send(b).await.is_err() {
+            return;
+        }
+        off = end;
+    }
+    log!("{name}: Update {version} uebertragen ({} KB)", (data.len() - from.min(data.len())) / 1024);
+}
+
 // ------------------------------------------------------------------------------------------------ Hintergrund
 
 /// jede Sekunde: Raten und Verlauf; jede Minute speichern; alle 3 s Konfiguration auf Aenderungen pruefen
 pub fn spawn_background(sh: &Arc<Shared>) {
+    // alle 6 Stunden bei GitHub nach einer neuen App-Version schauen – nur vormerken und melden, nicht verteilen
+    let s2 = sh.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let mut told = String::new();
+        loop {
+            let cfg = s2.cfg();
+            if cfg.update_check {
+                let c = cfg.clone();
+                match tokio::task::spawn_blocking(move || crate::updates::check(&c)).await {
+                    Ok(Ok(Some((m, text, sig)))) => {
+                        crate::updates::remember(&cfg, &text, &sig);
+                        if told != m.version {
+                            log!("Neue App-Version {} auf GitHub ({}) – an die Geraete verteilen mit: kvpn-server update", m.version, cfg.update_repo);
+                            told = m.version;
+                        }
+                    }
+                    Ok(Err(e)) => log!("Update-Pruefung bei GitHub: {e}"),
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
+        }
+    });
     let s = sh.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut n = 0u64;
         let mut mtime = std::fs::metadata(&s.cfg_path).and_then(|m| m.modified()).ok();
+        let upd_file = |s: &Shared| crate::updates::dir(&s.cfg()).join("update.json");
+        let mut upd_mtime = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();
         loop {
             tick.tick().await;
             n += 1;
@@ -440,6 +556,15 @@ pub fn spawn_background(sh: &Arc<Shared>) {
                 if m != mtime {
                     mtime = m;
                     s.reload();
+                }
+                // neue App-Version freigegeben: Geraete mit aelterer Version kurz neu verbinden lassen -> Angebot
+                let um = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();
+                if um != upd_mtime {
+                    upd_mtime = um;
+                    if let Some(m) = crate::updates::offered(&s.cfg()) {
+                        let n = s.kick_outdated(&m);
+                        log!("App-Update {} freigegeben – {n} Geraet(e) bekommen es jetzt", m.version);
+                    }
                 }
             }
         }

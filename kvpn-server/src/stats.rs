@@ -13,6 +13,8 @@ pub struct SessInfo {
     pub tls_issuer: String,
     pub tls_trusted: bool,
     pub via_proxy: bool,
+    /// App kann sich selbst aktualisieren
+    pub upd: bool,
 }
 
 /// Zaehler eines Geraets (bleiben ueber Neuverbindungen erhalten). rx = vom Geraet, tx = zum Geraet.

@@ -1,0 +1,23 @@
+# VPN-Server mit Docker Compose (selfhost.sh --docker richtet das ein).
+# Das Netz des Servers wird direkt benutzt (network_mode: host): Port 443, TUN-Geraet und NAT-Regeln wie ohne Docker.
+# Geraete verwalten wie gewohnt auf dem Server: kvpn-server add "Name" (der Container uebernimmt es sofort).
+services:
+  vpn:
+    build: .
+    image: krone-vpn:latest
+    container_name: krone-vpn
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /etc/krone-vpn:/etc/krone-vpn
+      - /var/lib/krone-vpn:/var/lib/krone-vpn
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

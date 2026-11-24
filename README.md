@@ -31,11 +31,16 @@ Danach:
 | Was | Wo |
 |---|---|
 | Gerät anlegen | `kvpn-server add "Laptop"` – zeigt QR-Code und Verbindungscode |
+| Code wieder anzeigen | `kvpn-server code "Laptop"` (oder lokal auf `http://localhost:8180`) |
+| Server aktualisieren | `kvpn-update` |
+| **Apps aktualisieren** | `kvpn-server update` – neue Version von GitHub, **erst nach deiner Freigabe** an die Geräte |
 | Apps mit deinem Namen | `https://<dein-server>/download/` → `Potzplitz VPN.apk`, `Potzplitz VPN.exe`, … |
 | Statistik | `https://<dein-server>/stats` (Passwort steht in `/etc/krone-vpn/statistik-passwort.txt`) |
 | **Lokal auf dem Server** | **`http://localhost:8180`** – Statistik, Downloads, **eigenes Bild hochladen** (ohne Passwort, nur lokal) |
 
-Alles Weitere (Domain/ohne Domain, hinter nginx, Bild, Wartung): **[SELBST-HOSTEN.md](SELBST-HOSTEN.md)**
+Als **Docker-Compose**-Container: beim Setup mit `--docker` (oder die Frage mit „j“ beantworten).
+
+Alles Weitere (Domain/ohne Domain, hinter nginx, Docker, Updates, Bild, Wartung): **[SELBST-HOSTEN.md](SELBST-HOSTEN.md)**
 
 ## Apps
 
@@ -58,6 +63,14 @@ Verbindungscode eingefügt ist, und dürfen beliebig umbenannt werden.
   trotzdem und bleibt sicher, weil der Server-Schlüssel fest im Verbindungscode steht.
 - **Firmen-Proxy** wird automatisch genutzt (Windows-Internetoptionen, Android-WLAN-Proxy) oder per `--proxy`.
 
+## Automatische Updates
+
+Die Apps aktualisieren sich selbst – aber **nur mit Versionen von GitHub, die du auf dem Server freigegeben hast**:
+Der Server meldet eine neue Version (`dist/update.json` im Repo), du gibst sie mit `kvpn-server update` frei, er lädt
+und prüft sie und schickt sie über die verschlüsselte VPN-Verbindung an die Geräte. Die Update-Liste ist mit Ed25519
+signiert (Schlüssel nur beim Bauen, nie auf dem Server); die Apps prüfen Signatur und SHA-256 selbst. Windows/Linux
+ersetzen sich und starten neu, Android installiert die neue APK (ab Android 12 ohne Rückfrage).
+
 ## Sicherheit
 
 - Innen Noise IK (wie WireGuard): jedes Gerät eigener Schlüssel, fremde Schlüssel bekommen keine Antwort,
@@ -75,7 +88,7 @@ Verbindungscode eingefügt ist, und dürfen beliebig umbenannt werden.
 | `kvpn-server/` | Server (Linux): Multi-Queue-TUN (mehrere Kerne), NAT, Geräte, Statistik, Downloads, Bild |
 | `kronevpn/` | Client für Windows (Wintun) und Linux |
 | `kvpn-android/`, `android/` | JNI-Bibliothek und Android-App (VpnService), Bau ohne Gradle |
-| `deploy/` | systemd-Dienst, nginx-Ausschnitte |
+| `deploy/` | systemd-Dienst, Docker Compose, nginx-Ausschnitte, `kvpn-update` |
 | `tools/set-icon.py` | eigenes Bild als App-Symbol für den eigenen Build |
 | `tests/` | End-to-End-Tests mit simulierter Firmen-Firewall |
 

@@ -12,7 +12,7 @@ use kvpn::client::{self, ClientOptions, Status};
 use kvpn::code::ClientConfig;
 use kvpn::fdtun::{self, FdTun};
 use kvpn::transport::parse_proxy;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -33,6 +33,9 @@ struct Handle {
     stop: watch::Sender<bool>,
     status: Arc<Status>,
     kick: Arc<Notify>,
+    updater: Arc<kvpn::update::Updater>,
+    /// fertig geladene und gepruefte APK (Pfad, Version) – die App installiert sie
+    update_file: Arc<Mutex<(String, String)>>,
     task: tokio::task::JoinHandle<()>,
     reader: tokio::task::JoinHandle<()>,
 }
@@ -58,9 +61,17 @@ pub extern "system" fn Java_de_krone_vpn_Native_parse<'l>(mut env: JNIEnv<'l>, _
 
 /// Tunnel starten. `fd` gehoert ab jetzt Rust (detachFd). Liefert Handle (0 = Fehler).
 #[no_mangle]
-pub extern "system" fn Java_de_krone_vpn_Native_start<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, fd: jint, code: JString<'l>, sys_proxy: JString<'l>) -> jlong {
+pub extern "system" fn Java_de_krone_vpn_Native_start<'l>(
+    mut env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    fd: jint,
+    code: JString<'l>,
+    sys_proxy: JString<'l>,
+    update_dir: JString<'l>,
+) -> jlong {
     let code = jstr(&mut env, &code);
     let sys_proxy = jstr(&mut env, &sys_proxy);
+    let update_dir = jstr(&mut env, &update_dir);
     let Ok(cfg) = ClientConfig::from_code(&code) else {
         unsafe { libc_close(fd) };
         return 0;
@@ -85,9 +96,31 @@ pub extern "system" fn Java_de_krone_vpn_Native_start<'l>(mut env: JNIEnv<'l>, _
     let status = Arc::new(Status::default());
     let (stop, stop_rx) = watch::channel(false);
     let kick = Arc::new(Notify::new());
-    let opts = ClientOptions { routes: ways, protect: None, dns: kvpn::transport::new_dns_cache(), reconnect: Some(kick.clone()), on_connected: None };
+    // Updates: signierte APK kommt ueber die VPN-Verbindung und wird hier abgelegt
+    let update_file = Arc::new(Mutex::new((String::new(), String::new())));
+    let uf = update_file.clone();
+    let updater = Arc::new(kvpn::update::Updater::new(move |r: kvpn::update::Ready| {
+        if update_dir.is_empty() {
+            return;
+        }
+        let dir = std::path::Path::new(&update_dir);
+        let _ = std::fs::create_dir_all(dir);
+        let tmp = dir.join("update.part");
+        let dst = dir.join("update.apk");
+        if std::fs::write(&tmp, &r.data).and_then(|_| std::fs::rename(&tmp, &dst)).is_ok() {
+            *uf.lock().unwrap() = (dst.to_string_lossy().to_string(), r.version);
+        }
+    }));
+    let opts = ClientOptions {
+        routes: ways,
+        protect: None,
+        dns: kvpn::transport::new_dns_cache(),
+        reconnect: Some(kick.clone()),
+        on_connected: None,
+        update: Some(updater.clone()),
+    };
     let task = rt.spawn(client::run(cfg, opts, rx, tun, status.clone(), stop_rx));
-    Box::into_raw(Box::new(Handle { stop, status, kick, task, reader })) as jlong
+    Box::into_raw(Box::new(Handle { stop, status, kick, updater, update_file, task, reader })) as jlong
 }
 
 unsafe fn libc_close(fd: jint) {
@@ -127,7 +160,34 @@ pub extern "system" fn Java_de_krone_vpn_Native_status<'l>(mut env: JNIEnv<'l>, 
         return out(&mut env, "{\"state\":\"stopped\"}");
     }
     let h = unsafe { &*(h as *const Handle) };
-    let s = h.status.to_json();
+    let mut j: serde_json::Value = serde_json::from_str(&h.status.to_json()).unwrap_or_default();
+    let (file, ver) = h.update_file.lock().unwrap().clone();
+    if let Some(o) = j.as_object_mut() {
+        o.insert("update".into(), serde_json::to_value(h.updater.status()).unwrap_or_default());
+        o.insert("update_file".into(), file.into());
+        o.insert("update_version".into(), ver.into());
+    }
+    out(&mut env, &j.to_string())
+}
+
+/// QR-Code als Text: erste Zeile Breite, dann je Zeile '1' (schwarz) / '0' (weiss)
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_qr<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, text: JString<'l>) -> jstring {
+    let t = jstr(&mut env, &text);
+    let s = match qrcode::QrCode::with_error_correction_level(t.as_bytes(), qrcode::EcLevel::L) {
+        Ok(c) => {
+            let w = c.width();
+            let mut s = format!("{w}\n");
+            for (i, m) in c.to_colors().iter().enumerate() {
+                s.push(if *m == qrcode::Color::Dark { '1' } else { '0' });
+                if (i + 1) % w == 0 {
+                    s.push('\n');
+                }
+            }
+            s
+        }
+        Err(_) => String::new(),
+    };
     out(&mut env, &s)
 }
 

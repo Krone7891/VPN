@@ -9,7 +9,11 @@ import android.net.Network;
 import android.net.ProxyInfo;
 import android.net.VpnService;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+
+import java.io.File;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -87,7 +91,9 @@ public class KroneVpnService extends VpnService {
                 return;
             }
             int fd = pfd.detachFd();
-            handle = Native.start(fd, code, systemProxy());
+            File upd = new File(getCacheDir(), "update");
+            new File(upd, "update.apk").delete(); // Rest eines frueheren Updates
+            handle = Native.start(fd, code, systemProxy(), upd.getAbsolutePath());
             if (handle == 0) {
                 lastError = "Tunnel konnte nicht gestartet werden";
                 stopSelf();
@@ -96,11 +102,31 @@ public class KroneVpnService extends VpnService {
             lastError = "";
             prefs(this).edit().putBoolean("on", true).apply();
             watchNetwork();
+            timer.removeCallbacks(checkUpdate);
+            timer.postDelayed(checkUpdate, 5000);
         } catch (Exception e) {
             lastError = "Fehler: " + e.getMessage();
             stopSelf();
         }
     }
+
+    private final Handler timer = new Handler(Looper.getMainLooper());
+
+    /** alle 5 s: liegt eine fertig geladene, gepruefte neue Version bereit? -> installieren */
+    private final Runnable checkUpdate = new Runnable() {
+        @Override
+        public void run() {
+            long h = handle;
+            if (h == 0) return;
+            try {
+                JSONObject j = new JSONObject(Native.status(h));
+                String f = j.optString("update_file", "");
+                if (!f.isEmpty()) Updater.install(KroneVpnService.this, f, j.optString("update_version", ""), false);
+            } catch (Exception ignored) {
+            }
+            timer.postDelayed(this, 5000);
+        }
+    };
 
     /** Proxy des Netzes (z. B. Firmen-WLAN mit Sophos-Proxy) als "host:port" */
     private String systemProxy() {
@@ -134,6 +160,7 @@ public class KroneVpnService extends VpnService {
     }
 
     private synchronized void stopTunnel() {
+        timer.removeCallbacks(checkUpdate);
         if (netCb != null) {
             try {
                 getSystemService(ConnectivityManager.class).unregisterNetworkCallback(netCb);

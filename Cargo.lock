@@ -467,25 +467,27 @@ dependencies = [
 
 [[package]]
 name = "kronevpn"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "embed-resource",
  "kvpn",
  "libc",
  "mimalloc",
+ "qrcode",
  "tokio",
  "wintun",
 ]
 
 [[package]]
 name = "kvpn"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64",
  "chacha20poly1305",
  "futures-util",
  "libc",
  "rand 0.9.5",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -499,17 +501,18 @@ dependencies = [
 
 [[package]]
 name = "kvpn-android"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "jni",
  "kvpn",
+ "qrcode",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "kvpn-server"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "futures-util",
  "kvpn",

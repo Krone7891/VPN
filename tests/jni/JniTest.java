@@ -9,7 +9,7 @@ public class JniTest {
         System.out.println("version=" + Native.version());
         System.out.println("parse=" + Native.parse(code));
         System.out.println("parse(falsch)=" + Native.parse("hallo"));
-        long h = Native.start(fd, code, "");
+        long h = Native.start(fd, code, "", "");
         System.out.println("handle=" + (h != 0));
         String st = "";
         for (int i = 0; i < 100 && !st.contains("\"connected\""); i++) { Thread.sleep(100); st = Native.status(h); }
