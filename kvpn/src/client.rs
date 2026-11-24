@@ -148,6 +148,7 @@ pub async fn connect_once_with(
         tls_trusted: info.tls_trusted,
         via_proxy: info.via_proxy,
         upd,
+        ciphers: vec![crate::proto::CIPHER_AES256.to_string()],
     };
     let (hs, m1) = crypto::client_init(&cfg.client_key()?, &cfg.server_key()?, &hello).map_err(|e| e.to_string())?;
     ws.send(Message::Binary(m1.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;

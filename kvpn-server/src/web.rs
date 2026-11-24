@@ -378,7 +378,7 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
             let total = h.persist.total.get(&p.peer.name).copied().unwrap_or([0, 0]);
             let spark: Vec<u64> = st.spark.lock().unwrap().iter().map(|(r, t)| r + t).collect();
             json!({
-                "name": p.peer.name, "index": p.peer.index,
+                "name": p.peer.name, "index": p.peer.index, "user": p.peer.user,
                 "ip4": cfg.ip4(p.peer.index).to_string(),
                 "ip6": cfg.ip6(p.peer.index).map(|a| a.to_string()).unwrap_or_default(),
                 "online": since > 0, "since": since,
@@ -417,6 +417,8 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
             "tun_drops": sh.tun_drops.load(Relaxed),
             "load": std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().map(String::from)).unwrap_or_default(),
         },
+        "inactive": cfg.inactive.iter().map(|p| json!({"name": p.name, "user": p.user, "ip4": cfg.ip4(p.index).to_string()})).collect::<Vec<_>>(),
+        "settings": {"users": cfg.users, "aes256": cfg.aes256, "performance": cfg.performance},
         "max_peers": cfg.max_devices,
         "max_possible": cfg.capacity().unwrap_or(0),
         "update": {

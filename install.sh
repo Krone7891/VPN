@@ -15,7 +15,13 @@
 #   --geraet "Name"      gleich ein Geraet anlegen (mehrfach moeglich)
 #   --hinter-nginx       es laeuft schon ein Webserver auf 443
 #   --docker             Server als Docker-Compose-Container (statt systemd-Dienst); --systemd = zurueck
-#   --ja                 keine Rueckfragen (Standardwerte)
+#   --benutzer an|aus    Benutzerverwaltung (SQLite; Standard an)
+#   --aes256 an|aus      AES-256-GCM statt ChaCha20 fuer die Daten (Standard aus)
+#   --leistung an|aus    Leistungsmodus: alle CPU-Kerne (Standard aus)
+#   --max <anzahl>       hoechstens so viele Geraete (Standard 8)
+#   --ja                 keine Rueckfragen (Standardwerte bzw. bisherige Einstellungen)
+# Ohne --ja wird bei jedem Lauf nach den Einstellungen gefragt (Enter = so lassen) – das Skript kann also jederzeit
+# erneut laufen, um etwas umzustellen.
 # Erneut ausfuehren = aktualisieren (Schluessel und Geraete bleiben erhalten), kurz:  kvpn-update
 #
 # Privates GitHub-Repo: mit einem Zugangsschluessel (github.com/settings/tokens, Recht "Contents: read"):
@@ -33,7 +39,7 @@ else
   TARBALL=${KVPN_TARBALL:-https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz}
 fi
 SRC=${KVPN_SRC:-/opt/kronevpn}
-NAME=""; DOMAIN=""; BILD=""; NGINX=""; MODE=""; YES=""; DEVICES=()
+NAME=""; DOMAIN=""; BILD=""; NGINX=""; MODE=""; YES=""; DEVICES=(); SETS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --name) NAME=${2:-}; shift ;;
@@ -43,8 +49,9 @@ while [ $# -gt 0 ]; do
     --hinter-nginx|--behind-nginx) NGINX=--hinter-nginx ;;
     --docker) MODE=--docker ;;
     --systemd) MODE=--systemd ;;
+    --benutzer|--aes256|--leistung|--max) SETS+=("$1" "${2:-}"); shift ;;
     --ja|-y|--yes) YES=1 ;;
-    -h|--help) sed -n 2,20p "$0" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n 2,25p "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Unbekannte Option: $1 (Hilfe: --help)"; exit 2 ;;
   esac
   shift
@@ -107,6 +114,7 @@ fi
 
 # ---- einrichten
 ARGS=(--name "$NAME"); [ -n "$DOMAIN" ] && ARGS+=("$DOMAIN"); [ -n "$BILD" ] && ARGS+=(--bild "$BILD"); [ -n "$NGINX" ] && ARGS+=("$NGINX"); [ -n "$MODE" ] && ARGS+=("$MODE")
+ARGS+=("${SETS[@]}"); if [ -n "$YES" ]; then ARGS+=(--ja); else ARGS+=(--einstellungen); fi
 bash selfhost.sh "${ARGS[@]}"
 
 KS=${KVPN_BIN:-/usr/local/bin/kvpn-server}

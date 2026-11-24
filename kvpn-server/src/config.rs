@@ -63,6 +63,19 @@ pub struct Config {
     /// regelmaessig bei GitHub nach neuen App-Versionen schauen (nur melden, verteilt wird erst nach Freigabe)
     #[serde(default = "d_true")]
     pub update_check: bool,
+    /// Daten mit AES-256-GCM statt ChaCha20-Poly1305 verschluesseln (nur Apps ab 1.0.6, aeltere bleiben bei ChaCha20)
+    #[serde(default)]
+    pub aes256: bool,
+    /// Leistungsmodus: alle CPU-Kerne (eine TUN-Warteschlange je Kern, mehr Threads). Aus = sparsam (1 Warteschlange)
+    #[serde(default)]
+    pub performance: bool,
+    /// Benutzerverwaltung (SQLite, benutzer.db neben server.toml): Benutzer, Geraete sperren, Ablaufdatum, Verlauf.
+    /// Die Geraete stehen dann in der Datenbank statt hier.
+    #[serde(default = "d_true")]
+    pub users: bool,
+    /// gesperrte/abgelaufene Geraete (nur Benutzerverwaltung; belegen Plaetze und Adressen)
+    #[serde(skip)]
+    pub inactive: Vec<Peer>,
     /// hoechstens so viele Geraete (einstellbar: kvpn-server max <n>, bis zu LIMIT bzw. so viele, wie in net4 passen)
     #[serde(default = "d_max")]
     pub max_devices: usize,
@@ -76,6 +89,9 @@ pub struct Peer {
     pub public_key: String,
     /// letzte Stelle der Adresse (ab 2)
     pub index: u8,
+    /// Benutzer, dem das Geraet gehoert (nur Benutzerverwaltung)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub user: String,
 }
 
 fn d_listen() -> String {
@@ -116,6 +132,15 @@ fn d_state() -> String {
 }
 
 pub const FIRST_INDEX: u8 = 2;
+
+/// "an"/"aus" (auch ja/nein, true/false, 1/0, on/off)
+pub fn on_off(v: &str) -> Result<bool, String> {
+    match v.trim().to_lowercase().as_str() {
+        "an" | "ja" | "j" | "true" | "1" | "on" | "yes" | "y" | "ein" => Ok(true),
+        "aus" | "nein" | "n" | "false" | "0" | "off" | "no" => Ok(false),
+        _ => Err(format!("'{v}': bitte an oder aus")),
+    }
+}
 /// absolute Obergrenze fuer max_devices (Adressen .2 bis .251)
 pub const LIMIT: usize = 250;
 
@@ -128,13 +153,33 @@ impl Config {
 
     pub fn load(path: &str) -> Result<Self, String> {
         let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e} (zuerst 'kvpn-server init' ausfuehren)"))?;
-        let c: Config = toml::from_str(&s).map_err(|e| format!("{path}: {e}"))?;
+        let mut c: Config = toml::from_str(&s).map_err(|e| format!("{path}: {e}"))?;
+        if c.users {
+            // Geraete aus der Datenbank; noch in server.toml stehende (z. B. nach dem Einschalten) werden uebernommen
+            let db = crate::users::open(path)?;
+            let old = std::mem::take(&mut c.peers);
+            if !old.is_empty() {
+                crate::users::import(&db, &old)?;
+                c.save(path)?;
+            }
+            (c.peers, c.inactive) = crate::users::peers(&db)?;
+        }
         c.check()?;
         Ok(c)
     }
 
+    /// alle Geraete (auch gesperrte)
+    pub fn device_count(&self) -> usize {
+        self.peers.len() + self.inactive.len()
+    }
+
     pub fn save(&self, path: &str) -> Result<(), String> {
-        let body = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        // mit Benutzerverwaltung stehen die Geraete in benutzer.db, nicht in server.toml
+        let mut c = self.clone();
+        if c.users {
+            c.peers.clear();
+        }
+        let body = toml::to_string_pretty(&c).map_err(|e| e.to_string())?;
         let text = format!(
             "# KroneVPN Server – Konfiguration\n# Geraete verwalten: kvpn-server add <name> | remove <name> | list   (Aenderungen gelten sofort)\n# private_key ist geheim!\n\n{body}"
         );
@@ -160,15 +205,15 @@ impl Config {
         if !(1..=cap).contains(&self.max_devices) {
             return Err(format!("max_devices muss zwischen 1 und {cap} liegen (Grenze: {LIMIT} bzw. Groesse von net4 {})", self.net4));
         }
-        if self.peers.len() > self.max_devices {
+        if self.device_count() > self.max_devices {
             return Err(format!(
                 "{} Geraete eingetragen, aber hoechstens {} erlaubt – erst Geraete entfernen (kvpn-server remove <name>) oder max_devices erhoehen",
-                self.peers.len(),
+                self.device_count(),
                 self.max_devices
             ));
         }
         let mut seen = std::collections::HashSet::new();
-        for p in &self.peers {
+        for p in self.peers.iter().chain(&self.inactive) {
             kvpn::code::key_from_b64(&p.public_key).map_err(|e| format!("Geraet {}: {e}", p.name))?;
             if !(FIRST_INDEX as usize..FIRST_INDEX as usize + cap).contains(&(p.index as usize)) {
                 return Err(format!("Geraet {}: index muss {}..{} sein", p.name, FIRST_INDEX, FIRST_INDEX as usize + cap - 1));
@@ -218,8 +263,11 @@ impl Config {
             }
             "update_branch" => self.update_branch = val.into(),
             "update_check" => self.update_check = matches!(val, "true" | "1" | "ja" | "an"),
+            "aes256" | "aes" => self.aes256 = on_off(val)?,
+            "performance" | "leistung" | "leistungsmodus" => self.performance = on_off(val)?,
+            "users" | "benutzer" | "benutzerverwaltung" => self.users = on_off(val)?,
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users)")),
         }
         self.check()
     }
@@ -262,11 +310,11 @@ impl Config {
     }
 
     pub fn free_index(&self) -> Option<u8> {
-        if self.peers.len() >= self.max_devices {
+        if self.device_count() >= self.max_devices {
             return None;
         }
         let cap = self.capacity().ok()?;
-        (FIRST_INDEX as usize..FIRST_INDEX as usize + cap).map(|i| i as u8).find(|i| !self.peers.iter().any(|p| p.index == *i))
+        (FIRST_INDEX as usize..FIRST_INDEX as usize + cap).map(|i| i as u8).find(|i| !self.peers.iter().chain(&self.inactive).any(|p| p.index == *i))
     }
 
     pub fn welcome(&self, p: &Peer) -> kvpn::proto::Welcome {
@@ -281,6 +329,7 @@ impl Config {
             dns: self.dns.clone(),
             mtu: self.mtu,
             upd: None,
+            cipher: String::new(),
         }
     }
 
@@ -365,7 +414,7 @@ mod tests {
         for n in 0..8 {
             let i = c.free_index().unwrap();
             let (_, pubk) = kvpn::crypto::generate_keypair();
-            c.peers.push(Peer { name: format!("g{n}"), public_key: kvpn::code::key_to_b64(&pubk), index: i });
+            c.peers.push(Peer { name: format!("g{n}"), public_key: kvpn::code::key_to_b64(&pubk), index: i, user: String::new() });
         }
         assert!(c.free_index().is_none());
         c.check().unwrap();
@@ -375,7 +424,7 @@ mod tests {
         assert_eq!(w.ip4, "10.77.0.2/24");
         assert_eq!(w.ip6, "fd77:6b76::2/64");
         let (_, pubk) = kvpn::crypto::generate_keypair();
-        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5 });
+        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5, user: String::new() });
         assert!(c.check().is_err());
         c.peers.pop();
         c.set("vpn_name", "Potzplitz VPN").unwrap();
@@ -384,14 +433,23 @@ mod tests {
         assert!(c.set("gibtsnicht", "x").is_err());
         assert_eq!(c.client_config(&c.peers[0], &[7; 32]).display_name(), "Potzplitz VPN");
         let (_, pubk) = kvpn::crypto::generate_keypair();
-        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5 });
+        c.peers.push(Peer { name: "zuviel".into(), public_key: kvpn::code::key_to_b64(&pubk), index: 5, user: String::new() });
         // speichern/laden
         let dir = std::env::temp_dir().join(format!("kvpn-test-{}", std::process::id()));
         let p = dir.join("server.toml");
         c.peers.pop();
+        c.users = false;
         c.save(p.to_str().unwrap()).unwrap();
         let d = Config::load(p.to_str().unwrap()).unwrap();
         assert_eq!(d.peers, c.peers);
+        // Benutzerverwaltung an: Geraete aus server.toml wandern in benutzer.db
+        let t = std::fs::read_to_string(&p).unwrap().replace("users = false", "users = true");
+        std::fs::write(&p, t).unwrap();
+        let d = Config::load(p.to_str().unwrap()).unwrap();
+        assert!(d.users);
+        assert_eq!(d.peers, c.peers);
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("[[peer]]"), "Geraete stehen jetzt nur noch in der Datenbank");
+        assert_eq!(Config::load(p.to_str().unwrap()).unwrap().peers, c.peers);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

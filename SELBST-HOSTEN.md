@@ -89,8 +89,9 @@ der Container übernimmt Änderungen sofort. Protokoll: `docker logs -f krone-vp
 | `https://<adresse>/stats` | Statistik (bei `--hinter-nginx`: `/vpn-statistik`) | Passwort aus `/etc/krone-vpn/statistik-passwort.txt` |
 | **`http://localhost:8180`** | Statistik + Downloads **auf dem Server selbst**, ohne Passwort, mit **„Eigenes Bild" hochladen** | nur lokal |
 
-Vom eigenen PC aus über localhost: `ssh -L 8180:localhost:8180 root@<server>` und dann im Browser
-`http://localhost:8180` öffnen. Anderer lokaler Port: `kvpn-server set local_listen 127.0.0.1:<port>`.
+Die lokale Seite gibt es **nur auf dem Server selbst** (sie lauscht nur auf 127.0.0.1). Vom eigenen PC aus:
+`ssh -L 8180:localhost:8180 root@<server>` und dann im Browser `http://localhost:8180` öffnen (das Fenster mit der
+SSH-Verbindung offen lassen). Anderer lokaler Port: `kvpn-server set local_listen 127.0.0.1:<port>`.
 
 ### Eigenes Bild
 
@@ -106,7 +107,7 @@ Das **App-Symbol** von EXE/APK ändert man beim eigenen Bauen: `python3 tools/se
 ```bash
 kvpn-server add "Mein Handy"      # zeigt QR-Code + Verbindungscode
 kvpn-server add "Laptop"
-kvpn-server list                  # Übersicht (max. 8)
+kvpn-server list                  # Übersicht (mit Benutzer und Status)
 kvpn-server code "Laptop"         # Code + QR-Code wieder anzeigen
 kvpn-server remove "Laptop"       # sofort gesperrt
 ```
@@ -137,6 +138,41 @@ Die Dateien dürfen beliebig umbenannt werden (z. B. „Potzplitz VPN.exe").
 
 Statistik-Passwort ändern: `kvpn-server password '…'`. Aus privaten Netzen (192.168.x.x, 10.x.x.x – also auch
 übers VPN) geht die Statistik ohne Passwort.
+
+## Einstellungen (Benutzerverwaltung, AES-256, Leistungsmodus)
+
+Das Installationsskript darf **jederzeit erneut laufen** – es fragt jedes Mal nach den Einstellungen (Enter = so
+lassen) und behält Schlüssel, Geräte, Domain und Name. Ohne Rückfragen mit Schaltern, oder direkt auf dem Server:
+
+```bash
+kvpn-server einstellungen                       # Frage für Frage
+kvpn-server einstellungen --benutzer an --aes256 an --leistung aus --max 12
+```
+
+| Einstellung | Standard | Was sie tut |
+|---|---|---|
+| `--benutzer an\|aus` | **an** | **Benutzerverwaltung (SQLite)**: Geräte stehen in `benutzer.db` neben `server.toml` (nur root lesbar). Benutzer anlegen, Geräte zuordnen, sperren, Ablaufdatum, Verlauf. Beim Einschalten werden vorhandene Geräte übernommen, beim Ausschalten zurückgeschrieben. |
+| `--aes256 an\|aus` | aus | Daten im Tunnel mit **AES-256-GCM** statt ChaCha20-Poly1305 (beide 256 Bit). Gilt für Apps ab 1.0.6, ältere bleiben automatisch bei ChaCha20. Von außen nicht zu sehen – Sophos & Co. merken davon nichts. |
+| `--leistung an\|aus` | aus | **Leistungsmodus**: alle CPU-Kerne (eine TUN-Warteschlange je Kern, mehr Threads) – mehr Durchsatz, mehr Last. Aus = sparsam (1 Warteschlange, 2 Threads; reicht für jeden Internetanschluss). Gilt nach Neustart des Servers. |
+| `--max <anzahl>` | 8 | höchstens so viele Geräte (bis 250) |
+
+Mit Benutzerverwaltung:
+
+```bash
+kvpn-server benutzer add "Anna" --notiz "Schwester"
+kvpn-server add "Annas Handy" --benutzer Anna --ablauf 2026-12-31   # oder --ablauf 30 (Tage)
+kvpn-server benutzer                       # Benutzer mit ihren Geräten
+kvpn-server sperren "Annas Handy"          # sofort getrennt, Code geht erst nach 'entsperren' wieder
+kvpn-server benutzer sperren "Anna"        # alle Geräte von Anna gesperrt
+kvpn-server benutzer max "Anna" 2          # höchstens 2 Geräte für Anna
+kvpn-server ablauf "Annas Handy" nie       # Ablaufdatum entfernen
+kvpn-server zuordnen "Laptop" "Anna"       # Gerät einem Benutzer zuordnen ('-' = keinem)
+kvpn-server verlauf ["Annas Handy"]        # wann verbunden/getrennt (90 Tage)
+kvpn-server benutzer remove "Anna" [--mit-geraeten]
+```
+
+Änderungen gelten sofort, ohne Neustart. Die Statistik-Seite zeigt den Benutzer an jedem Gerät, gesperrte/abgelaufene
+Geräte unter der Liste und die eingestellte Verschlüsselung.
 
 ## Wartung
 

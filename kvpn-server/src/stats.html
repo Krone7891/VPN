@@ -118,7 +118,7 @@ function build(){
    '<h2>Geräte</h2><div id="maxbox" class="card" hidden style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'+
    '<span>Höchstens</span><input id="maxn" type="number" min="1" style="width:5.5em;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--soft);color:var(--ink);font:inherit">'+
    '<span>Geräte erlauben</span><button class="btn2" id="maxok" type="button" style="margin:0">Speichern</button><span class="mute" id="maxmsg"></span></div>'+
-   '<div class="grid" id="peers"></div>'+
+   '<div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
    '<div id="uplbox" hidden><h2>Eigenes Bild</h2><div class="card"><div class="upl"><img id="uplprev" alt="" hidden>'+
@@ -142,6 +142,7 @@ function render(d){
     const lg=$('#lg');lg.hidden=!s.logo;if(s.logo)lg.src=src;
     if(s.logo)$('#fav').href=src;const pv=$('#uplprev');if(pv){pv.hidden=!s.logo;if(s.logo)pv.src=src}const dl=$('#upldel');if(dl)dl.hidden=!s.logo}
   $('#uplbox').hidden=!d.local;LOCAL=!!d.local;
+  const ia=d.inactive||[];setT($('#inact'),ia.length?'Gesperrt oder abgelaufen (Benutzerverwaltung): '+ia.map(x=>x.name+(x.user?' ('+x.user+')':'')).join(', '):'');
   const mb=$('#maxbox');if(d.local){if(mb.hidden){mb.hidden=false;mb.style.display='flex';$('#maxok').onclick=saveMax}
     const mi=$('#maxn');mi.max=d.max_possible||250;if(document.activeElement!==mi&&!mi.dataset.dirty)mi.value=d.max_peers;
     mi.oninput=()=>{mi.dataset.dirty=1};
@@ -157,13 +158,14 @@ function render(d){
   setT($('#sub'),on.length+' von '+d.peers.length+' Geräten verbunden (max. '+d.max_peers+') · aktualisiert sich alle 2 Sekunden');
   setT($('#kOn'),on.length+' / '+d.peers.length);setT($('#kDown'),rate(down));setT($('#kUp'),rate(up));
   setT($('#kToday'),bytes(today));setT($('#kMonth'),bytes(month));
-  setT($('#kSrv'),s.cpu_pct.toFixed(1)+' % CPU');setT($('#kSrvs'),s.rss_mb.toFixed(0)+' MB RAM · '+s.queues+' Queues / '+s.cores+' Kerne');
+  setT($('#kSrv'),s.cpu_pct.toFixed(1)+' % CPU');setT($('#kSrvs'),s.rss_mb.toFixed(0)+' MB RAM · '+s.queues+' Queues / '+s.cores+' Kerne'+(d.settings&&d.settings.performance?' · Leistungsmodus':''));
   lineChart($('#chart'),RANGE==='sec'?d.sec:d.min,RANGE==='sec'?1:60,now);
   peers(d.peers,now);
   dayChart($('#days'),d.days.slice().reverse());
   daysTable($('#dtable'),d);
   setT($('#foot'),(s.name||'KroneVPN')+' '+s.version+' · läuft seit '+dur(now-s.started)+' · Tunnel '+s.net4+(s.net6?' / '+s.net6:'')+' · MTU '+s.mtu+' · Last '+s.load+
-   (s.tun_drops?' · '+s.tun_drops+' Pakete verworfen (Gerät zu langsam)':'')+' · '+s.url);
+   (s.tun_drops?' · '+s.tun_drops+' Pakete verworfen (Gerät zu langsam)':'')+' · '+s.url+
+   (d.settings?' · Verschlüsselung '+(d.settings.aes256?'AES-256-GCM':'ChaCha20')+' · Benutzerverwaltung '+(d.settings.users?'an':'aus'):''));
 }
 
 /* Geraete-Karten: je Geraet einmal angelegt, danach nur Werte aendern */
@@ -226,7 +228,8 @@ function peers(list,now){
     let tls='';
     if(i.tls_issuer){tls=i.tls_trusted?'<span class="badge ok" title="Normales, öffentlich vertrauenswürdiges Zertifikat">✓ TLS direkt</span>'
       :'<span class="badge warn" title="Eine Firewall bricht HTTPS auf (z. B. Sophos). Die VPN-Daten bleiben trotzdem verschlüsselt – Noise prüft den Server.">⚠ HTTPS-Inspektion: '+esc(i.tls_issuer)+'</span>';}
-    setH(f('badges'),(p.online?'<span class="badge">'+esc(osName(i.os))+' · v'+esc(i.ver)+'</span>':'')+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+(p.online?tls:''));
+    setH(f('badges'),(p.user?'<span class="badge" title="Benutzer">👤 '+esc(p.user)+'</span>':'')+(p.online?'<span class="badge">'+esc(osName(i.os))+' · v'+esc(i.ver)+'</span>':'')+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+
+      (p.online&&i.cipher==='aes256gcm'?'<span class="badge ok" title="Daten mit AES-256-GCM verschlüsselt">AES-256</span>':'')+(p.online?tls:''));
     setT(f('down'),p.online?rate(p.rate_tx):'–');setT(f('up'),p.online?rate(p.rate_rx):'–');setT(f('ping'),p.online&&p.rtt_ms?p.rtt_ms.toFixed(0)+' ms':'–');
     setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
     const a=p.spark||[],n=a.length,m=Math.max(1,...a);

@@ -43,7 +43,13 @@ pub struct Hello {
     /// Client kann sich selbst aktualisieren (ab 1.0.1)
     #[serde(default)]
     pub upd: bool,
+    /// zusaetzlich unterstuetzte Verschluesselungen fuer die Daten (ab 1.0.6: "aes256gcm"); ChaCha20 geht immer
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ciphers: Vec<String>,
 }
+
+/// AES-256-GCM statt ChaCha20-Poly1305 fuer die Daten (Name im Handshake)
+pub const CIPHER_AES256: &str = "aes256gcm";
 
 /// Nutzdaten der zweiten Handshake-Nachricht (Server -> Client)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +65,9 @@ pub struct Welcome {
     /// neuere App-Version liegt auf dem Server bereit (signierte Liste, siehe update.rs)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upd: Option<UpdateOffer>,
+    /// gewaehlte Verschluesselung fuer die Daten (leer = ChaCha20-Poly1305, "aes256gcm" = AES-256-GCM)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cipher: String,
 }
 
 /// Update-Angebot: Inhalt von update.json und dessen Ed25519-Signatur (Base64)

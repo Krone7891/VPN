@@ -54,6 +54,13 @@ variant() {   # name args...
   KVPN_TEST=1 KVPN_CONFIG=$C/server.toml KVPN_BIN=$C/kvpn-server KVPN_PUBLIC_IP=198.51.100.1 bash "$K/selfhost.sh" > /dev/null 2>&1
   [ "$before" = "$(grep -E '^(public_url|listen|tls_cert) ' "$C/server.toml")" ] && ok "Aktualisieren ohne Angaben behaelt Adresse/Zertifikat/nginx" || bad "Einstellungen beim Aktualisieren geaendert: $(grep -E '^(public_url|listen|tls_cert) ' "$C/server.toml")"
   [ -x "$C/kvpn-update" ] && grep -q 'Krone7891/VPN' "$C/kvpn-update" && ok "Befehl kvpn-update eingerichtet" || bad "kvpn-update fehlt"
+  grep -q '^users = true' "$C/server.toml" && grep -q '^aes256 = false' "$C/server.toml" && grep -q '^performance = false' "$C/server.toml" \
+    && ok "Standard: Benutzerverwaltung an, AES-256 aus, Leistungsmodus aus" || bad "Standard-Einstellungen: $(grep -E '^(users|aes256|performance) ' "$C/server.toml" | tr '\n' ' ')"
+  KVPN_TEST=1 KVPN_CONFIG=$C/server.toml KVPN_BIN=$C/kvpn-server KVPN_PUBLIC_IP=198.51.100.1 bash "$K/selfhost.sh" --aes256 an --leistung an --benutzer aus --max 12 > "$C/set.txt" 2>&1
+  grep -q '^aes256 = true' "$C/server.toml" && grep -q '^performance = true' "$C/server.toml" && grep -q '^users = false' "$C/server.toml" && grep -q '^max_devices = 12' "$C/server.toml" \
+    && ok "erneuter Lauf stellt um: $(grep -o 'Einstellungen: .*' "$C/set.txt" | head -1)" || bad "Einstellungen per Installer: $(cat "$C/set.txt" | tail -5)"
+  KVPN_TEST=1 KVPN_CONFIG=$C/server.toml KVPN_BIN=$C/kvpn-server KVPN_PUBLIC_IP=198.51.100.1 bash "$K/selfhost.sh" --aes256 aus --leistung aus --benutzer an --max 8 > /dev/null 2>&1
+  grep -q '^users = true' "$C/server.toml" && grep -q '^aes256 = false' "$C/server.toml" && ok "und wieder zurueck (Benutzerverwaltung an, AES aus)" || bad "zurueckstellen"
   sed -i "s#^state_dir = .*#state_dir = \"$C/state\"#" "$C/server.toml"
   "$C/kvpn-server" --config "$C/server.toml" add "Laptop" | grep '^kronevpn://' > "$C/code"
   bg ns sh-srv "$C/kvpn-server" --config "$C/server.toml" run

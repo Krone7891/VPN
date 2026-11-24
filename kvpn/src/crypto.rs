@@ -4,6 +4,9 @@
 //! haben damit getrennte Zustaende und laufen parallel auf verschiedenen Kernen. Die Nonce ist ein Zaehler je
 //! Richtung – der Transport (TCP/WebSocket) liefert in Reihenfolge, jede Luecke, Wiederholung oder Aenderung fuehrt
 //! zum Abbruch der Verbindung.
+//!
+//! Verschluesselung der Daten: ChaCha20-Poly1305 (Standard) oder – wenn der Server es so eingestellt hat und die App
+//! es kann – AES-256-GCM (mit Hardware-Beschleunigung, ring). Beide mit 256-Bit-Schluesseln aus dem Noise-Handshake.
 
 use crate::proto::{Hello, Welcome, NOISE_PARAMS, PROLOGUE};
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
@@ -48,14 +51,51 @@ pub fn public_from_private(private: &Key32) -> Key32 {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*private)).to_bytes()
 }
 
+enum Aead {
+    ChaCha(ChaCha20Poly1305),
+    Aes(ring::aead::LessSafeKey),
+}
+
+impl Aead {
+    fn new(key: &Key32, cipher: &str) -> Self {
+        if cipher == crate::proto::CIPHER_AES256 {
+            Aead::Aes(ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key).expect("AES-Schluessel")))
+        } else {
+            Aead::ChaCha(ChaCha20Poly1305::new(Key::from_slice(key)))
+        }
+    }
+    fn seal(&self, n: u64, buf: &mut Vec<u8>) -> Result<(), ()> {
+        match self {
+            Aead::ChaCha(a) => a.encrypt_in_place(&nonce(n), b"", buf).map_err(|_| ()),
+            Aead::Aes(k) => k.seal_in_place_append_tag(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ()),
+        }
+    }
+    fn open(&self, n: u64, buf: &mut Vec<u8>) -> Result<(), ()> {
+        match self {
+            Aead::ChaCha(a) => a.decrypt_in_place(&nonce(n), b"", buf).map_err(|_| ()),
+            Aead::Aes(k) => {
+                let len = k.open_in_place(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ())?.len();
+                buf.truncate(len);
+                Ok(())
+            }
+        }
+    }
+}
+
+fn ring_nonce(n: u64) -> ring::aead::Nonce {
+    let mut b = [0u8; 12];
+    b[4..].copy_from_slice(&n.to_le_bytes());
+    ring::aead::Nonce::assume_unique_for_key(b)
+}
+
 /// Verschluesseln einer Richtung
 pub struct Sealer {
-    aead: ChaCha20Poly1305,
+    aead: Aead,
     n: u64,
 }
 /// Entschluesseln einer Richtung
 pub struct Opener {
-    aead: ChaCha20Poly1305,
+    aead: Aead,
     n: u64,
 }
 
@@ -67,14 +107,17 @@ fn nonce(n: u64) -> Nonce {
 
 impl Sealer {
     pub fn new(key: &Key32) -> Self {
-        Sealer { aead: ChaCha20Poly1305::new(Key::from_slice(key)), n: 0 }
+        Self::with(key, "")
+    }
+    pub fn with(key: &Key32, cipher: &str) -> Self {
+        Sealer { aead: Aead::new(key, cipher), n: 0 }
     }
     /// verschluesselt `buf` an Ort und Stelle (haengt 16 Byte Tag an)
     pub fn seal(&mut self, buf: &mut Vec<u8>) -> Result<(), CryptoError> {
         if self.n == u64::MAX {
             return Err(err("Nonce erschoepft"));
         }
-        self.aead.encrypt_in_place(&nonce(self.n), b"", buf).map_err(|_| err("Verschluesselung fehlgeschlagen"))?;
+        self.aead.seal(self.n, buf).map_err(|_| err("Verschluesselung fehlgeschlagen"))?;
         self.n += 1;
         Ok(())
     }
@@ -82,28 +125,29 @@ impl Sealer {
 
 impl Opener {
     pub fn new(key: &Key32) -> Self {
-        Opener { aead: ChaCha20Poly1305::new(Key::from_slice(key)), n: 0 }
+        Self::with(key, "")
+    }
+    pub fn with(key: &Key32, cipher: &str) -> Self {
+        Opener { aead: Aead::new(key, cipher), n: 0 }
     }
     /// entschluesselt `buf` an Ort und Stelle; Fehler = manipuliert/falsche Reihenfolge
     pub fn open(&mut self, buf: &mut Vec<u8>) -> Result<(), CryptoError> {
         if buf.len() < 16 {
             return Err(err("Nachricht zu kurz"));
         }
-        self.aead
-            .decrypt_in_place(&nonce(self.n), b"", buf)
-            .map_err(|_| err("Entschluesselung fehlgeschlagen (manipuliert oder falscher Schluessel)"))?;
+        self.aead.open(self.n, buf).map_err(|_| err("Entschluesselung fehlgeschlagen (manipuliert oder falscher Schluessel)"))?;
         self.n += 1;
         Ok(())
     }
 }
 
-fn split(hs: &mut snow::HandshakeState, initiator: bool) -> (Sealer, Opener) {
+fn split(hs: &mut snow::HandshakeState, initiator: bool, cipher: &str) -> (Sealer, Opener) {
     // Noise Split(): erster Schluessel = Initiator -> Responder
     let (i2r, r2i) = hs.dangerously_get_raw_split();
     if initiator {
-        (Sealer::new(&i2r), Opener::new(&r2i))
+        (Sealer::with(&i2r, cipher), Opener::with(&r2i, cipher))
     } else {
-        (Sealer::new(&r2i), Opener::new(&i2r))
+        (Sealer::with(&r2i, cipher), Opener::with(&i2r, cipher))
     }
 }
 
@@ -129,7 +173,10 @@ pub fn client_finish(mut hs: snow::HandshakeState, msg2: &[u8]) -> Result<(Welco
     if !hs.is_handshake_finished() {
         return Err(err("Handshake unvollstaendig"));
     }
-    let (s, o) = split(&mut hs, true);
+    if !w.cipher.is_empty() && w.cipher != crate::proto::CIPHER_AES256 {
+        return Err(err(format!("Server will unbekannte Verschluesselung '{}' – App aktualisieren", w.cipher)));
+    }
+    let (s, o) = split(&mut hs, true, &w.cipher);
     Ok((w, s, o))
 }
 
@@ -154,7 +201,7 @@ pub fn server_reply(mut hs: snow::HandshakeState, welcome: &Welcome) -> Result<(
     if !hs.is_handshake_finished() {
         return Err(err("Handshake unvollstaendig"));
     }
-    let (s, o) = split(&mut hs, false);
+    let (s, o) = split(&mut hs, false, &welcome.cipher);
     Ok((out, s, o))
 }
 
@@ -163,7 +210,7 @@ mod tests {
     use super::*;
 
     fn welcome() -> Welcome {
-        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400, upd: None }
+        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400, upd: None, cipher: String::new() }
     }
 
     #[test]
@@ -190,6 +237,41 @@ mod tests {
             co.open(&mut b).unwrap();
             assert_eq!(b, vec![i as u8; 1500]);
         }
+    }
+
+    #[test]
+    fn aes256_transport() {
+        let (spriv, spub) = generate_keypair();
+        let (cpriv, _) = generate_keypair();
+        let hello = Hello { ts: 1, ciphers: vec![crate::proto::CIPHER_AES256.into()], ..Default::default() };
+        let (chs, m1) = client_init(&cpriv, &spub, &hello).unwrap();
+        let (shs, _, h) = server_read(&spriv, &m1).unwrap();
+        assert_eq!(h.ciphers, vec![crate::proto::CIPHER_AES256.to_string()]);
+        let mut w = welcome();
+        w.cipher = crate::proto::CIPHER_AES256.into();
+        let (m2, mut ss, mut so) = server_reply(shs, &w).unwrap();
+        let (_, mut cs, mut co) = client_finish(chs, &m2).unwrap();
+        for i in 0..50u32 {
+            let mut b = vec![i as u8; 1400];
+            cs.seal(&mut b).unwrap();
+            assert_eq!(b.len(), 1416);
+            so.open(&mut b).unwrap();
+            assert_eq!(b, vec![i as u8; 1400]);
+            let mut b = format!("zurueck {i}").into_bytes();
+            ss.seal(&mut b).unwrap();
+            co.open(&mut b).unwrap();
+            assert_eq!(b, format!("zurueck {i}").into_bytes());
+        }
+        // manipuliert -> Fehler
+        let mut b = b"x".to_vec();
+        cs.seal(&mut b).unwrap();
+        b[0] ^= 1;
+        assert!(so.open(&mut b).is_err());
+        // AES-Daten lassen sich nicht mit ChaCha oeffnen
+        let key = [7u8; 32];
+        let mut b = b"hallo".to_vec();
+        Sealer::with(&key, crate::proto::CIPHER_AES256).seal(&mut b).unwrap();
+        assert!(Opener::new(&key).open(&mut b).is_err());
     }
 
     #[test]

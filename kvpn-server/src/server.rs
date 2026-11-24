@@ -115,14 +115,31 @@ impl Shared {
     }
 
     pub fn reload(&self) {
+        self.reload_quiet(false)
+    }
+
+    /// `quiet`: nur melden, wenn sich an den Geraeten etwas geaendert hat (regelmaessige Pruefung auf Ablaufdatum)
+    pub fn reload_quiet(&self, quiet: bool) {
         match Config::load(&self.cfg_path) {
             Ok(c) => {
-                if c.private_key != self.cfg().private_key || c.net4 != self.cfg().net4 || c.net6 != self.cfg().net6 {
+                let old = self.cfg();
+                if c.private_key != old.private_key || c.net4 != old.net4 || c.net6 != old.net6 {
                     log!("Hinweis: Schluessel/Netz geaendert – das gilt erst nach einem Neustart des Dienstes");
                 }
+                if c.performance != old.performance || c.queues != old.queues {
+                    log!("Hinweis: Leistungsmodus geaendert – das gilt erst nach einem Neustart des Dienstes");
+                }
+                let changed = c.peers != old.peers || c.inactive != old.inactive;
                 self.apply_peers(&c);
                 *self.cfg.write().unwrap() = Arc::new(c);
-                log!("Konfiguration neu geladen: {} Geraet(e)", self.peers.read().unwrap().len());
+                if !quiet || changed {
+                    let cfg = self.cfg();
+                    log!(
+                        "Konfiguration neu geladen: {} Geraet(e){}",
+                        cfg.peers.len(),
+                        if cfg.inactive.is_empty() { String::new() } else { format!(", {} gesperrt/abgelaufen", cfg.inactive.len()) }
+                    );
+                }
             }
             Err(e) => log!("Konfiguration fehlerhaft, behalte die alte: {e}"),
         }
@@ -261,6 +278,10 @@ where
     let mut welcome = cfg.welcome(&prt.peer);
     let upd = if hello.upd { update_offer(&cfg, &hello.os, &hello.ver) } else { None };
     welcome.upd = upd.as_ref().map(|u| u.offer.clone());
+    // AES-256 nur, wenn eingeschaltet und die App es kann (aeltere Apps bleiben bei ChaCha20)
+    if cfg.aes256 && hello.ciphers.iter().any(|c| c == kvpn::proto::CIPHER_AES256) {
+        welcome.cipher = kvpn::proto::CIPHER_AES256.into();
+    }
     let (m2, mut sealer, mut opener) = match crypto::server_reply(hs, &welcome) {
         Ok(v) => v,
         Err(e) => {
@@ -301,6 +322,7 @@ where
         tls_trusted: hello.tls_trusted,
         via_proxy: hello.via_proxy,
         upd: hello.upd,
+        cipher: if welcome.cipher.is_empty() { "chacha20".into() } else { welcome.cipher.clone() },
     };
     let inspect = if !hello.tls_issuer.is_empty() && !hello.tls_trusted {
         format!(" – TLS-Zertifikat nicht oeffentlich vertrauenswuerdig (Aussteller: {}) – HTTPS-Inspektion?", hello.tls_issuer)
@@ -308,13 +330,18 @@ where
         String::new()
     };
     log!(
-        "{}: verbunden von {remote} ({} {}){}{}",
+        "{}: verbunden von {remote} ({} {}){}{}{}",
         prt.peer.name,
         hello.os,
         hello.ver,
         if hello.via_proxy { " ueber Proxy" } else { "" },
+        if welcome.cipher.is_empty() { "" } else { ", AES-256" },
         inspect
     );
+    if cfg.users {
+        let (p, n, ev) = (sh.cfg_path.clone(), prt.peer.name.clone(), format!("verbunden von {remote} ({} {}){}", hello.os, hello.ver, if hello.via_proxy { " ueber Proxy" } else { "" }));
+        tokio::task::spawn_blocking(move || crate::users::log_event(&p, &n, &ev));
+    }
 
     let (mut sink, mut stream) = ws.split();
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Vec<u8>>(16);
@@ -436,6 +463,10 @@ where
     }
     drop(s);
     log!("{}: getrennt ({why}) nach {} s", prt.peer.name, started.elapsed().as_secs());
+    if sh.cfg().users {
+        let (p, n, ev) = (sh.cfg_path.clone(), prt.peer.name.clone(), format!("getrennt ({why}) nach {} s", started.elapsed().as_secs()));
+        tokio::task::spawn_blocking(move || crate::users::log_event(&p, &n, &ev));
+    }
 }
 
 // ------------------------------------------------------------------------------------------------ Updates
@@ -528,6 +559,8 @@ pub fn spawn_background(sh: &Arc<Shared>) {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         let mut n = 0u64;
         let mut mtime = std::fs::metadata(&s.cfg_path).and_then(|m| m.modified()).ok();
+        let db_file = crate::users::db_path(&s.cfg_path);
+        let mut db_mtime = std::fs::metadata(&db_file).and_then(|m| m.modified()).ok();
         let upd_file = |s: &Shared| crate::updates::dir(&s.cfg()).join("update.json");
         let mut upd_mtime = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();
         loop {
@@ -553,9 +586,18 @@ pub fn spawn_background(sh: &Arc<Shared>) {
             drop(h);
             if n % 3 == 0 {
                 let m = std::fs::metadata(&s.cfg_path).and_then(|m| m.modified()).ok();
+                // Benutzerverwaltung: Aenderungen in benutzer.db (sperren, entfernen, ...) sofort uebernehmen
+                let dm = std::fs::metadata(&db_file).and_then(|m| m.modified()).ok();
                 if m != mtime {
                     mtime = m;
+                    db_mtime = dm;
                     s.reload();
+                } else if dm != db_mtime && s.cfg().users {
+                    db_mtime = dm;
+                    s.reload();
+                } else if n % 60 == 0 && s.cfg().users {
+                    // Ablaufdaten pruefen
+                    s.reload_quiet(true);
                 }
                 // neue App-Version freigegeben: Geraete mit aelterer Version kurz neu verbinden lassen -> Angebot
                 let um = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();

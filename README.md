@@ -53,6 +53,11 @@ Fertig gebaut in [`dist/`](dist) – oder von deinem Server unter `/download/` m
 | Linux x86_64 | [`dist/kronevpn-linux`](dist/kronevpn-linux) | statisch, ohne Abhängigkeiten; `--hintergrund` = systemd-Dienst |
 | Server x86_64 | [`dist/kvpn-server`](dist/kvpn-server) | statisch, ohne Abhängigkeiten (das Setup nimmt ihn automatisch) |
 
+**Einstellungen** (bei jedem Lauf von `install.sh` abgefragt – das Skript darf jederzeit erneut laufen – oder
+`kvpn-server einstellungen`): Benutzerverwaltung mit SQLite (Standard **an**: Benutzer, sperren, Ablaufdatum, Verlauf –
+`kvpn-server benutzer`), AES-256-GCM statt ChaCha20 (Standard aus), Leistungsmodus mit allen CPU-Kernen (Standard aus),
+Höchstzahl Geräte. Details: [SELBST-HOSTEN.md](SELBST-HOSTEN.md#einstellungen-benutzerverwaltung-aes-256-leistungsmodus).
+
 **Profile:** PC und Handy können mehrere Verbindungscodes speichern (z. B. verschiedene Server) und zwischen ihnen
 wechseln – Windows-Fenster „Profile“, Android „Profile …“, Linux `kronevpn --profile` / `--profil <nr>`.
 

@@ -205,15 +205,42 @@ ns kv-cli1 curl -sk -m 3 -H "X-Krone-Auth: homeserver" https://vpn.test/api/v1/s
 
 echo "== Test 9: Server-Neustart -> Geraete verbinden sich selbst neu"
 [ "$(ns kv-cli1 ip route get 10.201.0.2 | grep -o 'dev [^ ]*')" = "dev kvpn-c0" ] && ok "Geraet 1: DNS laeuft durch den Tunnel (wie unter Windows)" || bad "Geraet 1: DNS nicht im Tunnel"
-kill "$(pgrep -f "kvpn-server run" | head -1)"; sleep 1
+# dabei AES-256 und Leistungsmodus einschalten (Standard: beide aus)
+"$BIN/kvpn-server" einstellungen --aes256 an --leistung an | grep -q "AES-256 an · Leistungsmodus an" && ok "einstellungen: AES-256 und Leistungsmodus an" || bad "einstellungen"
+SL=$(wc -l < "$W/log.kv-srv-kvpn-server")
+pkill -f "kvpn-server run"; for i in $(seq 1 20); do pgrep -f "kvpn-server run" >/dev/null || break; sleep 0.5; done
+pgrep -f "kvpn-server run" >/dev/null && bad "Server laesst sich nicht beenden" || ok "Server beendet"
 bg ns kv-srv "$BIN/kvpn-server" run
 sleep 14
 n=0; for i in $(seq 1 8); do ns "kv-cli$i" ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && n=$((n+1)); done
 [ $n -eq 8 ] && ok "nach Neustart wieder 8 von 8 online" || bad "nach Neustart nur $n von 8"
+tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -q "Leistungsmodus an" && ok "Server: $(tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -o '[0-9]* TUN-Queues, [0-9]* Kerne, Leistungsmodus an' | head -1)" || bad "Leistungsmodus nicht aktiv"
+A=$(tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -c "verbunden von.*AES-256")
+[ "$A" -ge 8 ] && ok "alle Geraete mit AES-256-GCM verbunden ($A Verbindungen)" || bad "AES-256: nur $A Verbindungen"
+D=$(ns kv-cli1 iperf3 -c 10.201.0.2 -t 4 -R -P 4 -J 2>/dev/null | python3 -c 'import json,sys;print(round(json.load(sys.stdin)["end"]["sum_received"]["bits_per_second"]/1e6))' 2>/dev/null)
+[ -n "$D" ] && ok "Durchsatz mit AES-256 + Leistungsmodus: $D Mbit/s (4 Streams)" || bad "iperf3 mit AES-256"
 
 echo "== Test 10: Geraet entfernen -> sofort getrennt"
 "$BIN/kvpn-server" remove geraet8 >/dev/null; sleep 5
 ns kv-cli8 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "entferntes Geraet noch verbunden" || ok "entferntes Geraet getrennt"
+
+echo "== Test 10b: Benutzerverwaltung (SQLite): sperren, Benutzer, Ablaufdatum, Verlauf"
+waitping() { for i in $(seq 1 "$2"); do ns "$1" ping -c 1 -W 1 10.201.0.2 >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+"$BIN/kvpn-server" benutzer add Tester >/dev/null && "$BIN/kvpn-server" zuordnen geraet7 Tester >/dev/null && "$BIN/kvpn-server" benutzer | grep -q "Tester.*geraet7" && ok "Benutzer angelegt und Geraet zugeordnet" || bad "Benutzer/zuordnen: $("$BIN/kvpn-server" benutzer 2>&1)"
+"$BIN/kvpn-server" sperren geraet7 >/dev/null; sleep 4
+ns kv-cli7 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "gesperrtes Geraet noch verbunden" || ok "Geraet gesperrt -> sofort getrennt"
+"$BIN/kvpn-server" list | grep -q "geraet7.*gesperrt" && ok "list zeigt 'gesperrt'" || bad "list ohne Sperre"
+"$BIN/kvpn-server" entsperren geraet7 >/dev/null
+waitping kv-cli7 60 && ok "entsperrt -> verbindet sich wieder" || bad "nach Entsperren nicht wieder verbunden"
+"$BIN/kvpn-server" benutzer sperren Tester >/dev/null; sleep 4
+ns kv-cli7 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "Geraet eines gesperrten Benutzers noch verbunden" || ok "Benutzer gesperrt -> seine Geraete getrennt"
+"$BIN/kvpn-server" benutzer entsperren Tester >/dev/null
+"$BIN/kvpn-server" ablauf geraet7 2001-01-01 >/dev/null; sleep 4
+"$BIN/kvpn-server" list | grep -q "geraet7.*abgelaufen" && ok "Ablaufdatum in der Vergangenheit -> abgelaufen" || bad "Ablauf: $("$BIN/kvpn-server" list | grep geraet7)"
+"$BIN/kvpn-server" ablauf geraet7 nie >/dev/null
+waitping kv-cli7 60 && ok "Ablauf entfernt -> wieder verbunden" || bad "nach Ablauf 'nie' nicht verbunden"
+"$BIN/kvpn-server" verlauf geraet7 | grep -q "verbunden von" && "$BIN/kvpn-server" verlauf geraet7 | grep -q "getrennt" && ok "Verlauf: $("$BIN/kvpn-server" verlauf geraet7 | wc -l) Eintraege fuer geraet7" || bad "Verlauf leer"
+[ -f "$W/benutzer.db" ] && ! grep -q '^\[\[peer\]\]' "$W/server.toml" && ok "Geraete stehen in benutzer.db (nicht mehr in server.toml)" || bad "benutzer.db fehlt oder Geraete noch in server.toml"
 
 echo "== Test 11: Verbindungscodes wieder anzeigen"
 [ "$("$BIN/kvpn-server" code geraet1 | grep '^kronevpn://')" = "$(cat "$W/code1")" ] && ok "kvpn-server code zeigt den Code wieder (mit QR-Code)" || bad "kvpn-server code"

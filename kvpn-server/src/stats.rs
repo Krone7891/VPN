@@ -15,6 +15,8 @@ pub struct SessInfo {
     pub via_proxy: bool,
     /// App kann sich selbst aktualisieren
     pub upd: bool,
+    /// Verschluesselung der Daten ("chacha20" oder "aes256gcm")
+    pub cipher: String,
 }
 
 /// Zaehler eines Geraets (bleiben ueber Neuverbindungen erhalten). rx = vom Geraet, tx = zum Geraet.

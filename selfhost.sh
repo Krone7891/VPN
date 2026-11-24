@@ -11,13 +11,18 @@
 #                                            der nginx-Ausschnitt wird angezeigt
 #   ... --docker                             Server als Docker-Compose-Container statt systemd-Dienst
 #   ... --systemd                            zurueck von Docker zum systemd-Dienst
+#   ... --benutzer an|aus  --aes256 an|aus  --leistung an|aus  --max <anzahl>
+#                                            Einstellungen (Standard: Benutzerverwaltung an, AES-256 aus,
+#                                            Leistungsmodus aus, 8 Geraete). Ohne diese Schalter wird im Terminal
+#                                            jedes Mal gefragt (Enter = so lassen); --ja = nicht fragen.
+#                                            Spaeter auch einzeln: kvpn-server einstellungen
 #
 # Danach Geraete anlegen:  kvpn-server add "Mein Handy"   (zeigt QR-Code und Verbindungscode)
 # Lokale Webseite (Statistik, Downloads) auf dem Server:  http://localhost:8180
 # Mehrfach aufrufen = aktualisieren (Schluessel und Geraete bleiben erhalten).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-DOMAIN=""; NGINX=0; NAME=""; BILD=""; MODE=""
+DOMAIN=""; NGINX=0; NAME=""; BILD=""; MODE=""; SETS=(); ASK=""; YES=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --hinter-nginx|--behind-nginx) NGINX=1 ;;
@@ -27,7 +32,10 @@ while [ $# -gt 0 ]; do
     --name=*) NAME=${1#--name=} ;;
     --bild|--logo) BILD=${2:-}; shift ;;
     --bild=*|--logo=*) BILD=${1#*=} ;;
-    -h|--help) sed -n 2,17p "$0"; exit 0 ;;
+    --benutzer|--aes256|--leistung|--max) SETS+=("$1" "${2:-}"); shift ;;
+    --einstellungen) ASK=1 ;;
+    --ja|-y|--yes) YES=1 ;;
+    -h|--help) sed -n 2,22p "$0"; exit 0 ;;
     -*) echo "Unbekannte Option: $1"; exit 2 ;;
     *) DOMAIN=$1 ;;
   esac
@@ -132,6 +140,14 @@ fi
 LOCAL=$(sed -n 's/^local_listen = "\(.*\)"/\1/p' "$CFG")
 chmod 600 "$CFG"
 echo "   Name: $NAME · Adresse fuer die Geraete: $URL · intern: $LISTEN"
+# Einstellungen: Schalter von der Kommandozeile, sonst im Terminal fragen (bei jedem Lauf; Enter = so lassen)
+if [ ${#SETS[@]} -gt 0 ]; then
+  K einstellungen "${SETS[@]}" | sed 's/^/   /'
+elif [ -z "$YES" ] && [ -z "$TEST" ] && { [ -n "$ASK" ] || [ -t 0 ]; } && (: </dev/tty) 2>/dev/null; then
+  K einstellungen </dev/tty
+else
+  K einstellungen --ja | sed 's/^/   /'
+fi
 
 say "4/6 Apps zum Herunterladen ($DL)"
 SLUG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//'); SLUG=${SLUG:-vpn}
