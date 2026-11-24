@@ -20,6 +20,33 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// feste GUID, damit Windows den Adapter wiedererkennt (kein neues "Netzwerk 2, 3, ..." bei jedem Start)
 const GUID: u128 = 0x6b726f6e_6576_706e_8a1c_2d3e4f506172;
 
+#[link(name = "kernel32")]
+extern "system" {
+    fn AttachConsole(pid: u32) -> i32;
+    fn AllocConsole() -> i32;
+    fn GetStdHandle(n: u32) -> isize;
+    fn GetFileType(h: isize) -> u32;
+}
+
+/// Konsole fuer die Textanzeige holen (das Programm ist ein Fenster-Programm und hat sonst keine).
+/// Ausgabe in eine Datei/Pipe umgeleitet (z. B. `--version` aus einem anderen Programm): nichts tun.
+pub fn konsole(anhaengen: bool) {
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const FILE_TYPE_DISK: u32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    unsafe {
+        let h = GetStdHandle(STD_OUTPUT_HANDLE);
+        if h != 0 && h != -1 && matches!(GetFileType(h), FILE_TYPE_DISK | FILE_TYPE_PIPE) {
+            return;
+        }
+        if anhaengen && AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+            return;
+        }
+        AllocConsole();
+    }
+}
+
 pub fn config_dir() -> PathBuf {
     std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("KroneVPN")
 }

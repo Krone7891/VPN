@@ -29,6 +29,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.Locale;
@@ -40,7 +41,7 @@ public class MainActivity extends Activity {
     private boolean dark;
     private int cBg, cCard, cInk, cMute, cAcc, cOk, cWarn, cBad, cSoft;
     private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle, tUpd;
-    private Button bMain, bUpd;
+    private Button bMain, bUpd, bProfiles;
     private View dot;
     private long lastRx = -1, lastTx = -1;
 
@@ -151,6 +152,7 @@ public class MainActivity extends Activity {
         TextView title = tTitle;
         root.addView(title);
         tName = text("", 14, cMute, false);
+        tName.setOnClickListener(v -> showProfiles());
         root.addView(tName);
 
         // Status + grosser Knopf
@@ -203,7 +205,10 @@ public class MainActivity extends Activity {
         // Einstellungen
         LinearLayout c3 = card();
         c3.addView(text("Einrichtung", 16, cInk, true));
-        Button paste = button("Verbindungscode einfügen", false);
+        bProfiles = button("Profile …", false);
+        bProfiles.setOnClickListener(v -> showProfiles());
+        c3.addView(bProfiles);
+        Button paste = button("Profil hinzufügen (Code einfügen)", false);
         paste.setOnClickListener(v -> askCode());
         c3.addView(paste);
         Button show = button("Code anzeigen (QR-Code + Text)", false);
@@ -237,6 +242,124 @@ public class MainActivity extends Activity {
 
     private String code() {
         return KroneVpnService.prefs(this).getString("code", null);
+    }
+
+    // ------------------------------------------------------------------ Profile
+    // Mehrere Verbindungscodes (z. B. verschiedene Server) in prefs "profiles" (JSON-Liste); "code" = aktives Profil.
+
+    /** gleiches Profil = gleicher Server + gleicher Geraetename */
+    private static String key(JSONObject p) {
+        return p.optString("url") + "|" + p.optString("name");
+    }
+
+    private static JSONObject parse(String code) {
+        try {
+            JSONObject j = new JSONObject(Native.parse(code));
+            return j.has("error") ? null : j;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** gespeicherte Profile (geparst); das aktive ist immer dabei */
+    private java.util.List<JSONObject> profiles() {
+        java.util.List<JSONObject> l = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        try {
+            JSONArray a = new JSONArray(KroneVpnService.prefs(this).getString("profiles", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject p = parse(a.getString(i));
+                if (p != null && seen.add(key(p))) l.add(p);
+            }
+        } catch (Exception ignored) {
+        }
+        String c = code();
+        JSONObject cur = c == null ? null : parse(c);
+        if (cur != null && !seen.contains(key(cur))) {
+            l.add(cur);
+            saveProfiles(l);
+        }
+        return l;
+    }
+
+    private void saveProfiles(java.util.List<JSONObject> l) {
+        JSONArray a = new JSONArray();
+        for (JSONObject p : l) a.put(p.optString("code"));
+        KroneVpnService.prefs(this).edit().putString("profiles", a.toString()).apply();
+    }
+
+    /** Profil aktiv machen; lief das VPN, wird mit dem neuen Profil neu verbunden */
+    private void useProfile(JSONObject p) {
+        boolean wasOn = KroneVpnService.handle != 0;
+        KroneVpnService.prefs(this).edit().putString("code", p.optString("code")).apply();
+        Toast.makeText(this, "Profil: " + p.optString("title", "KroneVPN") + " – " + p.optString("name"), Toast.LENGTH_SHORT).show();
+        if (wasOn) {
+            startService(new Intent(this, KroneVpnService.class).setAction(KroneVpnService.ACTION_STOP));
+            ui.postDelayed(this::connect, 800);
+        }
+        lastRx = lastTx = -1;
+        refresh();
+    }
+
+    private void showProfiles() {
+        java.util.List<JSONObject> l = profiles();
+        JSONObject cur = code() == null ? null : parse(code());
+        String curKey = cur == null ? "" : key(cur);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(4));
+        final AlertDialog[] dlg = new AlertDialog[1];
+        if (l.isEmpty()) box.addView(text("Noch keine Profile – füge einen Verbindungscode hinzu.", 14, cMute, false));
+        for (JSONObject p : l) {
+            boolean active = key(p).equals(curKey);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            GradientDrawable bg = round(active ? (dark ? 0xFF15221C : 0xFFE6F6EE) : cSoft, 14);
+            if (active) bg.setStroke(dp(1), cOk);
+            row.setBackground(bg);
+            row.setPadding(dp(14), dp(10), dp(14), dp(10));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = dp(8);
+            row.setLayoutParams(lp);
+            row.addView(text(p.optString("title", "KroneVPN") + (active ? "   ● aktiv" : ""), 16, active ? cOk : cInk, true));
+            String host = p.optString("url").replaceFirst("^wss?://", "").split("/")[0];
+            row.addView(text("„" + p.optString("name") + "“ · " + host, 13, cMute, false));
+            row.setOnClickListener(v -> {
+                if (dlg[0] != null) dlg[0].dismiss();
+                if (!active) useProfile(p);
+            });
+            row.setOnLongClickListener(v -> {
+                if (active) {
+                    Toast.makeText(this, "Das aktive Profil kann nicht entfernt werden – erst ein anderes wählen", Toast.LENGTH_LONG).show();
+                    return true;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Profil entfernen?")
+                        .setMessage(p.optString("title", "KroneVPN") + " – " + p.optString("name"))
+                        .setPositiveButton("Entfernen", (d, w) -> {
+                            java.util.List<JSONObject> n = profiles();
+                            n.removeIf(x -> key(x).equals(key(p)));
+                            saveProfiles(n);
+                            if (dlg[0] != null) dlg[0].dismiss();
+                            showProfiles();
+                        })
+                        .setNegativeButton("Abbrechen", null)
+                        .show();
+                return true;
+            });
+            box.addView(row);
+        }
+        TextView hint = text("Antippen = verwenden · lange drücken = entfernen", 12, cMute, false);
+        hint.setPadding(dp(2), dp(10), 0, 0);
+        box.addView(hint);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        dlg[0] = new AlertDialog.Builder(this)
+                .setTitle("Profile")
+                .setView(sv)
+                .setPositiveButton("Hinzufügen", (d, w) -> askCode())
+                .setNegativeButton("Schließen", null)
+                .show();
     }
 
     private void askCode() {
@@ -351,8 +474,19 @@ public class MainActivity extends Activity {
                 return;
             }
             boolean wasOn = KroneVpnService.handle != 0;
+            // als Profil merken (gleiches Profil wird ersetzt) und aktiv machen
+            java.util.List<JSONObject> l = profiles();
+            boolean replaced = false;
+            for (int i = 0; i < l.size(); i++) {
+                if (key(l.get(i)).equals(key(c))) {
+                    l.set(i, c);
+                    replaced = true;
+                }
+            }
+            if (!replaced) l.add(c);
+            saveProfiles(l);
             KroneVpnService.prefs(this).edit().putString("code", c.getString("code")).apply();
-            Toast.makeText(this, c.optString("title", "KroneVPN") + ": Code für „" + c.getString("name") + "“ gespeichert", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, c.optString("title", "KroneVPN") + ": Profil „" + c.getString("name") + "“ gespeichert", Toast.LENGTH_SHORT).show();
             if (wasOn) {
                 startService(new Intent(this, KroneVpnService.class).setAction(KroneVpnService.ACTION_STOP));
                 ui.postDelayed(this::connect, 800);
@@ -427,7 +561,9 @@ public class MainActivity extends Activity {
         String c = code();
         try {
             JSONObject pc = c == null ? null : new JSONObject(Native.parse(c));
-            tName.setText(pc == null ? "Noch kein Verbindungscode" : "Gerät: " + pc.optString("name"));
+            int n = profiles().size();
+            tName.setText(pc == null ? "Noch kein Verbindungscode" : "Gerät: " + pc.optString("name") + (n > 1 ? "  ·  Profil wechseln ›" : ""));
+            bProfiles.setText(n > 1 ? "Profile (" + n + ") …" : "Profile …");
             String t = pc == null ? "KroneVPN" : pc.optString("title", "KroneVPN");
             tTitle.setText("🛡️ " + t);
             setTitle(t);

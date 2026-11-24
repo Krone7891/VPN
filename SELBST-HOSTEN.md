@@ -117,13 +117,17 @@ an, sobald der Verbindungscode eingefügt ist.
 
 - **Android:** `dist/KroneVPN.apk` installieren, QR-Code mit der Kamera scannen (oder Code einfügen), Verbinden.
   Die App darf danach geschlossen (auch weggewischt) werden – das VPN läuft weiter.
-- **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen. Das VPN läuft dann als **Windows-Dienst im
-  Hintergrund** und startet mit Windows – **das Fenster darf geschlossen werden**, es zeigt nur die Live-Werte.
-  Erneut starten = Anzeige wieder öffnen. Ausschalten: im Fenster `t` + Enter oder `KroneVPN.exe --trennen`;
-  ganz entfernen: `--entfernen`; wie früher nur im Fenster: `--vordergrund`. Test ohne Netzwerkänderung: `--test`.
-  (Programm: `C:\Program Files\KroneVPN`, Code/Protokoll: `C:\ProgramData\KroneVPN`.)
+- **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen. Es öffnet sich ein Programmfenster mit großem
+  Ein/Aus-Knopf, Live-Werten, Verlauf, „Code“ (QR-Code fürs Handy), „Protokoll“ und „Profile“. Das VPN läuft als
+  **Windows-Dienst im Hintergrund** und startet mit Windows – **das Fenster darf geschlossen werden**; wieder öffnen
+  über das Startmenü. Lieber die alte Text-Ansicht? Unten „Klassische Ansicht“ (zurück zum Fenster: `f` + Enter;
+  die Wahl wird gemerkt, auch per `--klassisch` / `--fenster`). Per Befehl: `--trennen`, ganz entfernen: `--entfernen`, Textanzeige wie früher: `--vordergrund`,
+  Test ohne Netzwerkänderung: `--test`. (Programm: `C:\Program Files\KroneVPN`, Code/Protokoll: `C:\ProgramData\KroneVPN`.)
 - **Linux:** `sudo dist/kronevpn-linux 'kronevpn://v1/…'` – im Hintergrund als systemd-Dienst: zusätzlich `--hintergrund`
   (danach darf das Terminal zu; `--trennen` / `--entfernen`).
+- **Profile** (mehrere Codes, z. B. verschiedene Server): Windows-Fenster „Profile“ (oder oben auf den Namen klicken),
+  Android „Profile …“ (antippen = verwenden, lange drücken = entfernen), Linux `--profile` (Liste) und
+  `--profil <nr|name>`. Jeder neu eingegebene Code wird als Profil gemerkt; Wechseln verbindet sofort neu.
 
 Die Dateien dürfen beliebig umbenannt werden (z. B. „Potzplitz VPN.exe").
 

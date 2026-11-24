@@ -8,9 +8,21 @@
 //!   --reset                           gespeicherten Code loeschen
 //!   --code                            gespeicherten Verbindungscode + QR-Code anzeigen (z. B. fuers Handy)
 //!   --kein-update                     nicht automatisch aktualisieren
+//!   --profile                         gespeicherte Profile (Verbindungscodes) auflisten
+//!   --profil <nr|name>                mit diesem Profil verbinden (wird das aktive Profil)
+//!   --klassisch / --fenster           Windows: alte Text-Ansicht bzw. neues Programmfenster (wird gemerkt)
+//!
+//! Unter Windows oeffnet sich ein Programmfenster (gui.rs); das VPN selbst laeuft als Dienst im Hintergrund.
+//! Mit --vordergrund, --test, --code usw. gibt es wie frueher die Textanzeige in einer Konsole.
 //!
 //! Neue Versionen kommen automatisch ueber die VPN-Verbindung (signiert, siehe kvpn::update): das Programm
 //! ersetzt sich selbst und startet neu.
+
+// Windows: Fenster-Programm (keine Konsole beim Doppelklick); Textmodi holen sich eine Konsole (konsole())
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(any(windows, feature = "vorschau"))]
+mod gui;
 
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(windows, path = "windows.rs")]
@@ -31,6 +43,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct Args {
     pub code: Option<String>,
     pub proxy: Option<String>,
@@ -49,10 +62,14 @@ pub struct Args {
     pub uninstall: bool,
     pub config: Option<PathBuf>,
     pub tun: String,
+    pub list_profiles: bool,
+    pub profile: Option<String>,
+    /// Windows: Some(true) = alte Text-Ansicht, Some(false) = Programmfenster, None = wie zuletzt gewaehlt
+    pub classic: Option<bool>,
 }
 
 pub fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into() };
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -66,25 +83,39 @@ pub fn parse_args() -> Args {
             "--trennen" | "--stop" => a.disconnect = true,
             "--entfernen" | "--uninstall" => a.uninstall = true,
             "--version" | "-V" => {
+                konsole(true);
                 println!("{}", kvpn::VERSION);
                 std::process::exit(0);
             }
+            "--profile" | "--profiles" => a.list_profiles = true,
+            "--profil" => a.profile = it.next(),
+            "--klassisch" | "--classic" | "--konsole" => a.classic = Some(true),
+            "--fenster" | "--gui" => a.classic = Some(false),
             "--proxy" => a.proxy = it.next(),
             "--routes" => a.routes = it.next().map(|r| r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--config" => a.config = it.next().map(PathBuf::from),
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--config datei]", kvpn::VERSION);
+                konsole(true);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
             other => {
+                konsole(true);
                 eprintln!("Unbekannte Option: {other}");
                 std::process::exit(2);
             }
         }
     }
     a
+}
+
+/// Windows: Konsole fuer die Textanzeige (das Programm selbst ist ein Fenster-Programm).
+/// `anhaengen`: zuerst die Konsole des Aufrufers nehmen (z. B. --version in cmd)
+pub fn konsole(_anhaengen: bool) {
+    #[cfg(windows)]
+    plat::konsole(_anhaengen);
 }
 
 fn config_path(a: &Args) -> PathBuf {
@@ -127,12 +158,7 @@ pub fn load_config(a: &Args) -> ClientConfig {
         let _ = std::fs::remove_file(&path);
         println!("Gespeicherter Code geloescht.");
     }
-    let code = if let Some(c) = &a.code {
-        c.clone()
-    } else if let Ok(c) = std::fs::read_to_string(&path) {
-        c
-    } else if let Some(c) = plat::dienst::stored_code().filter(|_| !a.reset) {
-        // Code des eingerichteten Hintergrund-Dienstes (z. B. Programm von woanders gestartet)
+    let code = if let Some(c) = known_code(a) {
         c
     } else {
         println!("KroneVPN {} – erster Start\n", kvpn::VERSION);
@@ -146,15 +172,150 @@ pub fn load_config(a: &Args) -> ClientConfig {
     };
     let cfg = ClientConfig::from_code(&code).unwrap_or_else(|e| die(e));
     if a.code.is_some() || !path.exists() {
-        if let Some(d) = path.parent() {
-            let _ = std::fs::create_dir_all(d);
-        }
-        if std::fs::write(&path, cfg.to_code()).is_ok() {
-            plat::restrict_file(&path);
-            println!("Code gespeichert: {}", path.display());
-        }
+        save_code(a, &cfg);
     }
     cfg
+}
+
+/// gespeicherter bzw. uebergebener Code (ohne Rueckfrage)
+pub fn known_code(a: &Args) -> Option<String> {
+    if let Some(c) = &a.code {
+        return Some(c.clone());
+    }
+    if let Ok(c) = std::fs::read_to_string(config_path(a)) {
+        return Some(c);
+    }
+    // Code des eingerichteten Hintergrund-Dienstes (z. B. Programm von woanders gestartet)
+    plat::dienst::stored_code().filter(|_| !a.reset)
+}
+
+// ------------------------------------------------------------------------------------------------ Profile
+// Mehrere Verbindungscodes (z. B. verschiedene Server oder Geraete) in profile.txt neben verbindung.txt,
+// einer pro Zeile. verbindung.txt ist das aktive Profil.
+
+fn profiles_path(a: &Args) -> PathBuf {
+    config_path(a).with_file_name("profile.txt")
+}
+
+/// gleiches Profil = gleicher Server und gleicher Geraetename (ein neuer Code dafuer ersetzt den alten)
+pub fn same_profile(x: &ClientConfig, y: &ClientConfig) -> bool {
+    x.url == y.url && x.name == y.name
+}
+
+pub fn profiles(a: &Args) -> Vec<ClientConfig> {
+    let mut v: Vec<ClientConfig> = Vec::new();
+    for l in std::fs::read_to_string(profiles_path(a)).unwrap_or_default().lines() {
+        if let Ok(c) = ClientConfig::from_code(l) {
+            if !v.iter().any(|x| same_profile(x, &c)) {
+                v.push(c);
+            }
+        }
+    }
+    v
+}
+
+pub fn save_profiles(a: &Args, list: &[ClientConfig]) {
+    let path = profiles_path(a);
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let text: String = list.iter().map(|c| c.to_code() + "\n").collect();
+    if std::fs::write(&path, text).is_ok() {
+        plat::restrict_file(&path);
+    }
+}
+
+pub fn profile_label(c: &ClientConfig) -> String {
+    let host = c.url.split("://").nth(1).unwrap_or(&c.url).split('/').next().unwrap_or("").to_string();
+    format!("{} – {} ({host})", c.display_name(), c.name)
+}
+
+// ------------------------------------------------------------------------------------------------ Ansicht (Windows)
+
+fn view_path(a: &Args) -> PathBuf {
+    config_path(a).with_file_name("ansicht.txt")
+}
+
+/// alte Text-Ansicht statt Programmfenster? (--klassisch/--fenster wird gemerkt)
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn classic_view(a: &Args) -> bool {
+    match a.classic {
+        Some(c) => {
+            set_classic_view(a, c);
+            c
+        }
+        None => std::fs::read_to_string(view_path(a)).map(|s| s.trim() == "klassisch").unwrap_or(false),
+    }
+}
+
+pub fn set_classic_view(a: &Args, classic: bool) {
+    let p = view_path(a);
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(p, if classic { "klassisch" } else { "fenster" });
+}
+
+/// Programm in der anderen Ansicht neu starten (dieses beendet sich danach)
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn restart_in_view(classic: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut args: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|x| !x.starts_with("kronevpn://") && !matches!(x.as_str(), "--klassisch" | "--classic" | "--konsole" | "--fenster" | "--gui"))
+        .collect();
+    args.push(if classic { "--klassisch" } else { "--fenster" }.into());
+    std::process::Command::new(exe).args(args).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// --profile / --profil
+fn profile_cli(a: &mut Args) {
+    let list = profiles(a);
+    let active = known_code(a).and_then(|c| ClientConfig::from_code(&c).ok());
+    if a.list_profiles {
+        if list.is_empty() {
+            println!("Noch keine Profile gespeichert.");
+        }
+        for (i, c) in list.iter().enumerate() {
+            let mark = if active.as_ref().is_some_and(|x| same_profile(x, c)) { "*" } else { " " };
+            println!("{mark} {}  {}", i + 1, profile_label(c));
+        }
+        println!("\nWechseln: kronevpn --profil <nr>   Neues Profil: kronevpn <code>");
+        pause_and_exit(0);
+    }
+    if let Some(want) = a.profile.clone() {
+        let w = want.to_lowercase();
+        let found = match want.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= list.len() => Some(&list[n - 1]),
+            _ => list.iter().find(|c| c.name.to_lowercase() == w).or_else(|| list.iter().find(|c| profile_label(c).to_lowercase().contains(&w))),
+        };
+        match found {
+            Some(c) => a.code = Some(c.to_code()),
+            None => {
+                konsole(false);
+                die(format!("Profil '{want}' nicht gefunden (Liste: kronevpn --profile)"))
+            }
+        }
+    }
+}
+
+pub fn save_code(a: &Args, cfg: &ClientConfig) {
+    // auch in die Profil-Liste (gleiches Profil wird ersetzt)
+    let mut list = profiles(a);
+    match list.iter().position(|x| same_profile(x, cfg)) {
+        Some(i) => list[i] = cfg.clone(),
+        None => list.push(cfg.clone()),
+    }
+    save_profiles(a, &list);
+    let path = config_path(a);
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if std::fs::write(&path, cfg.to_code()).is_ok() {
+        plat::restrict_file(&path);
+        say(&format!("Code gespeichert: {}", path.display()));
+    }
 }
 
 /// Wege zum Server: erzwungener Proxy, Proxy aus dem Code, Systemproxy (zuerst) + direkt
@@ -221,7 +382,7 @@ pub fn apply_update(new: &std::path::Path, restart: bool) -> Result<(), String> 
 }
 
 fn main() {
-    let a = parse_args();
+    let mut a = parse_args();
     // Rest eines Updates aufraeumen
     if let Some(old) = beside_exe("old") {
         let _ = std::fs::remove_file(old);
@@ -231,6 +392,26 @@ fn main() {
     if a.service {
         plat::dienst::run_service();
         return;
+    }
+    // Vorschau des Programmfensters (Linux, nur zum Entwickeln)
+    #[cfg(feature = "vorschau")]
+    if let Ok(m) = std::env::var("KVPN_VORSCHAU") {
+        gui::vorschau(&m);
+        return;
+    }
+    if a.list_profiles {
+        konsole(false);
+    }
+    if a.list_profiles || a.profile.is_some() {
+        profile_cli(&mut a);
+    }
+    // Windows: Programmfenster (ausser fuer die Textmodi)
+    #[cfg(windows)]
+    {
+        if !(a.foreground || a.test || a.show_code || a.disconnect || a.uninstall || a.reset) && !classic_view(&a) {
+            fenster(&a);
+        }
+        konsole(false);
     }
     if a.disconnect || a.uninstall {
         plat::dienst::control(&a);
@@ -307,6 +488,29 @@ fn main() {
         }
         Err(e) => die(e),
     }
+}
+
+/// Windows: Programmfenster oeffnen. Kehrt nur zurueck, wenn es nicht geht (dann Textanzeige wie frueher).
+#[cfg(windows)]
+fn fenster(a: &Args) {
+    // schon eine neuere Version installiert (Auto-Update)? Dann die starten
+    if let Some(neu) = plat::dienst::newer_installed() {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if std::process::Command::new(neu).args(args).spawn().is_ok() {
+            std::process::exit(0);
+        }
+    }
+    let cfg = known_code(a).and_then(|c| ClientConfig::from_code(&c).ok());
+    if let (Some(c), true) = (&cfg, a.code.is_some()) {
+        save_code(a, c);
+    }
+    let st = std::sync::Arc::new(plat::dienst::Fenster::new(a.clone()));
+    if let Err(e) = gui::run(st, cfg, a.code.is_some()) {
+        konsole(false);
+        println!("Das Programmfenster konnte nicht geoeffnet werden ({e}) – Textanzeige.\n");
+        return;
+    }
+    std::process::exit(0)
 }
 
 // ------------------------------------------------------------------------------------------------ Tunnel

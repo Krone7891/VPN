@@ -10,6 +10,8 @@
 //!   KroneVPN.exe --trennen      VPN aus (Dienst gestoppt, startet nicht mehr mit Windows)
 //!   KroneVPN.exe --entfernen    Dienst und gespeicherten Code entfernen
 //!   KroneVPN.exe --vordergrund  wie frueher nur im Fenster (Fenster zu = VPN aus)
+//!
+//! Das Programmfenster (gui.rs) steuert den Dienst ueber `Fenster`; im Startmenue liegt eine Verknuepfung.
 
 use crate::{say, Args, Ende, Ui, Zustand};
 use kvpn::code::ClientConfig;
@@ -203,7 +205,7 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
         let _ = std::fs::write(proxy_file(), &sp);
     }
     if !sp.is_empty() {
-        println!("Systemproxy gefunden: {sp} (wird zuerst probiert, sonst direkt)");
+        say(&format!("Systemproxy gefunden: {sp} (wird zuerst probiert, sonst direkt)"));
     }
 
     let mgr = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)
@@ -224,7 +226,7 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
             Some(v) if kvpn::update::newer(kvpn::VERSION, &v) => true,
             Some(v) if v == kvpn::VERSION => std::fs::read(&me).ok() != std::fs::read(&dst).ok(),
             Some(v) => {
-                println!("Installiert ist schon die neuere Version {v} – die bleibt.");
+                say(&format!("Installiert ist schon die neuere Version {v} – die bleibt."));
                 false
             }
         };
@@ -288,6 +290,8 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
     });
     let _ = svc.set_failure_actions_on_non_crash_failures(true);
 
+    shortcut(cfg.display_name(), &dst);
+
     let running = svc.query_status().map(|s| s.current_state == ServiceState::Running).unwrap_or(false);
     if running && (code_changed || proxy_changed || copied) {
         stop_and_wait(&svc);
@@ -313,7 +317,8 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
     println!();
     println!("Laeuft im Hintergrund (Windows-Dienst) und startet auch automatisch mit Windows.");
     println!("Du kannst dieses Fenster jederzeit schliessen – das VPN bleibt an.");
-    println!("VPN ausschalten: hier  t  eintippen und Enter  (oder Programm mit --trennen starten).\n");
+    println!("VPN ausschalten: hier  t  eintippen und Enter  (oder Programm mit --trennen starten).");
+    println!("Neue Ansicht (Programmfenster): hier  f  eintippen und Enter.\n");
     println!("Verbinde ...");
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -334,6 +339,13 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
                 println!("\nVPN getrennt. Wieder verbinden: Programm erneut starten.\nEnter druecken zum Schliessen ...");
                 let _ = rx.recv();
                 std::process::exit(0);
+            }
+            if line.trim().eq_ignore_ascii_case("f") {
+                crate::set_classic_view(a, false);
+                match crate::restart_in_view(false) {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => println!("\rProgrammfenster konnte nicht gestartet werden: {e}"),
+                }
             }
         }
         let z: Option<Zustand> = std::fs::read(status_file()).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -378,6 +390,132 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
     }
 }
 
+/// Verknuepfung im Startmenue (fuer alle Benutzer), damit man das Fenster wiederfindet
+fn shortcut_file(title: &str) -> PathBuf {
+    let name: String = title.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    env_dir("ProgramData", r"C:\ProgramData")
+        .with_file_name("Microsoft")
+        .join(r"Windows\Start Menu\Programs")
+        .join(format!("{}.lnk", name.trim()))
+}
+
+fn shortcut(title: &str, target: &Path) {
+    // schon angelegt (auch unter anderem Namen, z. B. anderes Profil)? Dann bleibt sie
+    if let Ok(l) = std::fs::read_to_string(data_dir().join("verknuepfung.txt")) {
+        if Path::new(l.trim()).exists() {
+            return;
+        }
+    }
+    let lnk = shortcut_file(title);
+    if lnk.exists() {
+        return;
+    }
+    let q = |p: &Path| p.display().to_string().replace('\'', "''");
+    let ps = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Description='VPN'; $s.Save()",
+        q(&lnk),
+        q(target),
+        q(target.parent().unwrap_or(target))
+    );
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if ok {
+        let _ = std::fs::write(data_dir().join("verknuepfung.txt"), lnk.display().to_string());
+    }
+}
+
+/// laeuft hier nicht die installierte Version und ist die installierte neuer (Auto-Update)? Dann deren Pfad
+pub fn newer_installed() -> Option<PathBuf> {
+    let dst = prog_dir().join("KroneVPN.exe");
+    let me = std::env::current_exe().ok()?;
+    if std::fs::canonicalize(&me).ok() == std::fs::canonicalize(&dst).ok() {
+        return None;
+    }
+    let v = installed_version(&dst)?;
+    kvpn::update::newer(&v, kvpn::VERSION).then_some(dst)
+}
+
+/// Steuerung fuer das Programmfenster
+pub struct Fenster {
+    a: Args,
+}
+
+impl Fenster {
+    pub fn new(a: Args) -> Self {
+        Fenster { a }
+    }
+}
+
+fn open_service(access: ServiceAccess) -> Option<windows_service::service::Service> {
+    let mgr = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
+    mgr.open_service(NAME, access).ok()
+}
+
+impl crate::gui::Steuerung for Fenster {
+    fn lage(&self) -> crate::gui::Lage {
+        use crate::gui::Lage;
+        let Some(s) = open_service(ServiceAccess::QUERY_STATUS) else { return Lage::Fehlt };
+        match s.query_status().map(|s| s.current_state) {
+            Ok(ServiceState::Running) => Lage::Laeuft,
+            Ok(ServiceState::StartPending | ServiceState::ContinuePending) => Lage::Startet,
+            Ok(ServiceState::StopPending | ServiceState::PausePending) => Lage::Stoppt,
+            _ => Lage::Aus,
+        }
+    }
+
+    fn zustand(&self) -> Option<Zustand> {
+        let z: Zustand = serde_json::from_slice(&std::fs::read(status_file()).ok()?).ok()?;
+        (kvpn::util::now_secs().saturating_sub(z.ts) < 5).then_some(z)
+    }
+
+    fn gewollt(&self) -> bool {
+        match open_service(ServiceAccess::QUERY_CONFIG) {
+            None => true,
+            Some(s) => s.query_config().map(|c| c.start_type == ServiceStartType::AutoStart).unwrap_or(true),
+        }
+    }
+
+    fn verbinden(&self, cfg: &ClientConfig) -> Result<(), String> {
+        install(cfg, &self.a)
+    }
+
+    fn trennen(&self) -> Result<(), String> {
+        disconnect();
+        Ok(())
+    }
+
+    fn code_speichern(&self, cfg: &ClientConfig) {
+        crate::save_code(&self.a, cfg);
+    }
+
+    fn profile(&self) -> Vec<ClientConfig> {
+        crate::profiles(&self.a)
+    }
+
+    fn profile_speichern(&self, list: &[ClientConfig]) {
+        crate::save_profiles(&self.a, list);
+    }
+
+    fn protokoll(&self) -> String {
+        let log = std::fs::read_to_string(log_file()).unwrap_or_default();
+        let lines: Vec<&str> = log.lines().collect();
+        lines[lines.len().saturating_sub(300)..].join("\n")
+    }
+
+    fn protokoll_oeffnen(&self) {
+        let _ = Command::new("notepad.exe").arg(log_file()).spawn();
+    }
+
+    fn klassisch(&self) -> Result<(), String> {
+        crate::set_classic_view(&self.a, true);
+        crate::restart_in_view(true)
+    }
+}
+
 fn disconnect() {
     if let Ok(mgr) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
         if let Ok(s) = mgr.open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP) {
@@ -393,7 +531,10 @@ pub fn control(a: &Args) -> ! {
     disconnect();
     if a.uninstall {
         let ok = sc(&["delete", NAME]);
-        for f in [code_file(), proxy_file(), status_file()] {
+        if let Ok(l) = std::fs::read_to_string(data_dir().join("verknuepfung.txt")) {
+            let _ = std::fs::remove_file(l.trim());
+        }
+        for f in [code_file(), proxy_file(), status_file(), data_dir().join("verknuepfung.txt")] {
             let _ = std::fs::remove_file(f);
         }
         let me = std::env::current_exe().ok().and_then(|p| std::fs::canonicalize(p).ok());
