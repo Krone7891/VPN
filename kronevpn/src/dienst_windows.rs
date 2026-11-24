@@ -307,7 +307,62 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
 // ------------------------------------------------------------------------------------------------ Fenster
 
 /// Dienst einrichten/starten und danach nur noch anzeigen. Das Fenster darf jederzeit zu.
+fn menu() {
+    println!("Befehle (Buchstabe eintippen, dann Enter):");
+    println!("  f  neue Ansicht (Programmfenster)");
+    println!("  p  Profil wechseln");
+    println!("  c  Verbindungscode + QR-Code anzeigen");
+    println!("  t  VPN ausschalten");
+    println!("  h  diese Hilfe\n");
+}
+
+/// alte Ansicht: Profil waehlen (Nummer eintippen)
+fn choose_profile(cfg: &mut ClientConfig, a: &Args, rx: &std::sync::mpsc::Receiver<String>) {
+    let list = crate::profiles(a);
+    println!("\r{:90}\nProfile:", "");
+    for (i, p) in list.iter().enumerate() {
+        let mark = if crate::same_profile(p, cfg) { "*" } else { " " };
+        println!("  {mark} {}  {}", i + 1, crate::profile_label(p));
+    }
+    println!("  + {}  neues Profil (Verbindungscode einfuegen)", list.len() + 1);
+    println!("Nummer eintippen und Enter (nur Enter = abbrechen):");
+    let Ok(l) = rx.recv() else { return };
+    let new = match l.trim().parse::<usize>() {
+        Ok(n) if n >= 1 && n <= list.len() => list[n - 1].clone(),
+        Ok(n) if n == list.len() + 1 => {
+            println!("Code einfuegen (beginnt mit kronevpn://v1/) und Enter:");
+            let Ok(c) = rx.recv() else { return };
+            match ClientConfig::from_code(&c) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("{e}");
+                    return;
+                }
+            }
+        }
+        _ => {
+            println!("Abgebrochen.");
+            return;
+        }
+    };
+    crate::save_code(a, &new);
+    if crate::same_profile(&new, cfg) && new == *cfg {
+        println!("Profil ist schon aktiv.");
+        return;
+    }
+    println!("Wechsle zu {} ...", crate::profile_label(&new));
+    match install(&new, a) {
+        Ok(()) => {
+            *cfg = new;
+            crate::set_title(&format!("{} – {}", cfg.display_name(), cfg.name));
+        }
+        Err(e) => println!("Fehler: {e}"),
+    }
+}
+
 pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
+    let mut cfg = cfg.clone();
+    let cfg = &mut cfg;
     let title = cfg.display_name().to_string();
     crate::set_title(&format!("{title} – {}", cfg.name));
     println!("{title} {} – Geraet '{}' – Server {}", kvpn::VERSION, cfg.name, cfg.url);
@@ -317,8 +372,7 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
     println!();
     println!("Laeuft im Hintergrund (Windows-Dienst) und startet auch automatisch mit Windows.");
     println!("Du kannst dieses Fenster jederzeit schliessen – das VPN bleibt an.");
-    println!("VPN ausschalten: hier  t  eintippen und Enter  (oder Programm mit --trennen starten).");
-    println!("Neue Ansicht (Programmfenster): hier  f  eintippen und Enter.\n");
+    menu();
     println!("Verbinde ...");
 
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -340,12 +394,29 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
                 let _ = rx.recv();
                 std::process::exit(0);
             }
-            if line.trim().eq_ignore_ascii_case("f") {
-                crate::set_classic_view(a, false);
-                match crate::restart_in_view(false) {
-                    Ok(()) => std::process::exit(0),
-                    Err(e) => println!("\rProgrammfenster konnte nicht gestartet werden: {e}"),
+            match line.trim().to_ascii_lowercase().as_str() {
+                "f" => {
+                    crate::set_classic_view(a, false);
+                    match crate::restart_in_view(false) {
+                        Ok(()) => std::process::exit(0),
+                        Err(e) => println!("\rProgrammfenster konnte nicht gestartet werden: {e}"),
+                    }
                 }
+                "p" => {
+                    choose_profile(cfg, a, &rx);
+                    last_state.clear();
+                }
+                "c" => {
+                    let code = cfg.to_code();
+                    println!("\r{:90}\n{}", "", crate::qr(&code));
+                    println!("Verbindungscode fuer '{}' (geheim halten):\n{code}\n", cfg.name);
+                }
+                "h" | "?" | "hilfe" => {
+                    println!("\r{:90}", "");
+                    menu();
+                }
+                "" => {}
+                x => println!("\rUnbekannter Befehl '{x}' – h + Enter zeigt die Hilfe"),
             }
         }
         let z: Option<Zustand> = std::fs::read(status_file()).ok().and_then(|b| serde_json::from_slice(&b).ok());

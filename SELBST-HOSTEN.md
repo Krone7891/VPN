@@ -120,8 +120,8 @@ an, sobald der Verbindungscode eingefügt ist.
 - **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen. Es öffnet sich ein Programmfenster mit großem
   Ein/Aus-Knopf, Live-Werten, Verlauf, „Code“ (QR-Code fürs Handy), „Protokoll“ und „Profile“. Das VPN läuft als
   **Windows-Dienst im Hintergrund** und startet mit Windows – **das Fenster darf geschlossen werden**; wieder öffnen
-  über das Startmenü. Lieber die alte Text-Ansicht? Unten „Klassische Ansicht“ (zurück zum Fenster: `f` + Enter;
-  die Wahl wird gemerkt, auch per `--klassisch` / `--fenster`). Per Befehl: `--trennen`, ganz entfernen: `--entfernen`, Textanzeige wie früher: `--vordergrund`,
+  über das Startmenü. Lieber die alte Text-Ansicht? Unten „Klassische Ansicht“. Dort per Buchstabe + Enter:
+  `f` neues Fenster, `p` Profil wechseln, `c` Code/QR, `t` ausschalten (die Wahl wird gemerkt, auch `--klassisch` / `--fenster`). Per Befehl: `--trennen`, ganz entfernen: `--entfernen`, Textanzeige wie früher: `--vordergrund`,
   Test ohne Netzwerkänderung: `--test`. (Programm: `C:\Program Files\KroneVPN`, Code/Protokoll: `C:\ProgramData\KroneVPN`.)
 - **Linux:** `sudo dist/kronevpn-linux 'kronevpn://v1/…'` – im Hintergrund als systemd-Dienst: zusätzlich `--hintergrund`
   (danach darf das Terminal zu; `--trennen` / `--entfernen`).

@@ -408,6 +408,15 @@ fn main() {
     // Windows: Programmfenster (ausser fuer die Textmodi)
     #[cfg(windows)]
     {
+        // eine aeltere Kopie (z. B. im Download-Ordner) gestartet, installiert ist schon eine neuere? Dann die nehmen
+        if !(a.disconnect || a.uninstall) {
+            if let Some(neu) = plat::dienst::newer_installed() {
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                if std::process::Command::new(neu).args(args).spawn().is_ok() {
+                    std::process::exit(0);
+                }
+            }
+        }
         if !(a.foreground || a.test || a.show_code || a.disconnect || a.uninstall || a.reset) && !classic_view(&a) {
             fenster(&a);
         }
@@ -493,13 +502,6 @@ fn main() {
 /// Windows: Programmfenster oeffnen. Kehrt nur zurueck, wenn es nicht geht (dann Textanzeige wie frueher).
 #[cfg(windows)]
 fn fenster(a: &Args) {
-    // schon eine neuere Version installiert (Auto-Update)? Dann die starten
-    if let Some(neu) = plat::dienst::newer_installed() {
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        if std::process::Command::new(neu).args(args).spawn().is_ok() {
-            std::process::exit(0);
-        }
-    }
     let cfg = known_code(a).and_then(|c| ClientConfig::from_code(&c).ok());
     if let (Some(c), true) = (&cfg, a.code.is_some()) {
         save_code(a, c);

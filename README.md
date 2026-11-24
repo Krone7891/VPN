@@ -49,7 +49,7 @@ Fertig gebaut in [`dist/`](dist) – oder von deinem Server unter `/download/` m
 | Gerät | Datei | |
 |---|---|---|
 | Android 8+ (arm64, z. B. Galaxy S26) | [`dist/KroneVPN.apk`](dist/KroneVPN.apk) | QR-Code scannen oder Code einfügen, „Immer verbunden" möglich |
-| Windows 10/11 | [`dist/KroneVPN.exe`](dist/KroneVPN.exe) | eine Datei, Treiber eingebettet; Programmfenster mit Ein/Aus-Knopf, Live-Werten und Profilen (alte Text-Ansicht umschaltbar); das VPN läuft als **Dienst im Hintergrund** (Fenster darf zu, startet mit Windows) |
+| Windows 10/11 | [`dist/KroneVPN.exe`](dist/KroneVPN.exe) | eine Datei, Treiber eingebettet; Programmfenster mit Ein/Aus-Knopf, Live-Werten und Profilen (alte Text-Ansicht umschaltbar, dort Befehlsmenü: `f` Fenster, `p` Profil, `c` Code, `t` aus); das VPN läuft als **Dienst im Hintergrund** (Fenster darf zu, startet mit Windows) |
 | Linux x86_64 | [`dist/kronevpn-linux`](dist/kronevpn-linux) | statisch, ohne Abhängigkeiten; `--hintergrund` = systemd-Dienst |
 | Server x86_64 | [`dist/kvpn-server`](dist/kvpn-server) | statisch, ohne Abhängigkeiten (das Setup nimmt ihn automatisch) |
 
