@@ -180,6 +180,18 @@ pub async fn handle<S>(
         }
         let mut j = data_json(sh);
         j["local"] = json!(local);
+        // ungefaehrer Standort nur auf der lokalen bzw. Admin-Seite
+        let cfg = sh.cfg();
+        if local && cfg.geo {
+            if let Some(list) = j["peers"].as_array_mut() {
+                for p in list {
+                    let ip = p["info"]["remote"].as_str().unwrap_or("").to_string();
+                    if let Some(g) = crate::geo::get(&cfg.state_dir, &ip) {
+                        p["geo"] = json!(g);
+                    }
+                }
+            }
+        }
         let b = j.to_string();
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.as_bytes()).await;
     }
@@ -280,7 +292,7 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
     let c = sh.cfg();
     json!({
         "ok": true,
-        "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn,
+        "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn, "geo": c.geo,
         "admin_url": c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_default(),
         "admin_password_set": !c.admin_password.is_empty(),
         "max_devices": c.max_devices, "max_possible": c.capacity().unwrap_or(0), "devices": c.device_count(),
@@ -291,7 +303,7 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
     })
 }
 
-/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, max_devices?, vpn_name?, admin_password?}
+/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?}
 /// Rueckgabe: (Einstellungen + Meldung, Admin-Passwort geaendert)
 fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value, bool), String> {
     if !body.is_object() {
@@ -309,7 +321,7 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     let mut c = crate::config::Config::load(path)?;
     let before = c.clone();
     let mut pw_changed = false;
-    for (k, v) in [("aes256", flag("aes256")), ("performance", flag("performance")), ("admin_vpn", flag("admin_vpn"))] {
+    for (k, v) in [("aes256", flag("aes256")), ("performance", flag("performance")), ("admin_vpn", flag("admin_vpn")), ("geo", flag("geo"))] {
         if let Some(v) = v {
             c.set(k, if v { "an" } else { "aus" })?;
         }
@@ -337,6 +349,9 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     }
     if c.admin_vpn != before.admin_vpn {
         msgs.push(format!("Admin-Seite im VPN {}", onoff(c.admin_vpn)));
+    }
+    if c.geo != before.geo {
+        msgs.push(format!("Standort {}", onoff(c.geo)));
     }
     if c.max_devices != before.max_devices {
         msgs.push(format!("höchstens {} Geräte", c.max_devices));

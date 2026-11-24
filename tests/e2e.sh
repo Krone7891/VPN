@@ -294,6 +294,25 @@ SJ '{"vpn_name":"","max_devices":8}' >/dev/null
 VER=$(grep -m1 '^version' "$R/Cargo.toml" | cut -d'"' -f2)
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"apps\":\"$VER\"" && ok "Webseite: App-Version $VER angezeigt" || bad "data.json ohne App-Version"
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"ver\":\"$VER\"" && ok "Webseite: App-Version je Geraet" || bad "data.json ohne Geraete-Version"
+# Standort der Geraete (ungefaehr, aus der IP) – nur auf der Admin-Seite
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"geo":{[^}]*"local":true' && ok "Admin-Seite: Standort je Geraet (Testnetz = lokales Netz, ohne Abfrage)" || bad "Admin-Seite ohne Standort"
+ns kv-srv curl -s -m 3 http://127.0.0.1:8101/stats/data.json | grep -q '"geo"' && bad "Standort auf der oeffentlichen Statistik!" || ok "oeffentliche Statistik ohne Standort"
+SJ '{"geo":false}' | grep -q '"geo":false' && ! ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"geo":{' && ok "Standort abschaltbar" || bad "Standort aus"
+SJ '{"geo":true}' >/dev/null
+cat > "$W/geo.py" <<'PY'
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        ip = self.path.strip('/').split('?')[0]
+        b = json.dumps({"ip": ip, "success": True, "country": "Deutschland", "country_code": "DE", "region": "Bayern", "city": "München",
+                        "latitude": 48.1351, "longitude": 11.582, "connection": {"isp": "Deutsche Telekom AG"}}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 8998), H).serve_forever()
+PY
+bg python3 "$W/geo.py"; sleep 1
+KVPN_GEO_URL=http://127.0.0.1:8998 "$BIN/kvpn-server" standort 91.12.3.4 | grep -q "München, Bayern, Deutschland · Deutsche Telekom AG" && ok "kvpn-server standort: $(KVPN_GEO_URL=http://127.0.0.1:8998 "$BIN/kvpn-server" standort 91.12.3.4)" || bad "standort-Abfrage"
+"$BIN/kvpn-server" standort 192.168.1.5 | grep -q "lokales" && ok "private Adressen werden nicht nachgefragt" || bad "standort privat"
 mkdir -p "$W/dlpage"; echo test > "$W/dlpage/KroneVPN.apk"
 "$BIN/kvpn-server" set downloads_dir "$W/dlpage" >/dev/null; sleep 3
 ns kv-srv curl -s -m 3 http://127.0.0.1:8180/download/ | grep -q "Version $VER" && ok "Download-Seite zeigt Version $VER" || bad "Download-Seite ohne Version"

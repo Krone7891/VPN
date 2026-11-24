@@ -16,6 +16,7 @@
 
 mod admin;
 mod config;
+mod geo;
 mod netsetup;
 mod server;
 mod stats;
@@ -40,7 +41,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         kvpn::VERSION
     );
     std::process::exit(2)
@@ -72,6 +73,13 @@ fn main() {
         "zuordnen" | "assign" => cmd_assign(&cfg_path, &args[1..]),
         "verlauf" | "log" | "events" => cmd_events(&cfg_path, &args[1..]),
         "einstellungen" | "settings" => cmd_settings(&cfg_path, &args[1..]),
+        "standort" | "geo" => match args.get(1) {
+            Some(ip) => match geo::lookup_now(ip) {
+                Ok(g) => println!("{ip}: {}", geo::describe(&g)),
+                Err(e) => die(e),
+            },
+            None => die("Aufruf: kvpn-server standort <ip-adresse>"),
+        },
         "admin-passwort" | "admin-password" => cmd_admin_pw(&cfg_path, &args[1..]),
         "status" => cmd_status(&cfg_path),
         "remove" | "rm" => cmd_remove(&cfg_path, &args[1..].join(" ")),
@@ -728,6 +736,7 @@ fn cmd_settings(path: &str, args: &[String]) {
         (&["--aes256", "--aes"][..], "aes256"),
         (&["--leistung", "--leistungsmodus", "--performance"][..], "performance"),
         (&["--admin-vpn", "--admin"][..], "admin_vpn"),
+        (&["--standort", "--geo"][..], "geo"),
         (&["--max", "--max-geraete"][..], "max_devices"),
     ] {
         if let Some(v) = take_opt(&mut args, keys) {
@@ -751,6 +760,7 @@ fn cmd_settings(path: &str, args: &[String]) {
                 "Admin-Seite im VPN (http://<server-im-vpn>:8180, mit Passwort)",
                 onoff(cfg.admin_vpn).to_string(),
             ),
+            ("geo", "Standort der Geraete auf der Admin-Seite (ungefaehr aus der IP, Abfrage bei ipwho.is)", onoff(cfg.geo).to_string()),
             ("max_devices", "Hoechstzahl Geraete", cfg.max_devices.to_string()),
         ] {
             loop {
@@ -781,11 +791,12 @@ fn cmd_settings(path: &str, args: &[String]) {
     }
     let c = Config::load(path).unwrap_or_else(|e| die(e));
     println!(
-        "Einstellungen: Benutzerverwaltung {} · AES-256 {} · Leistungsmodus {} · Admin-Seite im VPN {} · hoechstens {} Geraete ({} angelegt)",
+        "Einstellungen: Benutzerverwaltung {} · AES-256 {} · Leistungsmodus {} · Admin-Seite im VPN {} · Standort {} · hoechstens {} Geraete ({} angelegt)",
         onoff(c.users),
         onoff(c.aes256),
         onoff(c.performance),
         c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_else(|| "aus".into()),
+        onoff(c.geo),
         c.max_devices,
         c.device_count()
     );
@@ -865,5 +876,10 @@ fn cmd_status(path: &str) {
             ver,
             upd
         );
+        if let Ok(g) = serde_json::from_value::<geo::Geo>(p["geo"].clone()) {
+            if p["geo"].is_object() {
+                println!("  {:<24} {}{} (von {})", "", if p["online"].as_bool().unwrap_or(false) { "Standort: " } else { "zuletzt: " }, geo::describe(&g), i["remote"].as_str().unwrap_or(""));
+            }
+        }
     }
 }

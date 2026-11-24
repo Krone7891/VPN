@@ -36,6 +36,7 @@ h2{font-size:17px;margin:26px 0 10px}
 .kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kv span{white-space:nowrap;font-size:12px;color:var(--mute)}
 .badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mute);margin:2px 4px 2px 0}
+.geo{font-size:13.5px;margin:4px 0 2px;min-height:0}.geo:empty{display:none}.geo a{color:var(--acc)}
 .vtag{font-size:12.5px;font-weight:600;padding:2px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--mute);margin-left:10px;vertical-align:4px;white-space:nowrap}
 .badge.warn{color:var(--warn)}.badge.ok{color:var(--ok)}
 .chart{position:relative}
@@ -140,6 +141,7 @@ function build(){
    '<div class="set"><div class="t"><b>AES-256-GCM</b><span>statt ChaCha20 für die Daten · gilt für neue Verbindungen, ältere Apps bleiben bei ChaCha20</span></div><input type="checkbox" class="sw" id="s_aes"></div>'+
    '<div class="set"><div class="t"><b>Leistungsmodus <span class="tag">Neustart</span></b><span>alle CPU-Kerne, mehr Durchsatz, mehr Last</span></div><input type="checkbox" class="sw" id="s_perf"></div>'+
    '<div class="set"><div class="t"><b>Admin-Seite im VPN <span class="tag">Neustart</span></b><span id="s_admi"></span></div><input type="checkbox" class="sw" id="s_admin"></div>'+
+   '<div class="set"><div class="t"><b>Standort der Geräte</b><span>ungefähr aus der IP-Adresse (Stadt, Land, Anbieter) – nur hier auf der Admin-Seite. Dafür fragt der Server ipwho.is.</span></div><input type="checkbox" class="sw" id="s_geo"></div>'+
    '<div class="set"><div class="t"><b>Admin-Passwort ändern</b><span id="s_pwi">mindestens 8 Zeichen · leer lassen = bleibt</span></div><div class="pw">'+
    '<input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
    '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
@@ -255,7 +257,7 @@ function showSettings(r){
   if(!f.dataset.init){f.dataset.init=1;f.onsubmit=e=>{e.preventDefault();saveSettings()};
     f.addEventListener('input',()=>{SET_DIRTY=true});$('#s_rs').onclick=restartServer}
   if(!SET_DIRTY){$('#s_name').value=r.vpn_name;$('#s_max').value=r.max_devices;$('#s_max').max=r.max_possible||250;
-    $('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn}
+    $('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo}
   setT($('#s_maxi'),r.devices+' angelegt, möglich bis '+(r.max_possible||250));
   setT($('#s_admi'),r.admin_vpn?(r.admin_url?'erreichbar unter '+r.admin_url+' (mit Passwort)':'an'):'aus – dann nur noch lokal auf dem Server');
   setT($('#s_pwi'),(r.admin_password_set?'festgelegt':'noch keins – wird beim ersten Aufruf im VPN festgelegt')+' · mindestens 8 Zeichen, leer lassen = bleibt');
@@ -267,7 +269,7 @@ async function saveSettings(){
   if(!SET)return;const m=$('#s_msg'),b={};
   const name=$('#s_name').value.trim(),max=+$('#s_max').value,pw=$('#s_pw').value,pw2=$('#s_pw2').value;
   if(name!==SET.vpn_name)b.vpn_name=name;if(max!==SET.max_devices)b.max_devices=max;
-  [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
+  [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin'],['geo','#s_geo']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
   if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}b.admin_password=pw}
   if(!Object.keys(b).length){setT(m,'Nichts geändert');SET_DIRTY=false;return}
   if(b.admin_vpn===false&&viaVpn()&&!confirm('Admin-Seite im VPN ausschalten? Nach dem Neustart ist diese Seite nur noch lokal auf dem Server erreichbar.'))return;
@@ -301,6 +303,17 @@ function verBadge(p,i){
   return '<span class="badge'+(old?' warn':' ok')+'" title="'+(old?'Update auf '+esc(APPV)+' ausstehend – kommt beim nächsten Verbinden':'aktuelle Version')+'">'+
     (p.online?'':'zuletzt ')+esc(osName(i.os))+' · v'+esc(i.ver)+(old?' · Update ausstehend':' ✓')+'</span>';
 }
+/* ungefaehrer Standort aus der IP-Adresse (nur lokale/Admin-Seite) */
+function flag(cc){return /^[A-Za-z]{2}$/.test(cc||'')?String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1A5+c.charCodeAt(0))):'📍'}
+function geoLine(p){
+  const g=p.geo;if(!g)return '';
+  const pre=p.online?'':'zuletzt: ';
+  if(g.local)return '<span class="mute">📍 '+pre+'lokales Netz (gleiches Netz wie der Server)</span>';
+  const place=[g.city,g.region&&g.region!==g.city?g.region:'',g.country].filter(Boolean).join(', ');
+  const map=(g.lat||g.lon)?' · <a href="https://www.openstreetmap.org/?mlat='+g.lat+'&amp;mlon='+g.lon+'#map=10/'+g.lat+'/'+g.lon+'" target="_blank" rel="noopener noreferrer">Karte</a>':'';
+  return '<span title="Ungefährer Ort aus der IP-Adresse '+esc((p.info||{}).remote||'')+' – kein GPS: im Mobilfunk oder Firmennetz ist es der Ort des Netzanschlusses">'+
+    flag(g.cc)+' '+esc(pre+place)+(g.isp?' <span class="mute">· '+esc(g.isp)+'</span>':'')+'</span>'+map;
+}
 function peers(list,now){
   const box=$('#peers');
   if(!list.length){setH(box,'<div class="card mute">Noch kein Gerät angelegt. Auf dem Server: <code>kvpn-server add "Mein Handy"</code></div>');return}
@@ -311,7 +324,7 @@ function peers(list,now){
     let c=[...box.children].find(x=>x.dataset.peer===p.name);
     if(!c){c=document.createElement('div');c.className='card';c.dataset.peer=p.name;c.innerHTML=
       '<div class="top"><div style="min-width:0"><div class="ttl"><span class="dot" data-f="dot" aria-hidden="true"></span><span data-f="name"></span></div><div class="mute" data-f="sub"></div></div>'+
-      '<div class="mute" style="text-align:right;white-space:nowrap" data-f="ip"></div></div><div data-f="badges"></div>'+
+      '<div class="mute" style="text-align:right;white-space:nowrap" data-f="ip"></div></div><div data-f="badges"></div><div class="geo" data-f="geo"></div>'+
       '<div class="kv"><div><span>Download</span><b data-f="down"></b></div><div><span>Upload</span><b data-f="up"></b></div><div><span>Ping</span><b data-f="ping"></b></div>'+
       '<div><span>Heute</span><b data-f="today"></b></div><div><span>Monat</span><b data-f="month"></b></div><div><span>Gesamt</span><b data-f="total"></b></div></div>'+
       '<svg class="spark" viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="Datenrate der letzten 2 Minuten"><polyline data-f="spark" fill="none" stroke="var(--s1)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'+
@@ -327,6 +340,7 @@ function peers(list,now){
       :'<span class="badge warn" title="Eine Firewall bricht HTTPS auf (z. B. Sophos). Die VPN-Daten bleiben trotzdem verschlüsselt – Noise prüft den Server.">⚠ HTTPS-Inspektion: '+esc(i.tls_issuer)+'</span>';}
     setH(f('badges'),(p.user?'<span class="badge" title="Benutzer">👤 '+esc(p.user)+'</span>':'')+verBadge(p,i)+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+
       (p.online&&i.cipher==='aes256gcm'?'<span class="badge ok" title="Daten mit AES-256-GCM verschlüsselt">AES-256</span>':'')+(p.online?tls:''));
+    setH(f('geo'),geoLine(p));
     setT(f('down'),p.online?rate(p.rate_tx):'–');setT(f('up'),p.online?rate(p.rate_rx):'–');setT(f('ping'),p.online&&p.rtt_ms?p.rtt_ms.toFixed(0)+' ms':'–');
     setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
     const a=p.spark||[],n=a.length,m=Math.max(1,...a);

@@ -175,6 +175,7 @@ kvpn-server einstellungen --benutzer an --aes256 an --leistung aus --max 12
 | `--aes256 an\|aus` | aus | Daten im Tunnel mit **AES-256-GCM** statt ChaCha20-Poly1305 (beide 256 Bit). Gilt für Apps ab 1.0.6, ältere bleiben automatisch bei ChaCha20. Von außen nicht zu sehen – Sophos & Co. merken davon nichts. |
 | `--leistung an\|aus` | aus | **Leistungsmodus**: alle CPU-Kerne (eine TUN-Warteschlange je Kern, mehr Threads) – mehr Durchsatz, mehr Last. Aus = sparsam (1 Warteschlange, 2 Threads; reicht für jeden Internetanschluss). Gilt nach Neustart des Servers. |
 | `--admin-vpn an\|aus` | an | Admin-Seite im VPN unter `http://10.77.0.1:8180` mit Passwort (siehe „Webseiten“) |
+| `--standort an\|aus` | an | **Standort der Geräte** auf der Admin-/lokalen Seite (nie auf der öffentlichen Statistik): ungefähr aus der IP-Adresse, von der sich ein Gerät verbindet – Stadt, Land, Anbieter, Link zur Karte. Kein GPS: im Mobilfunk oder Firmennetz ist es der Ort des Netzanschlusses. Dafür fragt der Server **ipwho.is** (die IP-Adresse geht dorthin; Ergebnis 7 Tage gemerkt). Auch: `kvpn-server standort <ip>`, `kvpn-server status`. |
 | `--max <anzahl>` | 8 | höchstens so viele Geräte (bis 250) |
 
 **Auf der Webseite einstellen:** Alles davon geht auch auf der Admin-Seite (im VPN `http://10.77.0.1:8180` oder lokal
