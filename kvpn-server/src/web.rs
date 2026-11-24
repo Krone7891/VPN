@@ -1,7 +1,6 @@
 //! Statistik-Webseite (HTML + JSON) und schlichte 404-Antwort fuer alles andere.
 
 use crate::server::{is_home, login_allowed, login_failed, stats_token, Shared};
-use kvpn::proto::MAX_PEERS;
 use kvpn::util::now_secs;
 use serde_json::json;
 use std::collections::HashMap;
@@ -71,6 +70,26 @@ pub async fn handle<S>(
             }
             Ok(Err(e)) => json!({"ok": false, "err": e}),
             Err(e) => json!({"ok": false, "err": e.to_string()}),
+        };
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
+    }
+    // hoechste Anzahl Geraete einstellen – nur auf der lokalen Seite
+    if p.contains("/max/") && method == "POST" {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Nur lokal auf dem Server (http://localhost:8180) oder mit: kvpn-server max <anzahl>"}"#).await;
+        }
+        let want = p.rsplit('/').next().unwrap_or("").to_string();
+        let r = crate::config::Config::load(&sh.cfg_path).and_then(|mut c| {
+            c.set("max_devices", &want)?;
+            c.save(&sh.cfg_path)?;
+            Ok(c.max_devices)
+        });
+        let b = match r {
+            Ok(n) => {
+                crate::log!("Hoechstzahl der Geraete auf {n} gesetzt (lokale Seite)");
+                json!({"ok": true, "max": n})
+            }
+            Err(e) => json!({"ok": false, "err": e}),
         };
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
     }
@@ -398,7 +417,8 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
             "tun_drops": sh.tun_drops.load(Relaxed),
             "load": std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().map(String::from)).unwrap_or_default(),
         },
-        "max_peers": MAX_PEERS,
+        "max_peers": cfg.max_devices,
+        "max_possible": cfg.capacity().unwrap_or(0),
         "update": {
             "offered": crate::updates::offered(&cfg).map(|m| m.version).unwrap_or_default(),
             "pending": crate::updates::pending(&cfg).map(|m| m.version).unwrap_or_default(),

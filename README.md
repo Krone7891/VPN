@@ -2,7 +2,7 @@
 
 Eigenes VPN, komplett in Rust. Läuft als ganz normales **HTTPS auf Port 443** und kommt dadurch auch durch strenge
 Firmen-Firewalls (vor allem **Sophos**) – schon der erste Verbindungsaufbau ist ein gewöhnlicher HTTPS-Aufruf.
-Innen Ende-zu-Ende verschlüsselt wie WireGuard. Bis zu **8 Geräte**: Android, Windows, Linux.
+Innen Ende-zu-Ende verschlüsselt wie WireGuard. Standardmäßig bis zu **8 Geräte** (einstellbar bis 250: `kvpn-server max 12`): Android, Windows, Linux.
 **Name und Bild bestimmst du selbst.**
 
 ```

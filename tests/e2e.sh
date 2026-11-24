@@ -8,7 +8,13 @@
 # Aufruf als root:  bash tests/e2e.sh [pfad/zu/target/release]
 set -u
 unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy
-BIN=${1:-$(cd "$(dirname "$0")/.." && pwd)/target/release}
+# Standard: die ausgelieferten statischen Builds (musl), sonst target/release
+R=$(cd "$(dirname "$0")/.." && pwd)
+if [ -z "${1:-}" ] && [ -x "$R/target/x86_64-unknown-linux-musl/release/kronevpn" ] && [ -x "$R/target/x86_64-unknown-linux-musl/release/kvpn-server" ]; then
+  BIN=$R/target/x86_64-unknown-linux-musl/release
+else
+  BIN=${1:-$R/target/release}
+fi
 W=$(mktemp -d /tmp/kvpn-e2e.XXXX)
 MITM=${MITM:-/opt/mitm/bin/mitmdump}
 NCLI=8
@@ -128,7 +134,7 @@ ns kv-cli1 curl -sk -m 3 https://vpn.test/ | grep -q "normale Webseite" && ok "H
 echo "== Test 2: Verbindungstest (--test) und voller Tunnel"
 ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --test > "$W/test1.txt" 2>&1 && ok "Handshake ueber TLS/443: $(grep -o 'Handshake in [0-9]* ms' "$W/test1.txt")" || { bad "Verbindungstest"; cat "$W/test1.txt"; }
 bg ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --kein-update
-sleep 3
+sleep 6   # Test-DNS beantwortet IPv6-Abfragen nicht -> Client wartet je Abfrage 1,5 s und nimmt dann nur IPv4
 ns kv-cli1 ping -c 3 -W 2 10.201.0.2 > "$W/ping1.txt" 2>&1 && ok "ping durch den Tunnel: $(tail -1 "$W/ping1.txt" | cut -d= -f2)" || { bad "ping durch den Tunnel"; cat "$W/ping1.txt"; tail -20 "$W"/log.*; }
 [ "$(ns kv-cli1 curl -s -m 5 http://10.201.0.2/)" = "hallo aus dem internet" ] && ok "HTTP durch den Tunnel" || bad "HTTP durch den Tunnel"
 if ns kv-cli1 ip -6 addr show dev kvpn-c0 2>/dev/null | grep -q fd77; then
@@ -218,6 +224,16 @@ rm -f "$W"/codes/*.key
 "$BIN/kvpn-server" code geraet2 >/dev/null 2>&1 && bad "Code ohne gespeicherten Schluessel?" || ok "alte Geraete ohne gespeicherten Code werden erkannt"
 "$BIN/kvpn-server" import "$(cat "$W/code2")" >/dev/null && [ "$("$BIN/kvpn-server" code geraet2 | grep '^kronevpn://')" = "$(cat "$W/code2")" ] && ok "Code vom Geraet uebernommen (import) und wieder anzeigbar" || bad "import"
 "$BIN/kvpn-server" import "$(cat "$W/code-fremd")" >/dev/null 2>&1 && bad "fremder Code importiert" || ok "fremder Code wird beim Import abgelehnt"
+
+echo "== Test 11b: Hoechstzahl der Geraete einstellbar"
+"$BIN/kvpn-server" max 3 > "$W/max3.txt" 2>&1 && bad "max 3 bei 7 Geraeten haette abgelehnt werden muessen" || ok "max unter Geraeteanzahl abgelehnt: $(tail -1 "$W/max3.txt")"
+[ "$(ns kv-srv curl -s -m 3 -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8101/max/20)" = 403 ] && ok "Hoechstzahl von aussen nicht aenderbar (403)" || bad "Hoechstzahl von aussen aenderbar"
+ns kv-srv curl -s -m 3 -X POST http://127.0.0.1:8180/max/9 | grep -q '"ok":true' && ok "lokale Seite: Hoechstzahl auf 9 gesetzt" || bad "lokale Seite /max/9"
+"$BIN/kvpn-server" add "neun" >/dev/null 2>&1 && "$BIN/kvpn-server" add "zehn" >/dev/null 2>&1 && ok "mit max 9: weitere Geraete angelegt (9 von 9)" || bad "Geraete trotz max 9 abgelehnt"
+"$BIN/kvpn-server" add "elf" > "$W/add11.txt" 2>&1 && bad "10. Geraet trotz max 9 angelegt" || ok "10. Geraet abgelehnt: $(tail -1 "$W/add11.txt")"
+"$BIN/kvpn-server" max 300 >/dev/null 2>&1 && bad "max 300 angenommen" || ok "max ueber der Grenze abgelehnt"
+"$BIN/kvpn-server" remove neun >/dev/null; "$BIN/kvpn-server" remove zehn >/dev/null
+"$BIN/kvpn-server" max 8 | grep -q "hoechstens 8" && ok "zurueck auf max 8" || bad "max 8"
 [ "$("$BIN/kronevpn" --config "$W/code3" --code < /dev/null | grep '^kronevpn://')" = "$(cat "$W/code3")" ] && ok "PC-App: --code zeigt den gespeicherten Code" || bad "kronevpn --code"
 
 echo "== Test 12: App-Update nur von GitHub und erst nach Freigabe auf dem Server"
@@ -240,10 +256,13 @@ if [ -f "$KEY" ]; then
   cp "$G/dist/update.json" "$W/uj"; sed -i 's/99.0.0/99.0.1/' "$G/dist/update.json"
   "$BIN/kvpn-server" update --ja > "$W/upd-f.txt" 2>&1 && bad "gefaelschte Liste angenommen" || ok "gefaelschte Liste abgelehnt: $(grep -o 'Signatur[^–]*' "$W/upd-f.txt" | head -1)"
   cp "$W/uj" "$G/dist/update.json"
+  mkdir -p "$W/mirror/dl"; echo alt > "$W/mirror/dl/Mein VPN-linux"; echo '{}' > "$W/mirror/files.json"
+  "$BIN/kvpn-server" set download_mirror "$W/mirror/dl" >/dev/null
   "$BIN/kvpn-server" update --ja > "$W/upd-y.txt" 2>&1 && ok "Freigabe: $(grep -o 'Version 99.0.0 ist freigegeben' "$W/upd-y.txt")" || bad "Freigabe: $(cat "$W/upd-y.txt")"
   for i in $(seq 1 30); do [ -f "$W/updated.txt" ] && break; sleep 1; done
   [ -f "$W/updated.txt" ] && ok "Geraet hat das Update ueber den Tunnel geladen, geprueft und sich neu gestartet ($(cat "$W/updated.txt"))" || { bad "Update kam nicht an"; tail -5 "$W/log.kv-cli7-kronevpn"; grep -i update "$W/log.kv-srv-kvpn-server" | tail -5; }
   cmp -s "$W/upd/kronevpn" "$G/dist/kronevpn-linux" && ok "Programmdatei ersetzt" || bad "Programmdatei nicht ersetzt"
+  cmp -s "$W/mirror/dl/Mein VPN-linux" "$G/dist/kronevpn-linux" && grep -q '"version": "99.0.0"' "$W/mirror/files.json" && ok "Download-Seite bei der Freigabe mit erneuert (auch umbenannte Datei, files.json)" || bad "Download-Seite nicht erneuert: $(ls "$W/mirror/dl") $(cat "$W/mirror/files.json")"
   grep -q "Update 99.0.0 uebertragen" "$W/log.kv-srv-kvpn-server" && ok "Server: $(grep -o 'App-Update 99.0.0 freigegeben.*' "$W/log.kv-srv-kvpn-server" | head -1)" || bad "Server-Log ohne Uebertragung"
   ! grep -q "NEUE VERSION" "$W"/log.kv-cli1-kronevpn 2>/dev/null && ok "Geraete mit --kein-update bleiben unveraendert" || bad "--kein-update ignoriert"
   unset KVPN_UPDATE_URL

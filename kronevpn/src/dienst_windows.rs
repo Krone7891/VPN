@@ -12,6 +12,11 @@
 //!   KroneVPN.exe --vordergrund  wie frueher nur im Fenster (Fenster zu = VPN aus)
 //!
 //! Das Programmfenster (gui.rs) steuert den Dienst ueber `Fenster`; im Startmenue liegt eine Verknuepfung.
+//!
+//! Alte Kopien: Startet man KroneVPN.exe von woanders (z. B. aus dem Download-Ordner), merkt sich das Programm den Ort.
+//! Der Dienst bringt solche Kopien – und laufende aeltere KroneVPN-Programme – automatisch auf seine Version
+//! (umbenennen nach *.old + neue Datei hinlegen; das geht auch, waehrend die alte noch laeuft). Beim naechsten Start
+//! ist dann die neue Version mit dem neuen Fenster da.
 
 use crate::{say, Args, Ende, Ui, Zustand};
 use kvpn::code::ClientConfig;
@@ -131,6 +136,16 @@ fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread().worker_threads(cores.clamp(2, 8)).enable_all().build() else {
         return ServiceExitCode::ServiceSpecific(2);
     };
+    // alte Kopien des Programms auf diese Version bringen (alle 30 s nachsehen)
+    if !a.no_update {
+        std::thread::spawn(|| {
+            let mut seen = std::collections::HashMap::new();
+            loop {
+                update_copies(&mut seen);
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        });
+    }
     loop {
         // Wege: Proxy aus Code/Aufruf fest – sonst Systemproxy des Benutzers (beim Einrichten gemerkt) zuerst, dann direkt
         let forced = a.proxy.clone().or_else(|| (!cfg.proxy.is_empty()).then(|| cfg.proxy.clone()));
@@ -508,6 +523,168 @@ pub fn newer_installed() -> Option<PathBuf> {
     }
     let v = installed_version(&dst)?;
     kvpn::update::newer(&v, kvpn::VERSION).then_some(dst)
+}
+
+// ------------------------------------------------------------------------------------------------ alte Kopien
+
+mod ffi {
+    use std::ffi::c_void;
+    #[repr(C)]
+    pub struct ProcessEntry32W {
+        pub size: u32,
+        pub usage: u32,
+        pub pid: u32,
+        pub heap: usize,
+        pub module: u32,
+        pub threads: u32,
+        pub parent: u32,
+        pub prio: i32,
+        pub flags: u32,
+        pub exe: [u16; 260],
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> isize;
+        pub fn Process32FirstW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+        pub fn Process32NextW(snap: isize, e: *mut ProcessEntry32W) -> i32;
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
+        pub fn QueryFullProcessImageNameW(h: isize, flags: u32, buf: *mut u16, size: *mut u32) -> i32;
+        pub fn CloseHandle(h: isize) -> i32;
+    }
+    #[link(name = "version")]
+    extern "system" {
+        pub fn GetFileVersionInfoSizeW(name: *const u16, handle: *mut u32) -> u32;
+        pub fn GetFileVersionInfoW(name: *const u16, handle: u32, len: u32, data: *mut c_void) -> i32;
+        pub fn VerQueryValueW(block: *const c_void, sub: *const u16, buf: *mut *mut c_void, len: *mut u32) -> i32;
+    }
+}
+
+fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    s.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// Programme aller laufenden Prozesse
+fn running_exes() -> Vec<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut out = Vec::new();
+    unsafe {
+        let snap = ffi::CreateToolhelp32Snapshot(2, 0);
+        if snap == -1 || snap == 0 {
+            return out;
+        }
+        let mut e: ffi::ProcessEntry32W = std::mem::zeroed();
+        e.size = std::mem::size_of::<ffi::ProcessEntry32W>() as u32;
+        let mut ok = ffi::Process32FirstW(snap, &mut e);
+        while ok != 0 {
+            let h = ffi::OpenProcess(0x1000, 0, e.pid); // PROCESS_QUERY_LIMITED_INFORMATION
+            if h != 0 {
+                let mut buf = [0u16; 1024];
+                let mut n = buf.len() as u32;
+                if ffi::QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut n) != 0 {
+                    out.push(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n as usize])));
+                }
+                ffi::CloseHandle(h);
+            }
+            ok = ffi::Process32NextW(snap, &mut e);
+        }
+        ffi::CloseHandle(snap);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Versions-Angaben einer EXE: (Produkt, Original-Dateiname, Version)
+fn version_info(p: &Path) -> Option<(String, String, String)> {
+    let name = wide(p.as_os_str());
+    unsafe {
+        let mut h = 0u32;
+        let len = ffi::GetFileVersionInfoSizeW(name.as_ptr(), &mut h);
+        if len == 0 || len > 1 << 20 {
+            return None;
+        }
+        let mut data = vec![0u8; len as usize];
+        if ffi::GetFileVersionInfoW(name.as_ptr(), 0, len, data.as_mut_ptr().cast()) == 0 {
+            return None;
+        }
+        let get = |key: &str| -> Option<String> {
+            let sub = wide(std::ffi::OsStr::new(&format!(r"\StringFileInfo\040704B0\{key}")));
+            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+            let mut n = 0u32;
+            if ffi::VerQueryValueW(data.as_ptr().cast(), sub.as_ptr(), &mut ptr, &mut n) == 0 || ptr.is_null() || n == 0 {
+                return None;
+            }
+            let s = std::slice::from_raw_parts(ptr as *const u16, n as usize);
+            Some(String::from_utf16_lossy(s).trim_end_matches('\0').trim().to_string())
+        };
+        Some((get("ProductName")?, get("OriginalFilename")?, get("FileVersion")?))
+    }
+}
+
+fn copies_file() -> PathBuf {
+    data_dir().join("kopien.txt")
+}
+
+/// Ort dieses Programms merken, wenn es nicht das installierte ist (der Dienst haelt es dann aktuell)
+pub fn record_copy() {
+    let Ok(me) = std::env::current_exe() else { return };
+    let me = std::fs::canonicalize(&me).unwrap_or(me);
+    if std::fs::canonicalize(prog_dir().join("KroneVPN.exe")).ok().as_ref() == Some(&me) {
+        return;
+    }
+    let text = std::fs::read_to_string(copies_file()).unwrap_or_default();
+    let line = me.display().to_string();
+    if text.lines().any(|l| l.trim().eq_ignore_ascii_case(&line)) {
+        return;
+    }
+    let _ = std::fs::create_dir_all(data_dir());
+    let mut lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines.push(&line);
+    let keep = &lines[lines.len().saturating_sub(20)..];
+    let _ = std::fs::write(copies_file(), keep.join("\r\n") + "\r\n");
+}
+
+/// aeltere KroneVPN-Programme (laufende und gemerkte Kopien) durch diese Version ersetzen
+fn update_copies(seen: &mut std::collections::HashMap<PathBuf, std::time::SystemTime>) {
+    let Ok(me) = std::env::current_exe() else { return };
+    let me = std::fs::canonicalize(&me).unwrap_or(me);
+    let mut cands = running_exes();
+    cands.extend(std::fs::read_to_string(copies_file()).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()).map(|l| PathBuf::from(l.trim())));
+    for p in cands {
+        let Ok(m) = std::fs::metadata(&p) else { continue };
+        let Ok(mtime) = m.modified() else { continue };
+        if seen.get(&p) == Some(&mtime) {
+            continue;
+        }
+        seen.insert(p.clone(), mtime);
+        if std::fs::canonicalize(&p).ok().as_ref() == Some(&me) || m.len() > kvpn::update::MAX_SIZE {
+            continue;
+        }
+        let Some((product, original, ver)) = version_info(&p) else { continue };
+        if product != "KroneVPN" || !original.eq_ignore_ascii_case("KroneVPN.exe") || !kvpn::update::newer(kvpn::VERSION, &ver) {
+            continue;
+        }
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let old = p.with_file_name(format!("{name}.old"));
+        let _ = std::fs::remove_file(&old);
+        if let Err(e) = std::fs::rename(&p, &old) {
+            say(&format!("Alte Kopie {} ({ver}) konnte nicht ersetzt werden: {e}", p.display()));
+            continue;
+        }
+        match std::fs::copy(&me, &p) {
+            Ok(_) => {
+                say(&format!("Alte Kopie {} von {ver} auf {} aktualisiert", p.display(), kvpn::VERSION));
+                if let Ok(t) = std::fs::metadata(&p).and_then(|m| m.modified()) {
+                    seen.insert(p.clone(), t);
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::rename(&old, &p);
+                say(&format!("Alte Kopie {} ({ver}) konnte nicht ersetzt werden: {e}", p.display()));
+            }
+        }
+    }
 }
 
 /// Steuerung fuer das Programmfenster

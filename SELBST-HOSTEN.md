@@ -1,6 +1,7 @@
 # Eigenes VPN – auf dem eigenen Server betreiben
 
-Ein Programm (`kvpn-server`), ein systemd-Dienst, Port **443/TCP**. Bis zu 8 Geräte. Kommt durch Firmen-Firewalls
+Ein Programm (`kvpn-server`), ein systemd-Dienst, Port **443/TCP**. Standardmäßig bis zu 8 Geräte – ändern mit `kvpn-server max <anzahl>` (bis 250) oder auf der lokalen Seite
+http://localhost:8180 („Höchstens … Geräte erlauben“). Kommt durch Firmen-Firewalls
 (Sophos & Co.), weil alles wie normales HTTPS aussieht; innen Ende-zu-Ende verschlüsselt wie WireGuard.
 
 ## Voraussetzungen
@@ -64,6 +65,9 @@ kvpn-server update     # neue App-Version an Handy/PC verteilen – mit Rückfra
    über die verschlüsselte VPN-Verbindung. Verbundene Geräte bekommen sie sofort, andere beim nächsten Verbinden.
 4. Die Apps prüfen die Signatur noch einmal selbst und spielen das Update ein: Windows/Linux ersetzen sich und starten
    neu, Android installiert es (ab Android 12 ohne Rückfrage, sonst einmal „Installieren“ tippen).
+5. Bei der Freigabe werden auch die Apps auf der Download-Seite erneuert. Unter Windows bringt der Dienst außerdem
+   ältere Kopien von KroneVPN.exe (z. B. im Download-Ordner) auf die neue Version – beim nächsten Start ist dann
+   die neue Oberfläche da.
 
 Signiert wird beim Bauen mit einem geheimen Schlüssel, der nie auf dem Server liegt – selbst ein übernommener Server
 kann den Geräten keine fremden Programme unterschieben. Anderes Repo/Zweig: `kvpn-server set update_repo besitzer/name`,

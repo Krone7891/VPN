@@ -410,6 +410,7 @@ fn main() {
     {
         // eine aeltere Kopie (z. B. im Download-Ordner) gestartet, installiert ist schon eine neuere? Dann die nehmen
         if !(a.disconnect || a.uninstall) {
+            plat::dienst::record_copy();
             if let Some(neu) = plat::dienst::newer_installed() {
                 let args: Vec<String> = std::env::args().skip(1).collect();
                 if std::process::Command::new(neu).args(args).spawn().is_ok() {

@@ -72,6 +72,7 @@ fn main() {
         "update-sign" => cmd_update_sign(&args[1..]),
         "password" => cmd_password(&cfg_path, &args[1..].join(" ")),
         "set" => cmd_set(&cfg_path, &args[1..]),
+        "max" | "max-geraete" | "max_devices" => cmd_max(&cfg_path, args.get(1).map(|s| s.as_str())),
         "logo" | "bild" => cmd_logo(&cfg_path, &args[1..]),
         "run" => cmd_run(cfg_path),
         "version" | "--version" => println!("{}", kvpn::VERSION),
@@ -116,7 +117,7 @@ fn cmd_add(path: &str, name: &str) {
         die(format!("'{name}' gibt es schon – neuer Code: erst 'kvpn-server remove \"{name}\"', dann wieder add"));
     }
     let Some(index) = cfg.free_index() else {
-        die(format!("alle {} Plaetze belegt – erst ein Geraet entfernen", kvpn::proto::MAX_PEERS))
+        die(format!("alle {} Plaetze belegt – erst ein Geraet entfernen oder mehr erlauben: kvpn-server max <anzahl>", cfg.max_devices))
     };
     let (cpriv, cpub) = kvpn::crypto::generate_keypair();
     let peer = Peer { name: name.to_string(), public_key: kvpn::code::key_to_b64(&cpub), index };
@@ -128,7 +129,7 @@ fn cmd_add(path: &str, name: &str) {
     }
     cfg.save(path).unwrap_or_else(|e| die(e));
     println!("{}", qr(&code));
-    println!("{}: Geraet '{name}' angelegt (Adresse {}, Platz {} von {}).", cfg.display_name(), cfg.ip4(index), cfg.peers.len(), kvpn::proto::MAX_PEERS);
+    println!("{}: Geraet '{name}' angelegt (Adresse {}, Platz {} von {}).", cfg.display_name(), cfg.ip4(index), cfg.peers.len(), cfg.max_devices);
     println!("\nVerbindungscode (geheim halten – wer ihn hat, kann sich verbinden):\n\n{code}\n");
     if !cfg.downloads_dir.is_empty() {
         if let Ok(t) = kvpn::transport::parse_url(&cfg.public_url) {
@@ -139,6 +140,20 @@ fn cmd_add(path: &str, name: &str) {
     }
     println!("Handy: QR-Code mit der Kamera scannen oder Code in der App einfuegen. PC: App starten und Code einfuegen.");
     println!("Der laufende Server uebernimmt das Geraet automatisch (ohne Neustart).");
+}
+
+/// hoechste Anzahl Geraete anzeigen bzw. setzen
+fn cmd_max(path: &str, val: Option<&str>) {
+    let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let cap = cfg.capacity().unwrap_or(0);
+    match val {
+        None => println!("Hoechstens {} Geraete erlaubt ({} angelegt, moeglich bis {cap}). Aendern: kvpn-server max <anzahl>", cfg.max_devices, cfg.peers.len()),
+        Some(v) => {
+            cfg.set("max_devices", v).unwrap_or_else(|e| die(e));
+            cfg.save(path).unwrap_or_else(|e| die(e));
+            println!("Jetzt hoechstens {} Geraete erlaubt ({} angelegt). Gilt sofort, ohne Neustart.", cfg.max_devices, cfg.peers.len());
+        }
+    }
 }
 
 fn cmd_remove(path: &str, name: &str) {
@@ -152,7 +167,7 @@ fn cmd_remove(path: &str, name: &str) {
 
 fn cmd_list(path: &str) {
     let cfg = Config::load(path).unwrap_or_else(|e| die(e));
-    println!("Server: {}   ({} von {} Plaetzen belegt)", cfg.public_url, cfg.peers.len(), kvpn::proto::MAX_PEERS);
+    println!("Server: {}   ({} von {} Plaetzen belegt – aendern: kvpn-server max <anzahl>)", cfg.public_url, cfg.peers.len(), cfg.max_devices);
     let mut missing = 0;
     for p in &cfg.peers {
         let has = config::stored_code(path, &cfg, p).is_some();

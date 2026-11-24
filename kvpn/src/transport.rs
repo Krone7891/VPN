@@ -148,9 +148,69 @@ pub fn new_dns_cache() -> DnsCache {
 }
 
 /// Namen jetzt (blockierend) aufloesen und merken - vor dem Einrichten des Tunnels aufrufen
+/// nur IPv4 nachschlagen. Manche DNS-Server (Firmen-Firewalls, Router) beantworten die IPv6-Abfrage (AAAA) mit einem
+/// Fehler statt "gibt es nicht" – glibc nimmt dann trotzdem die IPv4-Adresse, musl (statischer Linux-Client) und
+/// manche andere scheitern ganz. Darum als zweiter Versuch.
+#[cfg(unix)]
+pub fn lookup_v4(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    let c = std::ffi::CString::new(host).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Name ungueltig"))?;
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_family = libc::AF_INET;
+    hints.ai_socktype = libc::SOCK_STREAM;
+    let mut res: *mut libc::addrinfo = std::ptr::null_mut();
+    let rc = unsafe { libc::getaddrinfo(c.as_ptr(), std::ptr::null(), &hints, &mut res) };
+    if rc != 0 {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("Adresse {host} nicht gefunden (getaddrinfo {rc})")));
+    }
+    let mut v = Vec::new();
+    let mut p = res;
+    while !p.is_null() {
+        let ai = unsafe { &*p };
+        if ai.ai_family == libc::AF_INET && !ai.ai_addr.is_null() {
+            let sa = unsafe { &*(ai.ai_addr as *const libc::sockaddr_in) };
+            let ip = std::net::Ipv4Addr::from(u32::from_be(sa.sin_addr.s_addr));
+            let a = SocketAddr::from((ip, port));
+            if !v.contains(&a) {
+                v.push(a);
+            }
+        }
+        p = ai.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(res) };
+    if v.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("Adresse {host} nicht gefunden")));
+    }
+    Ok(v)
+}
+
+#[cfg(not(unix))]
+pub fn lookup_v4(host: &str, _port: u16) -> io::Result<Vec<SocketAddr>> {
+    Err(io::Error::new(io::ErrorKind::NotFound, format!("Adresse {host} nicht gefunden")))
+}
+
 pub fn preresolve(cache: &DnsCache, host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     use std::net::ToSocketAddrs;
-    let v: Vec<SocketAddr> = (host, port).to_socket_addrs().map_err(|e| format!("Adresse {host} nicht gefunden: {e} (Internet da? DNS gesperrt?)"))?.collect();
+    // normale Abfrage; dauert sie (z. B. weil die IPv6-Antwort ausbleibt), parallel nur IPv4 versuchen
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = host.to_string();
+    std::thread::spawn(move || {
+        let _ = tx.send((h.as_str(), port).to_socket_addrs().map(|it| it.collect::<Vec<_>>()));
+    });
+    let full = |t| match rx.recv_timeout(t) {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("Zeitueberschreitung".to_string()),
+    };
+    let v: Vec<SocketAddr> = match full(Duration::from_millis(1500)) {
+        Ok(v) if !v.is_empty() => v,
+        first => match lookup_v4(host, port) {
+            Ok(v) => v,
+            Err(_) => {
+                let r = if matches!(&first, Err(e) if e == "Zeitueberschreitung") { full(Duration::from_secs(10)) } else { first };
+                r.map_err(|e| format!("Adresse {host} nicht gefunden: {e} (Internet da? DNS gesperrt?)"))?
+            }
+        },
+    };
     if v.is_empty() {
         return Err(format!("Adresse {host} nicht gefunden"));
     }
@@ -160,7 +220,34 @@ pub fn preresolve(cache: &DnsCache, host: &str, port: u16) -> Result<Vec<SocketA
 
 async fn resolve(host: &str, port: u16, cache: &DnsCache) -> io::Result<Vec<SocketAddr>> {
     let key = format!("{host}:{port}");
-    let err = match tokio::time::timeout(Duration::from_secs(4), tokio::net::lookup_host((host, port))).await {
+    // normale Abfrage; bleibt sie haengen (z. B. IPv6-Antwort fehlt), nach 1,5 s parallel nur IPv4 versuchen
+    let h = host.to_string();
+    let mut full = tokio::spawn(async move { tokio::net::lookup_host((h.as_str(), port)).await.map(|it| it.collect::<Vec<SocketAddr>>()) });
+    let first = match tokio::time::timeout(Duration::from_millis(1500), &mut full).await {
+        Ok(r) => Some(r.unwrap_or_else(|e| Err(io::Error::other(e.to_string())))),
+        Err(_) => {
+            // dauert: gemerkte Adresse nehmen (DNS laeuft evtl. schon durch den noch nicht verbundenen Tunnel)
+            if let Some(v) = cache.lock().unwrap().get(&key).cloned() {
+                full.abort();
+                return Ok(v);
+            }
+            let h = host.to_string();
+            if let Ok(Ok(Ok(v))) = tokio::time::timeout(Duration::from_secs(3), tokio::task::spawn_blocking(move || lookup_v4(&h, port))).await {
+                full.abort();
+                cache.lock().unwrap().insert(key, v.clone());
+                return Ok(v);
+            }
+            None
+        }
+    };
+    let full = async move {
+        match first {
+            Some(r) => r,
+            None => full.await.unwrap_or_else(|e| Err(io::Error::other(e.to_string()))),
+        }
+        .map(|v| v.into_iter())
+    };
+    let err = match tokio::time::timeout(Duration::from_secs(4), full).await {
         Ok(Ok(it)) => {
             let v: Vec<SocketAddr> = it.collect();
             if !v.is_empty() {
@@ -172,6 +259,12 @@ async fn resolve(host: &str, port: u16, cache: &DnsCache) -> io::Result<Vec<Sock
         Ok(Err(e)) => io::Error::new(e.kind(), format!("Adresse {host} nicht gefunden: {e}")),
         Err(_) => io::Error::new(io::ErrorKind::TimedOut, format!("DNS-Abfrage fuer {host} dauert zu lange")),
     };
+    // zweiter Versuch nur mit IPv4 (siehe lookup_v4)
+    let (h, k2) = (host.to_string(), key.clone());
+    if let Ok(Ok(Ok(v))) = tokio::time::timeout(Duration::from_secs(4), tokio::task::spawn_blocking(move || lookup_v4(&h, port))).await {
+        cache.lock().unwrap().insert(k2, v.clone());
+        return Ok(v);
+    }
     // DNS geht gerade nicht (z. B. laeuft es durch den noch nicht verbundenen Tunnel): gemerkte Adresse nehmen
     match cache.lock().unwrap().get(&key).cloned() {
         Some(v) => Ok(v),

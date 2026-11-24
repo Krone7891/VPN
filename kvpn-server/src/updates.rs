@@ -120,8 +120,75 @@ pub fn approve(cfg: &Config, say: &dyn Fn(&str)) -> Result<String, String> {
     }
     std::fs::rename(&new, &root).map_err(|e| e.to_string())?;
     let _ = std::fs::remove_dir_all(&old);
+    // auch die Download-Seite bekommt die neuen Apps (wer sie neu herunterlaedt, hat gleich die neue Version)
+    // auch die Download-Seite(n) bekommen die neuen Apps (wer neu herunterlaedt, hat gleich die neue Version)
+    for dir in [&cfg.downloads_dir, &cfg.download_mirror] {
+        if !dir.is_empty() {
+            refresh_downloads(Path::new(dir), &root, &m, say);
+        }
+    }
     let d = Path::new(&cfg.state_dir);
     let _ = std::fs::remove_file(d.join("update-pending.json"));
     let _ = std::fs::remove_file(d.join("update-pending.json.sig"));
     Ok(m.version)
+}
+
+/// Apps in einem Download-Ordner ersetzen. Dateien dort koennen nach dem VPN benannt sein
+/// (z. B. "Potzplitz VPN.exe"): Zuordnung nach Art (.apk, .exe, -linux)
+fn refresh_downloads(dl: &Path, root: &Path, m: &Manifest, say: &dyn Fn(&str)) {
+    let names: Vec<String> = std::fs::read_dir(dl)
+        .map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| !n.starts_with('.')).collect())
+        .unwrap_or_default();
+    let kind = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        if l.ends_with(".apk") {
+            "android"
+        } else if l.ends_with(".exe") {
+            "windows"
+        } else if l.ends_with("-linux") {
+            "linux"
+        } else {
+            ""
+        }
+    };
+    for (os, f) in &m.files {
+        let mut targets: Vec<String> = names.iter().filter(|n| kind(n) == os.as_str()).cloned().collect();
+        if targets.is_empty() {
+            targets.push(f.name.clone());
+        }
+        for t in targets {
+            let tmp = dl.join(format!(".{t}.neu"));
+            match std::fs::copy(root.join(&f.name), &tmp).and_then(|_| std::fs::rename(&tmp, dl.join(&t))) {
+                Ok(()) => say(&format!("Download-Seite: {t} aktualisiert")),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    say(&format!("Download-Seite: {t} nicht aktualisiert ({e})"))
+                }
+            }
+        }
+    }
+    // files.json daneben (Download-Seite mit Version und Pruefsummen) neu schreiben
+    let fj = dl.parent().map(|p| p.join("files.json"));
+    if let Some(fj) = fj.filter(|f| f.exists()) {
+        let mut files = Vec::new();
+        for f in m.files.values() {
+            files.push(serde_json::json!({"name": f.name, "size": f.size, "sha256": f.sha256}));
+        }
+        let j = serde_json::json!({"version": m.version, "date": date_de(kvpn::util::now_secs()), "files": files});
+        let _ = std::fs::write(&fj, serde_json::to_string_pretty(&j).unwrap_or_default());
+    }
+}
+
+/// "24.11.2026" (UTC)
+fn date_de(t: u64) -> String {
+    let z = (t / 86400) as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + (month <= 2) as i64;
+    format!("{day:02}.{month:02}.{year}")
 }

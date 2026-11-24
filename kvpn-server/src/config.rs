@@ -46,6 +46,10 @@ pub struct Config {
     /// Ordner mit den Apps fuer /download/ (leer = keine Download-Seite)
     #[serde(default)]
     pub downloads_dir: String,
+    /// weiterer Ordner mit den Apps (z. B. Download-Seite einer anderen Webseite), wird bei der Update-Freigabe
+    /// ebenfalls aktualisiert (liegt daneben eine files.json, wird sie neu geschrieben). Wird nicht ausgeliefert.
+    #[serde(default)]
+    pub download_mirror: String,
     /// optional: TLS selbst machen (ohne nginx davor), Pfade zu PEM-Dateien
     #[serde(default)]
     pub tls_cert: String,
@@ -59,6 +63,9 @@ pub struct Config {
     /// regelmaessig bei GitHub nach neuen App-Versionen schauen (nur melden, verteilt wird erst nach Freigabe)
     #[serde(default = "d_true")]
     pub update_check: bool,
+    /// hoechstens so viele Geraete (einstellbar: kvpn-server max <n>, bis zu LIMIT bzw. so viele, wie in net4 passen)
+    #[serde(default = "d_max")]
+    pub max_devices: usize,
     #[serde(default, rename = "peer")]
     pub peers: Vec<Peer>,
 }
@@ -67,7 +74,7 @@ pub struct Config {
 pub struct Peer {
     pub name: String,
     pub public_key: String,
-    /// letzte Stelle der Adresse (2..=9)
+    /// letzte Stelle der Adresse (ab 2)
     pub index: u8,
 }
 
@@ -101,11 +108,16 @@ fn d_repo() -> String {
 fn d_branch() -> String {
     "main".into()
 }
+fn d_max() -> usize {
+    kvpn::proto::MAX_PEERS
+}
 fn d_state() -> String {
     "/var/lib/krone-vpn".into()
 }
 
 pub const FIRST_INDEX: u8 = 2;
+/// absolute Obergrenze fuer max_devices (Adressen .2 bis .251)
+pub const LIMIT: usize = 250;
 
 impl Config {
     pub fn new(public_url: String, private_key: String) -> Self {
@@ -144,14 +156,22 @@ impl Config {
         self.net4()?;
         self.net6()?;
         kvpn::transport::parse_url(&self.public_url)?;
-        if self.peers.len() > kvpn::proto::MAX_PEERS {
-            return Err(format!("hoechstens {} Geraete erlaubt", kvpn::proto::MAX_PEERS));
+        let cap = self.capacity()?;
+        if !(1..=cap).contains(&self.max_devices) {
+            return Err(format!("max_devices muss zwischen 1 und {cap} liegen (Grenze: {LIMIT} bzw. Groesse von net4 {})", self.net4));
+        }
+        if self.peers.len() > self.max_devices {
+            return Err(format!(
+                "{} Geraete eingetragen, aber hoechstens {} erlaubt – erst Geraete entfernen (kvpn-server remove <name>) oder max_devices erhoehen",
+                self.peers.len(),
+                self.max_devices
+            ));
         }
         let mut seen = std::collections::HashSet::new();
         for p in &self.peers {
             kvpn::code::key_from_b64(&p.public_key).map_err(|e| format!("Geraet {}: {e}", p.name))?;
-            if !(FIRST_INDEX..FIRST_INDEX + kvpn::proto::MAX_PEERS as u8).contains(&p.index) {
-                return Err(format!("Geraet {}: index muss {}..{} sein", p.name, FIRST_INDEX, FIRST_INDEX + 7));
+            if !(FIRST_INDEX as usize..FIRST_INDEX as usize + cap).contains(&(p.index as usize)) {
+                return Err(format!("Geraet {}: index muss {}..{} sein", p.name, FIRST_INDEX, FIRST_INDEX as usize + cap - 1));
             }
             if !seen.insert(p.index) {
                 return Err(format!("index {} doppelt vergeben", p.index));
@@ -180,6 +200,7 @@ impl Config {
                 self.vpn_name = val.trim().into()
             }
             "downloads_dir" => self.downloads_dir = val.into(),
+            "download_mirror" => self.download_mirror = val.into(),
             "tls_cert" => self.tls_cert = val.into(),
             "tls_key" => self.tls_key = val.into(),
             "stats_password" => self.stats_password = val.into(),
@@ -197,7 +218,8 @@ impl Config {
             }
             "update_branch" => self.update_branch = val.into(),
             "update_check" => self.update_check = matches!(val, "true" | "1" | "ja" | "an"),
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check)")),
+            "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices)")),
         }
         self.check()
     }
@@ -232,8 +254,19 @@ impl Config {
         self.net6().unwrap().map(|(n, _)| Ipv6Addr::from(u128::from(n) + index as u128))
     }
 
+    /// wie viele Geraete hoechstens moeglich sind (Adressen im net4 ohne Netz, Server und Broadcast; hoechstens LIMIT)
+    pub fn capacity(&self) -> Result<usize, String> {
+        let (_, p4) = self.net4()?;
+        let hosts = if p4 >= 31 { 0 } else { (1usize << (32 - p4 as u32).min(16)) - 3 };
+        Ok(hosts.min(LIMIT))
+    }
+
     pub fn free_index(&self) -> Option<u8> {
-        (FIRST_INDEX..FIRST_INDEX + kvpn::proto::MAX_PEERS as u8).find(|i| !self.peers.iter().any(|p| p.index == *i))
+        if self.peers.len() >= self.max_devices {
+            return None;
+        }
+        let cap = self.capacity().ok()?;
+        (FIRST_INDEX as usize..FIRST_INDEX as usize + cap).map(|i| i as u8).find(|i| !self.peers.iter().any(|p| p.index == *i))
     }
 
     pub fn welcome(&self, p: &Peer) -> kvpn::proto::Welcome {
