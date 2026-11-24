@@ -11,6 +11,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+#[path = "dienst_windows.rs"]
+pub mod dienst;
+
 const WINTUN_DLL: &[u8] = include_bytes!("../wintun/wintun.dll");
 const ADAPTER: &str = "KroneVPN";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -156,7 +159,7 @@ impl Platform {
             }
             let _ = cmd("ipconfig", &["/flushdns"]);
         }
-        println!("Adapter {ADAPTER} (Index {idx}): {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", "));
+        crate::say(&format!("Adapter {ADAPTER} (Index {idx}): {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", ")));
 
         let session = Arc::new(adapter.start_session(wintun::MAX_RING_CAPACITY).map_err(|e| format!("Wintun-Sitzung: {e}"))?);
         let (tx, rx) = mpsc::channel(4096);

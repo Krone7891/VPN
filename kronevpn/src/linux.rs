@@ -10,6 +10,9 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+#[path = "dienst_linux.rs"]
+pub mod dienst;
+
 fn ip(args: &[&str]) -> Result<String, String> {
     let o = Command::new("ip").args(args).output().map_err(|e| format!("ip: {e}"))?;
     if o.status.success() {
@@ -70,7 +73,7 @@ impl Platform {
         if !cfg.ip6.is_empty() {
             match ip(&["-6", "addr", "replace", &cfg.ip6, "dev", &name, "nodad"]) {
                 Ok(_) => v6 = true,
-                Err(e) => println!("Hinweis: IPv6 im Tunnel nicht moeglich ({e}) – nur IPv4"),
+                Err(e) => crate::say(&format!("Hinweis: IPv6 im Tunnel nicht moeglich ({e}) – nur IPv4")),
             }
         }
         let full = a.routes.is_none();
@@ -88,7 +91,7 @@ impl Platform {
         for r in &routes {
             if r.contains(':') {
                 if let Err(e) = ip(&["-6", "route", "replace", r, "dev", &name]) {
-                    println!("Hinweis: {e}");
+                    crate::say(&format!("Hinweis: {e}"));
                 }
             } else {
                 ip(&["-4", "route", "replace", r, "dev", &name])?;
@@ -100,7 +103,7 @@ impl Platform {
             let _ = Command::new("resolvectl").args(&args).output();
             let _ = Command::new("resolvectl").args(["domain", &name, "~."]).output();
         }
-        println!("Tunnel {name}: {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", "));
+        crate::say(&format!("Tunnel {name}: {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", ")));
         let (tx, rx) = mpsc::channel(4096);
         fdtun::spawn_reader(tun.clone(), tx);
         Ok(Platform { tun, reader: Mutex::new(Some(rx)), name, full, up4, up6, bypass: Arc::new(Mutex::new(Vec::new())) })

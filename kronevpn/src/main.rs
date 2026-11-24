@@ -39,12 +39,20 @@ pub struct Args {
     pub reset: bool,
     pub show_code: bool,
     pub no_update: bool,
+    /// Windows: im Fenster laufen statt als Dienst
+    pub foreground: bool,
+    /// Linux: als systemd-Dienst einrichten
+    pub background: bool,
+    /// vom Windows-Dienststeuerungs-Manager gestartet
+    pub service: bool,
+    pub disconnect: bool,
+    pub uninstall: bool,
     pub config: Option<PathBuf>,
     pub tun: String,
 }
 
-fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, config: None, tun: "kvpn-c0".into() };
+pub fn parse_args() -> Args {
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into() };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -52,12 +60,21 @@ fn parse_args() -> Args {
             "--reset" => a.reset = true,
             "--code" | "--zeige-code" => a.show_code = true,
             "--kein-update" | "--no-update" => a.no_update = true,
+            "--vordergrund" | "--foreground" => a.foreground = true,
+            "--hintergrund" | "--background" => a.background = true,
+            "--service" => a.service = true,
+            "--trennen" | "--stop" => a.disconnect = true,
+            "--entfernen" | "--uninstall" => a.uninstall = true,
+            "--version" | "-V" => {
+                println!("{}", kvpn::VERSION);
+                std::process::exit(0);
+            }
             "--proxy" => a.proxy = it.next(),
             "--routes" => a.routes = it.next().map(|r| r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--config" => a.config = it.next().map(PathBuf::from),
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--config datei]", kvpn::VERSION);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--config datei]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
@@ -78,7 +95,7 @@ fn config_path(a: &Args) -> PathBuf {
 }
 
 /// Fenstertitel (Windows-Konsole bzw. Terminal)
-fn set_title(t: &str) {
+pub fn set_title(t: &str) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -99,12 +116,12 @@ pub fn pause_and_exit(code: i32) -> ! {
     std::process::exit(code)
 }
 
-fn die(msg: impl std::fmt::Display) -> ! {
+pub fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("\nFehler: {msg}");
     pause_and_exit(1)
 }
 
-fn load_config(a: &Args) -> ClientConfig {
+pub fn load_config(a: &Args) -> ClientConfig {
     let path = config_path(a);
     if a.reset {
         let _ = std::fs::remove_file(&path);
@@ -113,6 +130,9 @@ fn load_config(a: &Args) -> ClientConfig {
     let code = if let Some(c) = &a.code {
         c.clone()
     } else if let Ok(c) = std::fs::read_to_string(&path) {
+        c
+    } else if let Some(c) = plat::dienst::stored_code().filter(|_| !a.reset) {
+        // Code des eingerichteten Hintergrund-Dienstes (z. B. Programm von woanders gestartet)
         c
     } else {
         println!("KroneVPN {} – erster Start\n", kvpn::VERSION);
@@ -138,7 +158,7 @@ fn load_config(a: &Args) -> ClientConfig {
 }
 
 /// Wege zum Server: erzwungener Proxy, Proxy aus dem Code, Systemproxy (zuerst) + direkt
-fn ways(a: &Args, cfg: &ClientConfig) -> Vec<Option<Proxy>> {
+pub fn ways(a: &Args, cfg: &ClientConfig) -> Vec<Option<Proxy>> {
     let forced = a.proxy.clone().or_else(|| (!cfg.proxy.is_empty()).then(|| cfg.proxy.clone()));
     if let Some(p) = forced {
         return vec![Some(parse_proxy(&p).unwrap_or_else(|e| die(e)).unwrap_or_else(|| die("Proxy leer")))];
@@ -152,7 +172,7 @@ fn ways(a: &Args, cfg: &ClientConfig) -> Vec<Option<Proxy>> {
     }
 }
 
-fn qr(text: &str) -> String {
+pub fn qr(text: &str) -> String {
     match qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L) {
         Ok(c) => c
             .render::<qrcode::render::unicode::Dense1x2>()
@@ -165,14 +185,15 @@ fn qr(text: &str) -> String {
 }
 
 /// Datei neben dem Programm: "<programm>.<endung>"
-fn beside_exe(ext: &str) -> Option<PathBuf> {
+pub fn beside_exe(ext: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let name = exe.file_name()?.to_string_lossy().to_string();
     Some(exe.with_file_name(format!("{name}.{ext}")))
 }
 
 /// heruntergeladene neue Version an die Stelle des Programms setzen und neu starten
-fn apply_update(new: &std::path::Path) -> Result<(), String> {
+/// `restart`: Programm danach neu starten (im Dienst startet Windows es selbst neu)
+pub fn apply_update(new: &std::path::Path, restart: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let old = beside_exe("old").ok_or("Programmpfad unbekannt")?;
     let _ = std::fs::remove_file(&old);
@@ -181,6 +202,9 @@ fn apply_update(new: &std::path::Path) -> Result<(), String> {
     if let Err(e) = std::fs::rename(new, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("{}: {e}", exe.display()));
+    }
+    if !restart {
+        return Ok(());
     }
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("kronevpn://")).collect();
     #[cfg(unix)]
@@ -201,6 +225,15 @@ fn main() {
     // Rest eines Updates aufraeumen
     if let Some(old) = beside_exe("old") {
         let _ = std::fs::remove_file(old);
+    }
+    // Windows-Dienst (vom System gestartet) bzw. Dienst steuern – ohne Rueckfragen
+    #[cfg(windows)]
+    if a.service {
+        plat::dienst::run_service();
+        return;
+    }
+    if a.disconnect || a.uninstall {
+        plat::dienst::control(&a);
     }
     let cfg = load_config(&a);
     if a.show_code {
@@ -247,126 +280,278 @@ fn main() {
         });
     }
 
-    rt.block_on(async move {
-        let title = cfg.display_name().to_string();
-        set_title(&format!("{title} – {}", cfg.name));
-        println!("{title} {} – Geraet '{}' – Server {}", kvpn::VERSION, cfg.name, cfg.url);
-        let status = Arc::new(Status::default());
-        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-        // Server (und Proxy) JETZT aufloesen - nach dem Einrichten laeuft DNS durch den Tunnel, der dann noch nicht steht
-        let dns = kvpn::transport::new_dns_cache();
-        let t = kvpn::transport::parse_url(&cfg.url).unwrap_or_else(|e| die(e));
-        match kvpn::transport::preresolve(&dns, &t.host, t.port) {
-            Ok(v) => println!("Server {} -> {}", t.host, v.iter().map(|a| a.ip().to_string()).collect::<Vec<_>>().join(", ")),
-            Err(e) => {
-                if ways.iter().all(|w| w.is_none()) {
-                    die(format!("{e}\nOhne Internet bzw. DNS kann KroneVPN den Server nicht finden. Bitte Netzwerk pruefen und neu starten."));
-                }
-                println!("Hinweis: {e} (geht evtl. ueber den Proxy)");
-            }
-        }
-        for w in ways.iter().flatten() {
-            let _ = kvpn::transport::preresolve(&dns, &w.host, w.port);
-        }
-        let p = plat::Platform::setup(&cfg, &a).unwrap_or_else(|e| die(e));
-        // automatische Updates: neue Version kommt signiert ueber die Verbindung, wird neben das Programm gelegt
-        let (upd_tx, mut upd_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
-        let updater = match (a.no_update, beside_exe("new")) {
-            (false, Some(target)) => Some(Arc::new(kvpn::update::Updater::new(move |r: kvpn::update::Ready| {
-                let tmp = target.with_extension("part");
-                let res = std::fs::write(&tmp, &r.data).and_then(|_| {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-                    }
-                    std::fs::rename(&tmp, &target)
-                });
-                match res {
-                    Ok(()) => {
-                        println!("\rUpdate auf Version {} geladen und geprueft – starte neu ...                    ", r.version);
-                        let _ = upd_tx.send(target.clone());
-                    }
-                    Err(e) => println!("\rUpdate {} konnte nicht gespeichert werden: {e}", r.version),
-                }
-            }))),
-            _ => None,
-        };
-        let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None, update: updater.clone() };
-        let tun_out = p.writer();
-        let tun_in = p.take_reader();
-        let st = status.clone();
-        let cfg2 = cfg.clone();
-        let task = tokio::spawn(client::run(cfg2, opts, tun_in, tun_out, st, stop_rx));
-        println!("Beenden mit Strg+C (oder Fenster schliessen).\n");
+    // Windows: als Hintergrund-Dienst (das Fenster darf zu) – ausser mit --vordergrund
+    #[cfg(windows)]
+    if !a.foreground {
+        drop(rt);
+        plat::dienst::background(&cfg, &a);
+    }
+    // Linux: --hintergrund richtet einen systemd-Dienst ein
+    #[cfg(target_os = "linux")]
+    if a.background {
+        plat::dienst::install(&cfg, &a);
+    }
 
-        let st = status.clone();
-        let show = tokio::spawn(async move {
-            let (mut lrx, mut ltx) = (0u64, 0u64);
-            let mut last_state = String::new();
-            let mut last_err = String::new();
-            let mut upd_shown = String::new();
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                if let Some(u) = &updater {
-                    let us = u.status();
-                    if !us.version.is_empty() && us.version != upd_shown && !us.done {
-                        println!("\rNeue Version {} verfuegbar – wird im Hintergrund geladen ({} KB)          ", us.version, us.size / 1024);
-                        upd_shown = us.version.clone();
-                    }
-                }
-                let rx = st.rx_bytes.load(Relaxed);
-                let tx = st.tx_bytes.load(Relaxed);
-                let state = st.state_name();
-                let info = st.info.lock().unwrap().clone();
-                if state != last_state {
-                    if state == "connected" {
-                        let tls = if info.tls_trusted {
-                            "TLS ok".to_string()
-                        } else {
-                            format!("TLS-Inspektion erkannt ({}) – Daten bleiben verschluesselt", info.tls_issuer)
-                        };
-                        println!("\rVerbunden mit {}{} – {}                    ", info.server, if info.via_proxy { " ueber Proxy" } else { "" }, tls);
-                    } else if state == "connecting" && last_state == "connected" {
-                        println!("\rVerbindung unterbrochen – verbinde neu ...                              ");
-                    }
-                    last_state = state.to_string();
-                }
-                if !info.last_error.is_empty() && info.last_error != last_err && state != "connected" {
-                    println!("\r{}                                        ", info.last_error);
-                }
-                last_err = info.last_error.clone();
-                if state == "connected" {
-                    print!(
-                        "\r  Download {:>13}  Upload {:>13}  Ping {:>5.0} ms  gesamt {} / {}      ",
-                        human_rate(rx.saturating_sub(lrx) as f64),
-                        human_rate(tx.saturating_sub(ltx) as f64),
-                        st.rtt_us.load(Relaxed) as f64 / 1000.0,
-                        human_bytes(rx),
-                        human_bytes(tx)
-                    );
-                    let _ = std::io::stdout().flush();
-                }
-                lrx = rx;
-                ltx = tx;
-            }
-        });
-
-        let update = tokio::select! {
-            _ = plat::wait_for_exit() => None,
-            f = upd_rx.recv() => f,
-        };
-        println!("\nTrenne ...");
-        let _ = stop_tx.send(true);
-        let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
-        show.abort();
-        p.cleanup();
-        println!("Getrennt.");
-        if let Some(f) = update {
-            if let Err(e) = apply_update(&f) {
+    let title = cfg.display_name().to_string();
+    set_title(&format!("{title} – {}", cfg.name));
+    println!("{title} {} – Geraet '{}' – Server {}", kvpn::VERSION, cfg.name, cfg.url);
+    #[cfg(windows)]
+    println!("(Vordergrund: Fenster schliessen beendet das VPN. Ohne --vordergrund laeuft es als Dienst im Hintergrund.)");
+    match rt.block_on(run_vpn(cfg, &a, ways, Ui::Console, plat::wait_for_exit())) {
+        Ok(Ende::Stopp) => {}
+        Ok(Ende::Update(f)) => {
+            if let Err(e) = apply_update(&f, true) {
                 println!("Update konnte nicht eingespielt werden: {e} – bitte Programm neu starten");
                 pause_and_exit(1);
             }
         }
+        Err(e) => die(e),
+    }
+}
+
+// ------------------------------------------------------------------------------------------------ Tunnel
+
+pub enum Ende {
+    /// beendet (Strg+C, Fenster zu, Dienst gestoppt)
+    Stopp,
+    /// neue Version liegt neben dem Programm (.new) – einspielen und neu starten
+    Update(PathBuf),
+}
+
+pub enum Ui {
+    /// Live-Werte im Fenster
+    Console,
+    /// Dienst: Zustand jede Sekunde in diese Datei (das Fenster liest sie)
+    Datei(PathBuf),
+}
+
+/// Protokoll: im Fenster ausgeben bzw. (Dienst) in die Protokolldatei schreiben
+pub static LOGFILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn say(msg: &str) {
+    let Some(p) = LOGFILE.get() else {
+        println!("{msg}");
+        return;
+    };
+    if std::fs::metadata(p).map(|m| m.len() > 1 << 20).unwrap_or(false) {
+        let _ = std::fs::rename(p, p.with_extension("alt.txt"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let _ = writeln!(f, "{} {}", timestamp(), msg.trim_matches(|c: char| c == '\r' || c == '\n').trim_end());
+    }
+}
+
+/// "2026-11-24 10:15:00" (UTC)
+pub fn timestamp() -> String {
+    let t = kvpn::util::now_secs();
+    let (d, s) = ((t / 86400) as i64, t % 86400);
+    // Tage seit 1970 -> Datum (Howard Hinnant)
+    let z = d + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + (month <= 2) as i64;
+    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02} UTC", s / 3600, s / 60 % 60, s % 60)
+}
+
+/// Zustand fuer Fenster und Status-Datei
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+pub struct Zustand {
+    pub state: String,
+    pub title: String,
+    pub name: String,
+    pub version: String,
+    pub server: String,
+    pub via_proxy: bool,
+    pub tls_trusted: bool,
+    pub tls_issuer: String,
+    pub rx: u64,
+    pub tx: u64,
+    pub rate_rx: u64,
+    pub rate_tx: u64,
+    pub rtt_ms: f64,
+    pub since: u64,
+    pub error: String,
+    pub update_version: String,
+    pub update_got: u64,
+    pub update_size: u64,
+    pub ts: u64,
+}
+
+/// eine Zeile Live-Werte
+pub fn live_line(z: &Zustand) -> String {
+    format!(
+        "  Download {:>13}  Upload {:>13}  Ping {:>5.0} ms  gesamt {} / {}",
+        human_rate(z.rate_rx as f64),
+        human_rate(z.rate_tx as f64),
+        z.rtt_ms,
+        human_bytes(z.rx),
+        human_bytes(z.tx)
+    )
+}
+
+pub fn tls_text(z: &Zustand) -> String {
+    if z.tls_trusted {
+        "TLS ok".to_string()
+    } else {
+        format!("TLS-Inspektion erkannt ({}) – Daten bleiben verschluesselt", z.tls_issuer)
+    }
+}
+
+/// Tunnel aufbauen und betreiben, bis `stop` eintritt oder ein Update bereitliegt
+pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: &Args, ways: Vec<Option<Proxy>>, ui: Ui, stop: F) -> Result<Ende, String> {
+    let console = matches!(ui, Ui::Console);
+    tokio::pin!(stop);
+    let status = Arc::new(Status::default());
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    // Server (und Proxy) JETZT aufloesen – nach dem Einrichten laeuft DNS durch den Tunnel, der dann noch nicht steht
+    let dns = kvpn::transport::new_dns_cache();
+    let t = kvpn::transport::parse_url(&cfg.url)?;
+    loop {
+        match kvpn::transport::preresolve(&dns, &t.host, t.port) {
+            Ok(v) => {
+                say(&format!("Server {} -> {}", t.host, v.iter().map(|a| a.ip().to_string()).collect::<Vec<_>>().join(", ")));
+                break;
+            }
+            Err(e) if ways.iter().any(|w| w.is_some()) => {
+                say(&format!("Hinweis: {e} (geht evtl. ueber den Proxy)"));
+                break;
+            }
+            Err(e) if console => {
+                return Err(format!("{e}\nOhne Internet bzw. DNS kann das VPN den Server nicht finden. Bitte Netzwerk pruefen und neu starten."));
+            }
+            Err(e) => {
+                // Dienst (z. B. direkt nach dem Hochfahren): warten, bis das Netz da ist
+                say(&format!("{e} – warte auf Netz ..."));
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    _ = &mut stop => return Ok(Ende::Stopp),
+                }
+            }
+        }
+    }
+    for w in ways.iter().flatten() {
+        let _ = kvpn::transport::preresolve(&dns, &w.host, w.port);
+    }
+    let p = plat::Platform::setup(&cfg, a)?;
+    // automatische Updates: neue Version kommt signiert ueber die Verbindung, wird neben das Programm gelegt
+    let (upd_tx, mut upd_rx) = tokio::sync::mpsc::unbounded_channel::<PathBuf>();
+    let updater = match (a.no_update, beside_exe("new")) {
+        (false, Some(target)) => Some(Arc::new(kvpn::update::Updater::new(move |r: kvpn::update::Ready| {
+            let tmp = target.with_extension("part");
+            let res = std::fs::write(&tmp, &r.data).and_then(|_| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+                }
+                std::fs::rename(&tmp, &target)
+            });
+            match res {
+                Ok(()) => {
+                    say(&format!("\rUpdate auf Version {} geladen und geprueft – starte neu ...                    ", r.version));
+                    let _ = upd_tx.send(target.clone());
+                }
+                Err(e) => say(&format!("\rUpdate {} konnte nicht gespeichert werden: {e}", r.version)),
+            }
+        }))),
+        _ => None,
+    };
+    let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None, update: updater.clone() };
+    let task = tokio::spawn(client::run(cfg.clone(), opts, p.take_reader(), p.writer(), status.clone(), stop_rx));
+    if console {
+        println!("Beenden mit Strg+C (oder Fenster schliessen).\n");
+    }
+
+    let st = status.clone();
+    let title = cfg.display_name().to_string();
+    let name = cfg.name.clone();
+    let status_path = match &ui {
+        Ui::Datei(f) => Some(f.clone()),
+        Ui::Console => None,
+    };
+    let show = tokio::spawn(async move {
+        let (mut lrx, mut ltx) = (0u64, 0u64);
+        let mut last_state = String::new();
+        let mut last_err = String::new();
+        let mut upd_shown = String::new();
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let info = st.info.lock().unwrap().clone();
+            let (rx, tx) = (st.rx_bytes.load(Relaxed), st.tx_bytes.load(Relaxed));
+            let us = updater.as_ref().map(|u| u.status()).unwrap_or_default();
+            let z = Zustand {
+                state: st.state_name().to_string(),
+                title: title.clone(),
+                name: name.clone(),
+                version: kvpn::VERSION.to_string(),
+                server: info.server.clone(),
+                via_proxy: info.via_proxy,
+                tls_trusted: info.tls_trusted,
+                tls_issuer: info.tls_issuer.clone(),
+                rx,
+                tx,
+                rate_rx: rx.saturating_sub(lrx),
+                rate_tx: tx.saturating_sub(ltx),
+                rtt_ms: st.rtt_us.load(Relaxed) as f64 / 1000.0,
+                since: st.connected_since.load(Relaxed),
+                error: info.last_error.clone(),
+                update_version: if us.done { String::new() } else { us.version.clone() },
+                update_got: us.got,
+                update_size: us.size,
+                ts: kvpn::util::now_secs(),
+            };
+            (lrx, ltx) = (rx, tx);
+            if !z.update_version.is_empty() && z.update_version != upd_shown {
+                say(&format!("\rNeue Version {} verfuegbar – wird im Hintergrund geladen ({} KB)          ", z.update_version, z.update_size / 1024));
+                upd_shown = z.update_version.clone();
+            }
+            if z.state != last_state {
+                if z.state == "connected" {
+                    say(&format!("\rVerbunden mit {}{} – {}                    ", z.server, if z.via_proxy { " ueber Proxy" } else { "" }, tls_text(&z)));
+                } else if z.state == "connecting" && last_state == "connected" {
+                    say("\rVerbindung unterbrochen – verbinde neu ...                              ");
+                }
+                last_state = z.state.clone();
+            }
+            if !z.error.is_empty() && z.error != last_err && z.state != "connected" {
+                say(&format!("\r{}                                        ", z.error));
+            }
+            last_err = z.error.clone();
+            match &ui {
+                Ui::Console => {
+                    // Live-Zeile nur im Terminal (unter systemd nicht jede Sekunde ins Protokoll)
+                    if z.state == "connected" && std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                        print!("\r{}      ", live_line(&z));
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+                Ui::Datei(f) => {
+                    let tmp = f.with_extension("tmp");
+                    if std::fs::write(&tmp, serde_json::to_vec(&z).unwrap_or_default()).is_ok() {
+                        let _ = std::fs::rename(&tmp, f);
+                    }
+                }
+            }
+        }
     });
+
+    let ende = tokio::select! {
+        _ = &mut stop => Ende::Stopp,
+        f = upd_rx.recv() => f.map(Ende::Update).unwrap_or(Ende::Stopp),
+    };
+    say("\nTrenne ...");
+    let _ = stop_tx.send(true);
+    let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
+    show.abort();
+    p.cleanup();
+    say("Getrennt.");
+    if let Some(f) = &status_path {
+        let _ = std::fs::remove_file(f);
+    }
+    Ok(ende)
 }

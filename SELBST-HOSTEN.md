@@ -116,9 +116,14 @@ Die Apps gibt es auf `https://<adresse>/download/` mit deinem Namen (oder in `di
 an, sobald der Verbindungscode eingefügt ist.
 
 - **Android:** `dist/KroneVPN.apk` installieren, QR-Code mit der Kamera scannen (oder Code einfügen), Verbinden.
-- **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen – wird gespeichert. Test ohne
-  Netzwerkänderung: `KroneVPN.exe --test`.
-- **Linux:** `sudo dist/kronevpn-linux 'kronevpn://v1/…'`
+  Die App darf danach geschlossen (auch weggewischt) werden – das VPN läuft weiter.
+- **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen. Das VPN läuft dann als **Windows-Dienst im
+  Hintergrund** und startet mit Windows – **das Fenster darf geschlossen werden**, es zeigt nur die Live-Werte.
+  Erneut starten = Anzeige wieder öffnen. Ausschalten: im Fenster `t` + Enter oder `KroneVPN.exe --trennen`;
+  ganz entfernen: `--entfernen`; wie früher nur im Fenster: `--vordergrund`. Test ohne Netzwerkänderung: `--test`.
+  (Programm: `C:\Program Files\KroneVPN`, Code/Protokoll: `C:\ProgramData\KroneVPN`.)
+- **Linux:** `sudo dist/kronevpn-linux 'kronevpn://v1/…'` – im Hintergrund als systemd-Dienst: zusätzlich `--hintergrund`
+  (danach darf das Terminal zu; `--trennen` / `--entfernen`).
 
 Die Dateien dürfen beliebig umbenannt werden (z. B. „Potzplitz VPN.exe").
 
