@@ -1,4 +1,4 @@
-//! Programmfenster (Windows): grosser Ein/Aus-Knopf, Live-Werte, Verlauf, Verschluesselung, Protokoll.
+//! Programmfenster (Windows): grosser Ein/Aus-Knopf (mit Wirbel, wenn das Fenster den Fokus hat), Live-Werte, Verlauf, Verschluesselung, Protokoll.
 //!
 //! Das Fenster ist nur die Oberflaeche – das VPN selbst laeuft als Windows-Dienst (siehe dienst_windows.rs) und
 //! meldet seinen Zustand jede Sekunde in status.json. Das Fenster darf deshalb jederzeit zu.
@@ -144,6 +144,14 @@ struct App {
     farbe: (Color32, Color32, Instant),
     plopp: Option<Instant>,
     letzte_anz: Option<Anzeige>,
+    /// Fenster hat den Fokus: Knopf lebhafter animieren (Wellen, kreisendes Licht, ...)
+    lebhaft: bool,
+    /// letzter Klick auf den Knopf (Welle) und letzter Wechsel der Anzeige
+    klick: Option<Instant>,
+    wechsel: Instant,
+    /// Wirbel (Tornado) um den Knopf: Drehung, Sog, aktuelle Drehzahl, Staerke, Sog-Tempo; Zeit des letzten Bilds
+    wirbel: [f32; 5],
+    wirbel_t: Instant,
 }
 
 /// weiches Ein-/Ausblenden (0..1 -> 0..1)
@@ -336,6 +344,11 @@ impl App {
             farbe: (MUTE, MUTE, Instant::now()),
             plopp: None,
             letzte_anz: None,
+            lebhaft: false,
+            klick: None,
+            wechsel: Instant::now(),
+            wirbel: [0.0; 5],
+            wirbel_t: Instant::now(),
         };
         app.wahl = app.st.verschluesselung();
         // Profile: das aktive gehoert immer dazu (z. B. Code aus einer aelteren Version)
@@ -516,6 +529,9 @@ impl eframe::App for App {
         }
         let anz = self.anzeige();
         let eingabe = self.cfg.is_none() || self.code_aendern;
+        // Fenster im Fokus (und Hauptansicht): Knopf lebhafter animieren; sonst ruhig, spart Strom
+        let fokus = ctx.input(|i| i.viewport().focused.unwrap_or(false)) || (cfg!(feature = "vorschau") && std::env::var_os("KVPN_VORSCHAU_FOKUS").is_some());
+        self.lebhaft = fokus && !eingabe;
 
         if !eingabe {
             egui::TopBottomPanel::bottom("fuss")
@@ -539,8 +555,8 @@ impl eframe::App for App {
         });
         self.dialoge(ctx);
 
-        let animiert = ein < 1.0 || self.farbe.2.elapsed() < Duration::from_millis(400) || self.plopp.is_some_and(|t| t.elapsed() < Duration::from_millis(700));
-        if animiert || matches!(anz, Anzeige::Verbinde | Anzeige::Trenne) {
+        let animiert = ein < 1.0 || self.farbe.2.elapsed() < Duration::from_millis(400) || self.plopp.is_some_and(|t| t.elapsed() < Duration::from_millis(700)) || self.klick.is_some_and(|t| t.elapsed() < Duration::from_millis(700)) || self.wirbel[3] > 0.01;
+        if animiert || self.lebhaft || matches!(anz, Anzeige::Verbinde | Anzeige::Trenne) {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else if anz == Anzeige::Verbunden {
             // ruhiges "Atmen" des Leuchtens
@@ -622,11 +638,16 @@ impl App {
         if anz == Anzeige::Verbunden && self.letzte_anz.is_some_and(|a| a != Anzeige::Verbunden) {
             self.plopp = Some(Instant::now());
         }
+        if self.letzte_anz != Some(anz) {
+            self.wechsel = Instant::now();
+        }
         self.letzte_anz = Some(anz);
+        self.wirbel_weiter(anz);
         let farbe = self.farbe.0.lerp_to_gamma(self.farbe.1, sanft(self.farbe.2.elapsed().as_secs_f32() / 0.35));
         ui.add_space(8.0);
         ui.vertical_centered(|ui| {
             if self.schalter(ui, anz, farbe) {
+                self.klick = Some(Instant::now());
                 match anz {
                     Anzeige::Aus => self.ausfuehren(Aktion::Verbinden),
                     Anzeige::Verbunden | Anzeige::Verbinde => self.ausfuehren(Aktion::Trennen),
@@ -717,9 +738,33 @@ impl App {
         });
     }
 
+    /// Wirbel weiterdrehen: Drehzahl, Sog und Staerke gleiten weich zum Ziel (kein Ruckeln beim Zustandswechsel).
+    /// Verbinden: schneller Tornado nach innen, Trennen: dreht rueckwaerts nach aussen, verbunden: ruhiger Wirbel,
+    /// aus: ganz leise. Ohne Fokus blendet er aus.
+    fn wirbel_weiter(&mut self, anz: Anzeige) {
+        let dt = self.wirbel_t.elapsed().as_secs_f32().min(0.1);
+        self.wirbel_t = Instant::now();
+        let (st, w, zug) = match anz {
+            Anzeige::Verbinde => (1.0, 4.5, 0.9),
+            Anzeige::Trenne => (0.8, -3.5, -0.7),
+            Anzeige::Verbunden => (0.6, 1.1, 0.22),
+            Anzeige::Aus => (0.3, 0.7, 0.15),
+        };
+        let st = if self.lebhaft { st } else { 0.0 };
+        let f = (dt * 2.5).min(1.0);
+        let v = &mut self.wirbel;
+        v[2] += (w - v[2]) * f;
+        v[3] += (st - v[3]) * f;
+        v[4] += (zug - v[4]) * f;
+        v[0] = (v[0] + v[2] * dt) % (2.0 * std::f32::consts::PI);
+        v[1] = (v[1] + v[4] * dt).rem_euclid(1.0);
+    }
+
     /// grosser runder Ein/Aus-Knopf. true = angeklickt
     fn schalter(&self, ui: &mut egui::Ui, anz: Anzeige, farbe: Color32) -> bool {
-        let (rect, resp) = ui.allocate_exact_size(vec2(156.0, 156.0), Sense::click());
+        // Flaeche 184 (Platz fuer den Wirbel), klickbar ist nur der Knopf (Radius 60)
+        let (rect, _) = ui.allocate_exact_size(vec2(184.0, 184.0), Sense::hover());
+        let resp = ui.interact(Rect::from_center_size(rect.center(), vec2(130.0, 130.0)), egui::Id::new("knopf"), Sense::click());
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(match anz {
             Anzeige::Aus => "Verbinden",
             Anzeige::Trenne => "Wird getrennt …",
@@ -733,14 +778,61 @@ impl App {
         let gedrueckt = resp.is_pointer_button_down_on() && anz != Anzeige::Trenne;
         let druck = ui.ctx().animate_value_with_time(egui::Id::new("knopf-druck"), if gedrueckt { 0.93 } else { 1.0 }, 0.12);
         let plopp = self.plopp.map(|s| s.elapsed().as_secs_f32() / 0.6).filter(|x| *x < 1.0).map(|x| 1.0 + 0.07 * (x * std::f32::consts::PI).sin() * (1.0 - x)).unwrap_or(1.0);
-        let k = druck * plopp;
         let hv = ui.ctx().animate_bool_with_time(egui::Id::new("knopf-hover"), hover, 0.15);
+        // Fenster im Fokus: mehr Bewegung. Aus: laedt sanft zum Klicken ein (leichtes Atmen, alle 4 s eine leise Welle)
+        let lebhaft = self.lebhaft;
+        let pi = std::f32::consts::PI;
+        let einladen = if lebhaft && anz == Anzeige::Aus { 0.5 - 0.5 * (t * 2.0 * pi / 4.0).cos() } else { 0.0 };
+        let k = druck * plopp * (1.0 + 0.012 * einladen);
+        // Wellen, die vom Knopf weglaufen
+        let welle = |x: f32, f: Color32, a: f32, b: f32| {
+            let e = 1.0 - (1.0 - x) * (1.0 - x);
+            p.circle_stroke(c, (60.0 + 17.0 * e) * k, linie(b * (1.0 - 0.5 * x), f.gamma_multiply(a * (1.0 - x) * (1.0 - x))));
+        };
+        if lebhaft {
+            match anz {
+                Anzeige::Verbunden => (0..2).for_each(|i| welle(((t + i as f32 * 1.4) % 2.8) / 2.8, farbe, 0.4, 2.5)),
+                Anzeige::Verbinde | Anzeige::Trenne => {} // dort dreht sich der Wirbel
+                Anzeige::Aus => {
+                    let x = ((t + 2.0) % 4.0) / 1.8;
+                    if x < 1.0 {
+                        welle(x, ACC, 0.16, 2.0);
+                    }
+                }
+            }
+        }
+        if let Some(x) = self.klick.map(|s| s.elapsed().as_secs_f32() / 0.6).filter(|x| *x < 1.0) {
+            welle(x, if anz == Anzeige::Aus { ACC } else { farbe }, 0.55, 3.5);
+        }
         // Leuchten (verbinden: pulsiert, verbunden: atmet ruhig)
         let an = anz != Anzeige::Aus;
         if an {
             let puls = if anz == Anzeige::Verbunden { 0.55 + 0.25 * (t * 1.7).sin() } else { 0.5 + 0.5 * (t * 3.0).sin() };
             for (r, a) in [(77.0, 0.05), (71.0, 0.08), (65.0, 0.12)] {
                 p.circle_filled(c, r * k, farbe.gamma_multiply(a * (0.6 + 0.4 * puls)));
+            }
+        }
+        // Wirbel (Tornado): Spiralarme drehen sich um den Knopf, Teilchen werden hineingezogen
+        let [dreh, sog, _, st, _] = self.wirbel;
+        if st > 0.01 {
+            let wf = if anz == Anzeige::Aus { MUTE.lerp_to_gamma(ACC, 0.5) } else { farbe };
+            let hell = wf.lerp_to_gamma(Color32::WHITE, 0.3);
+            let punkt = |r: f32, a: f32| c + vec2(a.cos(), a.sin()) * r * k;
+            for arm in 0..3 {
+                let a0 = dreh + arm as f32 * 2.0 * pi / 3.0;
+                let n = 16;
+                for j in 0..n {
+                    let (s0, s1) = (j as f32 / n as f32, (j + 1) as f32 / n as f32);
+                    let sm = (s0 + s1) / 2.0;
+                    let fluss = 0.6 + 0.4 * (2.0 * pi * (sm * 2.0 + sog * 3.0)).sin();
+                    let a = st * 0.7 * (pi * sm).sin() * fluss;
+                    p.line_segment([punkt(62.0 + 29.0 * s0, a0 - s0 * 2.6), punkt(62.0 + 29.0 * s1, a0 - s1 * 2.6)], linie(2.5 - s0, wf.gamma_multiply(a)));
+                }
+            }
+            for i in 0..34 {
+                let q = (sog + i as f32 * 0.618_034).rem_euclid(1.0);
+                let a = i as f32 * 2.399_963 + dreh + q * 2.5;
+                p.circle_filled(punkt(91.0 - 29.0 * q, a), (1.0 + 1.5 * (1.0 - q)) * k, hell.gamma_multiply(st * 0.9 * (pi * q).sin()));
             }
         }
         let innen = CARD.lerp_to_gamma(Color32::from_rgb(0x1f, 0x23, 0x2c), hv);
@@ -750,14 +842,26 @@ impl App {
         match anz {
             Anzeige::Verbunden => {
                 p.circle_stroke(c, 60.0 * k, linie(5.0, farbe));
+                if lebhaft {
+                    // Lichtpunkt mit Schweif kreist langsam um den Ring
+                    let hell = farbe.lerp_to_gamma(Color32::WHITE, 0.65);
+                    let kopf = t * 1.3;
+                    // uebereinander gelegte Boegen, die alle am Kopf enden: vorne hell, hinten weich auslaufend
+                    for i in 1..=10 {
+                        bogen(p, c, 60.0 * k, kopf - i as f32 * 0.11, kopf, linie(5.0, hell.gamma_multiply(0.16)));
+                    }
+                }
             }
             Anzeige::Verbinde | Anzeige::Trenne => {
                 p.circle_stroke(c, 60.0 * k, linie(5.0, farbe.gamma_multiply(0.18)));
                 let a0 = t * 4.0;
-                bogen(p, c, 60.0 * k, a0, a0 + 1.6, linie(5.0, farbe));
+                // lebhaft: Bogen wird laenger und kuerzer (wie ein Ladekreis)
+                let lang = if lebhaft { 0.52 + 3.3 * (0.5 - 0.5 * (t * 2.4).cos()) } else { 1.6 };
+                bogen(p, c, 60.0 * k, a0, a0 + lang, linie(5.0, farbe));
             }
             Anzeige::Aus => {
-                p.circle_stroke(c, 60.0 * k, linie(5.0, LINE.lerp_to_gamma(ACC.gamma_multiply(0.7), hv)));
+                let ring = LINE.lerp_to_gamma(ACC, 0.35 * einladen);
+                p.circle_stroke(c, 60.0 * k, linie(5.0, ring.lerp_to_gamma(ACC.gamma_multiply(0.7), hv)));
             }
         }
         // Symbol (Ein/Aus)
@@ -766,11 +870,22 @@ impl App {
             _ => farbe,
         };
         let s = linie(5.5, sym);
-        let pi = std::f32::consts::PI;
-        bogen(p, c + vec2(0.0, 3.0 * k), 24.0 * k, -pi / 2.0 + 0.75, -pi / 2.0 + 2.0 * pi - 0.75, s);
-        p.line_segment([c + vec2(0.0, -26.0 * k), c + vec2(0.0, -4.0 * k)], s);
+        // lebhaft: nach dem Verbinden zeichnet sich das Zeichen neu (Strich von oben, Bogen von beiden Seiten)
+        let neu = if lebhaft && anz == Anzeige::Verbunden { (self.wechsel.elapsed().as_secs_f32() / 0.7).min(1.0) } else { 1.0 };
+        let neu = 1.0 - (1.0 - neu).powi(3);
+        let m = c + vec2(0.0, 3.0 * k);
+        let (b0, b1) = (-pi / 2.0 + 0.75, -pi / 2.0 + 2.0 * pi - 0.75);
+        if neu >= 1.0 {
+            bogen(p, m, 24.0 * k, b0, b1, s);
+        } else if neu > 0.0 {
+            let halb = (b1 - b0) / 2.0 * neu;
+            bogen(p, m, 24.0 * k, b0, b0 + halb, s);
+            bogen(p, m, 24.0 * k, b1 - halb, b1, s);
+        }
+        let unten = -26.0 + 22.0 * (neu * 1.6).clamp(0.05, 1.0);
+        p.line_segment([c + vec2(0.0, -26.0 * k), c + vec2(0.0, unten * k)], s);
         p.circle_filled(c + vec2(0.0, -26.0 * k), 2.6, sym);
-        p.circle_filled(c + vec2(0.0, -4.0 * k), 2.6, sym);
+        p.circle_filled(c + vec2(0.0, unten * k), 2.6, sym);
         resp.clicked() && anz != Anzeige::Trenne
     }
 

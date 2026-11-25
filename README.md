@@ -82,6 +82,14 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 | Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
 | Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
 
+## Neu in Apps 1.5.1 (Server bleibt 1.5.0)
+
+- **Lebendiger Ein/Aus-Knopf** (Android und PC), solange die App im Vordergrund ist:
+  - **Wirbel (Tornado) um den Knopf:** beim Verbinden schnell nach innen, beim Trennen rückwärts nach außen, verbunden ruhig, aus ganz leise
+  - Wellen laufen vom Knopf weg, ein Lichtpunkt kreist um den Ring, das Zeichen baut sich beim Verbinden neu auf
+  - Tippen schickt eine Welle los; aus „atmet“ der Knopf leicht und lädt zum Tippen ein
+  - Im Hintergrund (oder mit „Animationen aus“ in Android) bleibt alles ruhig und spart Akku
+
 ## Neu in Apps 1.5.0 / Server 1.5.0
 
 - **Zeitfenster**: ein Gerät – oder alle Geräte eines Benutzers – dürfen nur zu bestimmten Zeiten ins VPN, z. B.

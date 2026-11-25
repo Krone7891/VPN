@@ -205,7 +205,7 @@ public class MainActivity extends Activity {
         power = new PowerButton(this);
         power.setColors(cCard, dark ? 0xFF262B35 : 0xFFE2E6EE, cMute, cAcc, cOk, cWarn, dark);
         power.setOnClickListener(v -> toggle());
-        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(dp(172), dp(172));
+        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(dp(203), dp(203));
         pl.topMargin = dp(2);
         c1.addView(power, pl);
         tState = text("Nicht verbunden", 24, cInk, true);
@@ -1262,8 +1262,16 @@ public class MainActivity extends Activity {
         ui.postDelayed(this::updateOnOpen, 1500);
     }
 
+    /** Knopf lebhafter animieren, solange die App im Fokus ist */
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (power != null) power.setLebhaft(hasFocus);
+    }
+
     @Override
     protected void onPause() {
+        if (power != null) power.setLebhaft(false);
         if (Updater.visible == this) Updater.visible = null;
         ui.removeCallbacks(tick);
         super.onPause();
