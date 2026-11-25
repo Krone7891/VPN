@@ -82,6 +82,10 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 | Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
 | Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
 
+## Neu in Apps 1.5.2 (Server bleibt 1.5.0)
+
+- **Wirbel folgt der Datenrate:** je mehr Daten durchs VPN fließen, desto schneller und kräftiger dreht sich der Wirbel um den Knopf (mit dem Lichtpunkt am Ring) – in Ruhe ganz langsam, bei vollem Download ein richtiger Tornado (Android und PC)
+
 ## Neu in Apps 1.5.1 (Server bleibt 1.5.0)
 
 - **Lebendiger Ein/Aus-Knopf** (Android und PC), solange die App im Vordergrund ist:

@@ -164,6 +164,11 @@ const IMMER_AKTIV: [(&str, &str); 3] = [
     ("Tarnung", "Paketgrößen und Takt ändern sich bei jeder Verbindung, damit keine typischen VPN-Muster entstehen. Das ist keine Verschlüsselung, nur eine Verkleidung – die Sicherheit kommt von den beiden Punkten oben."),
 ];
 
+/// Datenrate (Bytes/s) -> 0..1, logarithmisch: 0 = Ruhe, ~0,5 bei 1 MB/s, 1 ab 50 MB/s
+pub fn tempo(rate: f64) -> f32 {
+    ((1.0 + rate.max(0.0) / 20_000.0).ln() / (1.0 + 50e6 / 20_000.0f64).ln()).clamp(0.0, 1.0) as f32
+}
+
 fn sanft(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     1.0 - (1.0 - x).powi(3)
@@ -739,15 +744,18 @@ impl App {
     }
 
     /// Wirbel weiterdrehen: Drehzahl, Sog und Staerke gleiten weich zum Ziel (kein Ruckeln beim Zustandswechsel).
-    /// Verbinden: schneller Tornado nach innen, Trennen: dreht rueckwaerts nach aussen, verbunden: ruhiger Wirbel,
+    /// Verbinden: schneller Tornado nach innen, Trennen: dreht rueckwaerts nach aussen, verbunden: dreht je nach
+    /// Datenrate (ruhig bis schnell, auch der Lichtpunkt am Ring),
     /// aus: ganz leise. Ohne Fokus blendet er aus.
     fn wirbel_weiter(&mut self, anz: Anzeige) {
         let dt = self.wirbel_t.elapsed().as_secs_f32().min(0.1);
         self.wirbel_t = Instant::now();
+        // verbunden: je mehr Daten fliessen, desto schneller dreht sich alles
+        let x = tempo(self.z.as_ref().map(|z| (z.rate_rx + z.rate_tx) as f64).unwrap_or(0.0));
         let (st, w, zug) = match anz {
             Anzeige::Verbinde => (1.0, 4.5, 0.9),
             Anzeige::Trenne => (0.8, -3.5, -0.7),
-            Anzeige::Verbunden => (0.6, 1.1, 0.22),
+            Anzeige::Verbunden => (0.6 + 0.4 * x, 1.1 + 7.0 * x, 0.22 + 1.3 * x),
             Anzeige::Aus => (0.3, 0.7, 0.15),
         };
         let st = if self.lebhaft { st } else { 0.0 };
@@ -845,7 +853,7 @@ impl App {
                 if lebhaft {
                     // Lichtpunkt mit Schweif kreist langsam um den Ring
                     let hell = farbe.lerp_to_gamma(Color32::WHITE, 0.65);
-                    let kopf = t * 1.3;
+                    let kopf = dreh; // kreist mit dem Wirbel: schneller, wenn mehr Daten fliessen
                     // uebereinander gelegte Boegen, die alle am Kopf enden: vorne hell, hinten weich auslaufend
                     for i in 1..=10 {
                         bogen(p, c, 60.0 * k, kopf - i as f32 * 0.11, kopf, linie(5.0, hell.gamma_multiply(0.16)));
@@ -1462,6 +1470,11 @@ pub fn vorschau(modus: &str) {
             };
             let rx = (2.5e6 * (1.2 + (t * 0.7).sin()) + 4e5 * (t * 3.1).sin().abs()) as u64;
             let tx = (2.4e5 * (1.1 + (t * 0.5).cos())) as u64;
+            // KVPN_VORSCHAU_RATE=Bytes/s: feste Datenrate (zum Ansehen, wie schnell sich der Wirbel dreht)
+            let (rx, tx) = match std::env::var("KVPN_VORSCHAU_RATE").ok().and_then(|v| v.parse::<u64>().ok()) {
+                Some(r) => (r, 0),
+                None => (rx, tx),
+            };
             Some(Zustand {
                 state: state.into(),
                 title: "KroneVPN".into(),
@@ -1579,5 +1592,17 @@ pub fn vorschau(modus: &str) {
         regeln: Mutex::new(kvpn::regeln::Regeln { notbremse: true, auto: true, vertraut: vec!["FRITZ!Box 7590".into()], ziele: vec!["bank.de".into()], ..Default::default() }) });
     if let Err(e) = run(st, cfg, false) {
         eprintln!("{e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tempo_waechst_mit_datenrate() {
+        assert_eq!(super::tempo(0.0), 0.0);
+        let (a, b, c) = (super::tempo(100e3), super::tempo(1e6), super::tempo(10e6));
+        assert!(0.0 < a && a < b && b < c && c < 1.0, "{a} {b} {c}");
+        assert!((b - 0.5).abs() < 0.05, "{b}");
+        assert_eq!(super::tempo(1e9), 1.0);
     }
 }

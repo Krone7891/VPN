@@ -1148,6 +1148,7 @@ public class MainActivity extends Activity {
             if (lastRx >= 0) {
                 tDown.setText(rate(Math.max(0, rx - lastRx)));
                 tUp.setText(rate(Math.max(0, tx - lastTx)));
+                power.setRate(Math.max(0, rx - lastRx) + Math.max(0, tx - lastTx));
             }
             lastRx = rx;
             lastTx = tx;

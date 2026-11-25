@@ -22,7 +22,7 @@ import android.view.animation.OvershootInterpolator;
  * Hat die App den Fokus (setLebhaft), kommt mehr dazu: Wellen laufen vom Knopf weg, ein Lichtpunkt kreist um den
  * Ring, das Power-Zeichen zeichnet sich beim Verbinden neu, Tippen schickt eine Welle los und aus lädt der Knopf
  * sanft zum Tippen ein, und um den Knopf dreht sich ein Wirbel (Tornado): beim Verbinden schnell nach innen,
- * beim Trennen rueckwaerts nach aussen, verbunden ruhig. Ohne Fokus (oder mit "Animationen aus" in Android) bleibt es ruhig und spart Akku.
+ * beim Trennen rueckwaerts nach aussen, verbunden je nach Datenrate ruhig bis schnell. Ohne Fokus (oder mit "Animationen aus" in Android) bleibt es ruhig und spart Akku.
  */
 final class PowerButton extends View {
     static final int OFF = 0, CONNECTING = 1, CONNECTED = 2, DISCONNECTING = 3;
@@ -45,6 +45,8 @@ final class PowerButton extends View {
     /** Wirbel (Tornado): Drehung, Sog, aktuelle Drehzahl, Staerke, Sog-Tempo; Zeit des letzten Bilds */
     private float wDreh, wSog, wW, wSt, wZug;
     private long wT = -1;
+    /** Datenrate 0..1 (logarithmisch): je mehr Daten fliessen, desto schneller dreht sich alles */
+    private float tempo;
 
     PowerButton(Context c) {
         super(c);
@@ -80,6 +82,17 @@ final class PowerButton extends View {
         if (an == lebhaft) return;
         lebhaft = an;
         invalidate();
+    }
+
+    /** aktuelle Datenrate (Bytes/s, Download + Upload) */
+    void setRate(double bytesPerSec) {
+        tempo = tempo(bytesPerSec);
+    }
+
+    /** Bytes/s -> 0..1, logarithmisch: 0 = Ruhe, ~0,5 bei 1 MB/s, 1 ab 50 MB/s (wie in der PC-App) */
+    static float tempo(double rate) {
+        double x = Math.log(1 + Math.max(0, rate) / 20000.0) / Math.log(1 + 50e6 / 20000.0);
+        return (float) Math.max(0, Math.min(1, x));
     }
 
     int getState() {
@@ -275,7 +288,7 @@ final class PowerButton extends View {
             if (lebhaft) {
                 // Lichtpunkt mit Schweif kreist langsam um den Ring
                 int hell = (Integer) MISCH.evaluate(0.65f, color, 0xFFFFFFFF);
-                float kopf = (float) Math.toDegrees(t * 1.3) % 360f;
+                float kopf = (float) Math.toDegrees(wDreh); // kreist mit dem Wirbel: schneller, wenn mehr Daten fliessen
                 // uebereinander gelegte Boegen, die alle am Kopf enden: vorne hell, hinten weich auslaufend
                 p.setColor(alpha(hell, 0.16f));
                 for (int i = 1; i <= 10; i++) cv.drawArc(r, kopf - i * 6.3f, i * 6.3f, false, p);
@@ -329,7 +342,7 @@ final class PowerButton extends View {
         switch (state) {
             case CONNECTING: st = 1f; w = 4.5f; zug = 0.9f; break;
             case DISCONNECTING: st = 0.8f; w = -3.5f; zug = -0.7f; break;
-            case CONNECTED: st = 0.6f; w = 1.1f; zug = 0.22f; break;
+            case CONNECTED: st = 0.6f + 0.4f * tempo; w = 1.1f + 7f * tempo; zug = 0.22f + 1.3f * tempo; break;
             default: st = 0.3f; w = 0.7f; zug = 0.15f;
         }
         if (!lebhaft) st = 0f;
