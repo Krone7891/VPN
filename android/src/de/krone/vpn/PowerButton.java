@@ -247,28 +247,31 @@ final class PowerButton extends View {
             int hell = (Integer) MISCH.evaluate(0.3f, wf, 0xFFFFFFFF);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeCap(Paint.Cap.ROUND);
+            // Spiralarme: schlingern und biegen sich, Biegung folgt der Drehrichtung
+            float biege = 2.6f * Math.max(-1f, Math.min(1f, wW));
             for (int arm = 0; arm < 3; arm++) {
-                double a0 = wDreh + arm * 2 * Math.PI / 3;
+                double a0 = wDreh + arm * 2 * Math.PI / 3 + 0.25 * Math.sin(t * 0.7 + arm * 1.9);
+                double b = biege * (1 + 0.25 * Math.sin(t * 0.8 + arm * 2.0));
                 int n = 16;
                 for (int j = 0; j < n; j++) {
                     float s0 = j / (float) n, s1 = (j + 1) / (float) n, sm = (s0 + s1) / 2;
                     float fluss = 0.6f + 0.4f * (float) Math.sin(2 * Math.PI * (sm * 2 + wSog * 3));
                     p.setStrokeWidth((2.5f - s0) * k);
                     p.setColor(alpha(wf, wSt * 0.7f * (float) Math.sin(Math.PI * sm) * fluss));
-                    float r0 = (62 + 29 * s0) * k, r1 = (62 + 29 * s1) * k;
-                    double b0 = a0 - s0 * 2.6, b1 = a0 - s1 * 2.6;
+                    float r0 = (62 + 29 * s0 + 2.5f * (float) Math.sin(t * 1.7 + s0 * 6 + arm) * s0) * k;
+                    float r1 = (62 + 29 * s1 + 2.5f * (float) Math.sin(t * 1.7 + s1 * 6 + arm) * s1) * k;
+                    double b0 = a0 - s0 * b, b1 = a0 - s1 * b;
                     cv.drawLine(cx + r0 * (float) Math.cos(b0), cy + r0 * (float) Math.sin(b0), cx + r1 * (float) Math.cos(b1), cy + r1 * (float) Math.sin(b1), p);
                 }
             }
             p.setStrokeCap(Paint.Cap.BUTT);
             p.setStyle(Paint.Style.FILL);
-            for (int i = 0; i < 34; i++) {
-                float q = wSog + i * 0.618034f;
-                q -= (float) Math.floor(q);
-                double a = i * 2.399963 + wDreh + q * 2.5;
-                float rr = (91 - 29 * q) * k;
+            // freie Teilchen: jedes mit eigenem Tempo, schlingert, taucht am Rand auf und verschwindet am Knopf
+            for (int i = 0; i < TEILCHEN; i++) {
+                float rr = tl[i * 4], a = tl[i * 4 + 1];
+                float q = Math.max(0f, Math.min(1f, (rr - 62) / 29f));
                 p.setColor(alpha(hell, wSt * 0.9f * (float) Math.sin(Math.PI * q)));
-                cv.drawCircle(cx + rr * (float) Math.cos(a), cy + rr * (float) Math.sin(a), (1f + 1.5f * (1 - q)) * k, p);
+                cv.drawCircle(cx + rr * k * (float) Math.cos(a), cy + rr * k * (float) Math.sin(a), (1f + 1.5f * q) * k, p);
             }
         }
         // Knopf
@@ -338,22 +341,64 @@ final class PowerButton extends View {
     private boolean wirbelWeiter(long now) {
         float dt = wT < 0 ? 0f : Math.min(0.1f, (now - wT) / 1000f);
         wT = now;
+        // Drehrichtung: verbinden/verbunden nach rechts (Uhrzeigersinn), trennen und aus nach links
         float st, w, zug;
         switch (state) {
             case CONNECTING: st = 1f; w = 4.5f; zug = 0.9f; break;
-            case DISCONNECTING: st = 0.8f; w = -3.5f; zug = -0.7f; break;
+            case DISCONNECTING: st = 0.9f; w = -5f; zug = -0.8f; break;
             case CONNECTED: st = 0.6f + 0.4f * tempo; w = 1.1f + 7f * tempo; zug = 0.22f + 1.3f * tempo; break;
-            default: st = 0.3f; w = 0.7f; zug = 0.15f;
+            default: st = 0.3f; w = -0.7f; zug = 0.15f;
         }
         if (!lebhaft) st = 0f;
-        float f = Math.min(1f, dt * 2.5f);
+        // Richtungswechsel (Trennen) schnell, sonst weich
+        float f = Math.min(1f, dt * (w * wW < 0 ? 7f : 2.5f));
         wW += (w - wW) * f;
         wSt += (st - wSt) * f;
         wZug += (zug - wZug) * f;
         wDreh = (float) ((wDreh + wW * dt) % (2 * Math.PI));
         wSog += wZug * dt;
         wSog -= (float) Math.floor(wSog);
+        teilchenWeiter(dt, (now - t0) / 1000f);
         return wSt > 0.01f;
+    }
+
+    private static final int TEILCHEN = 40;
+    /** freie Teilchen: je 4 Werte – Abstand, Winkel, eigenes Tempo, eigene Phase (Schlingern) */
+    private final float[] tl = new float[TEILCHEN * 4];
+    private boolean tlBereit;
+    private final java.util.Random zufall = new java.util.Random();
+
+    /**
+     * Teilchen bewegen (wie in der PC-App, gui.rs teilchen_weiter): innen schneller wie bei einem echten Wirbel, jedes
+     * mit eigenem Tempo, schlingert hin und her. Wer den Knopf (beim Trennen den Rand) erreicht, taucht zufaellig neu auf.
+     */
+    private void teilchenWeiter(float dt, float t) {
+        float tau = (float) (2 * Math.PI);
+        if (!tlBereit) {
+            for (int i = 0; i < TEILCHEN; i++) neu(i, 62 + 29 * zufall.nextFloat());
+            tlBereit = true;
+        }
+        for (int i = 0; i < TEILCHEN; i++) {
+            int o = i * 4;
+            float r = tl[o], a = tl[o + 1], v = tl[o + 2], ph = tl[o + 3];
+            float dreh = wW * v * (float) Math.pow(78 / r, 1.5) + 0.5f * (float) Math.cos(t * 2.1f * v + ph * 1.7f);
+            float schl = 7f * (float) Math.sin(t * (1.3f + v) + ph) * (0.3f + Math.abs(wZug));
+            r += (-wZug * 29 * v + schl) * dt;
+            a = (a + dreh * dt) % tau;
+            if (r < 62 || r > 91) neu(i, wZug >= 0 ? 90.5f : 62.5f);
+            else {
+                tl[o] = r;
+                tl[o + 1] = a;
+            }
+        }
+    }
+
+    private void neu(int i, float r) {
+        int o = i * 4;
+        tl[o] = r;
+        tl[o + 1] = (float) (2 * Math.PI) * zufall.nextFloat();
+        tl[o + 2] = 0.6f + 0.9f * zufall.nextFloat();
+        tl[o + 3] = (float) (2 * Math.PI) * zufall.nextFloat();
     }
 
     /** eine Welle: x = 0..1 (Fortschritt), laeuft vom Ring (60) nach aussen bis 77 und blendet aus */

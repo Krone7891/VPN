@@ -52,8 +52,16 @@ public class KroneVpnService extends VpnService {
     public int onStartCommand(Intent intent, int flags, int startId) {
         Absturz.install(this);
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            prefs(this).edit().putBoolean("on", false).apply();
+            // vom Nutzer getrennt: auch nach einem Update nicht wieder von selbst verbinden
+            prefs(this).edit().putBoolean("on", false).remove("resume_after_update").apply();
             stopTunnel(false);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        // Von Android selbst gestartet (Neustart des Dienstes, "Durchgehend aktives VPN" beim Hochfahren): nur
+        // verbinden, wenn das VPN vorher an war. Ausnahme: "Verbindungen ohne VPN blockieren" – sonst gaebe es gar kein Internet
+        boolean vomSystem = intent == null || VpnService.SERVICE_INTERFACE.equals(intent.getAction());
+        if (vomSystem && handle == 0 && !prefs(this).getBoolean("on", false) && !sperrtOhneVpn()) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -341,6 +349,16 @@ public class KroneVpnService extends VpnService {
         handle = 0;
         Kachel.aktualisieren(this);
         if (h != 0) Native.stop(h);
+    }
+
+    /** "Verbindungen ohne VPN blockieren" an? (Android 10+) */
+    private boolean sperrtOhneVpn() {
+        if (Build.VERSION.SDK_INT < 29) return false;
+        try {
+            return isLockdownEnabled();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @Override

@@ -152,6 +152,9 @@ struct App {
     /// Wirbel (Tornado) um den Knopf: Drehung, Sog, aktuelle Drehzahl, Staerke, Sog-Tempo; Zeit des letzten Bilds
     wirbel: [f32; 5],
     wirbel_t: Instant,
+    /// freie Teilchen im Wirbel: Abstand, Winkel, eigenes Tempo, eigene Phase (Schlingern); Zufall
+    teilchen: Vec<[f32; 4]>,
+    zufall: u32,
 }
 
 /// weiches Ein-/Ausblenden (0..1 -> 0..1)
@@ -167,6 +170,37 @@ const IMMER_AKTIV: [(&str, &str); 3] = [
 /// Datenrate (Bytes/s) -> 0..1, logarithmisch: 0 = Ruhe, ~0,5 bei 1 MB/s, 1 ab 50 MB/s
 pub fn tempo(rate: f64) -> f32 {
     ((1.0 + rate.max(0.0) / 20_000.0).ln() / (1.0 + 50e6 / 20_000.0f64).ln()).clamp(0.0, 1.0) as f32
+}
+
+/// Teilchen des Wirbels bewegen: innen schneller (wie bei einem echten Wirbel), jedes mit eigenem Tempo, schlingert
+/// hin und her. Wer den Knopf (oder beim Trennen den Rand) erreicht, taucht an zufaelliger Stelle neu auf.
+pub fn teilchen_weiter(tl: &mut Vec<[f32; 4]>, rng: &mut u32, dt: f32, t: f32, w: f32, zug: f32) {
+    let mut zufall = || {
+        *rng ^= *rng << 13;
+        *rng ^= *rng >> 17;
+        *rng ^= *rng << 5;
+        (*rng >> 8) as f32 / (1u32 << 24) as f32
+    };
+    let tau = 2.0 * std::f32::consts::PI;
+    if tl.is_empty() {
+        for _ in 0..40 {
+            tl.push([62.0 + 29.0 * zufall(), tau * zufall(), 0.6 + 0.9 * zufall(), tau * zufall()]);
+        }
+    }
+    for p in tl.iter_mut() {
+        let [r, a, v, ph] = *p;
+        let dreh = w * v * (78.0 / r).powf(1.5) + 0.5 * (t * 2.1 * v + ph * 1.7).cos();
+        let schlingern = 7.0 * (t * (1.3 + v) + ph).sin() * (0.3 + zug.abs());
+        let r = r + (-zug * 29.0 * v + schlingern) * dt;
+        let a = (a + dreh * dt).rem_euclid(tau);
+        *p = if r < 62.0 || r > 91.0 {
+            // neu: beim Hineinziehen aussen, beim Hinausdruecken innen
+            let start = if zug >= 0.0 { 90.5 } else { 62.5 };
+            [start, tau * zufall(), 0.6 + 0.9 * zufall(), tau * zufall()]
+        } else {
+            [r, a, v, ph]
+        };
+    }
 }
 
 fn sanft(x: f32) -> f32 {
@@ -354,6 +388,8 @@ impl App {
             wechsel: Instant::now(),
             wirbel: [0.0; 5],
             wirbel_t: Instant::now(),
+            teilchen: Vec::new(),
+            zufall: 0x9e37_79b9,
         };
         app.wahl = app.st.verschluesselung();
         // Profile: das aktive gehoert immer dazu (z. B. Code aus einer aelteren Version)
@@ -752,20 +788,25 @@ impl App {
         self.wirbel_t = Instant::now();
         // verbunden: je mehr Daten fliessen, desto schneller dreht sich alles
         let x = tempo(self.z.as_ref().map(|z| (z.rate_rx + z.rate_tx) as f64).unwrap_or(0.0));
+        // Drehrichtung: verbinden/verbunden nach rechts (Uhrzeigersinn), trennen und aus nach links
         let (st, w, zug) = match anz {
             Anzeige::Verbinde => (1.0, 4.5, 0.9),
-            Anzeige::Trenne => (0.8, -3.5, -0.7),
+            Anzeige::Trenne => (0.9, -5.0, -0.8),
             Anzeige::Verbunden => (0.6 + 0.4 * x, 1.1 + 7.0 * x, 0.22 + 1.3 * x),
-            Anzeige::Aus => (0.3, 0.7, 0.15),
+            Anzeige::Aus => (0.3, -0.7, 0.15),
         };
         let st = if self.lebhaft { st } else { 0.0 };
-        let f = (dt * 2.5).min(1.0);
+        // Richtungswechsel (Trennen) schnell, sonst weich
+        let f = (dt * if w * self.wirbel[2] < 0.0 { 7.0 } else { 2.5 }).min(1.0);
         let v = &mut self.wirbel;
         v[2] += (w - v[2]) * f;
         v[3] += (st - v[3]) * f;
         v[4] += (zug - v[4]) * f;
         v[0] = (v[0] + v[2] * dt) % (2.0 * std::f32::consts::PI);
         v[1] = (v[1] + v[4] * dt).rem_euclid(1.0);
+        let (w, zug) = (v[2], v[4]);
+        let t = self.start.elapsed().as_secs_f32();
+        teilchen_weiter(&mut self.teilchen, &mut self.zufall, dt, t, w, zug);
     }
 
     /// grosser runder Ein/Aus-Knopf. true = angeklickt
@@ -826,21 +867,26 @@ impl App {
             let wf = if anz == Anzeige::Aus { MUTE.lerp_to_gamma(ACC, 0.5) } else { farbe };
             let hell = wf.lerp_to_gamma(Color32::WHITE, 0.3);
             let punkt = |r: f32, a: f32| c + vec2(a.cos(), a.sin()) * r * k;
+            // Spiralarme: schlingern und biegen sich, Biegung folgt der Drehrichtung
+            let biege = 2.6 * (self.wirbel[2] / 1.0).clamp(-1.0, 1.0);
             for arm in 0..3 {
-                let a0 = dreh + arm as f32 * 2.0 * pi / 3.0;
+                let af = arm as f32;
+                let a0 = dreh + af * 2.0 * pi / 3.0 + 0.25 * (t * 0.7 + af * 1.9).sin();
+                let b = biege * (1.0 + 0.25 * (t * 0.8 + af * 2.0).sin());
                 let n = 16;
+                let rad = |s: f32| 62.0 + 29.0 * s + 2.5 * (t * 1.7 + s * 6.0 + af).sin() * s;
                 for j in 0..n {
                     let (s0, s1) = (j as f32 / n as f32, (j + 1) as f32 / n as f32);
                     let sm = (s0 + s1) / 2.0;
                     let fluss = 0.6 + 0.4 * (2.0 * pi * (sm * 2.0 + sog * 3.0)).sin();
                     let a = st * 0.7 * (pi * sm).sin() * fluss;
-                    p.line_segment([punkt(62.0 + 29.0 * s0, a0 - s0 * 2.6), punkt(62.0 + 29.0 * s1, a0 - s1 * 2.6)], linie(2.5 - s0, wf.gamma_multiply(a)));
+                    p.line_segment([punkt(rad(s0), a0 - s0 * b), punkt(rad(s1), a0 - s1 * b)], linie(2.5 - s0, wf.gamma_multiply(a)));
                 }
             }
-            for i in 0..34 {
-                let q = (sog + i as f32 * 0.618_034).rem_euclid(1.0);
-                let a = i as f32 * 2.399_963 + dreh + q * 2.5;
-                p.circle_filled(punkt(91.0 - 29.0 * q, a), (1.0 + 1.5 * (1.0 - q)) * k, hell.gamma_multiply(st * 0.9 * (pi * q).sin()));
+            // freie Teilchen: jedes mit eigenem Tempo, schlingert, taucht am Rand auf und verschwindet am Knopf
+            for &[r, a, _, _] in &self.teilchen {
+                let q = ((r - 62.0) / 29.0).clamp(0.0, 1.0);
+                p.circle_filled(punkt(r, a), (1.0 + 1.5 * q) * k, hell.gamma_multiply(st * 0.9 * (pi * q).sin()));
             }
         }
         let innen = CARD.lerp_to_gamma(Color32::from_rgb(0x1f, 0x23, 0x2c), hv);
@@ -1604,5 +1650,18 @@ mod tests {
         assert!(0.0 < a && a < b && b < c && c < 1.0, "{a} {b} {c}");
         assert!((b - 0.5).abs() < 0.05, "{b}");
         assert_eq!(super::tempo(1e9), 1.0);
+    }
+
+    #[test]
+    fn teilchen_bleiben_im_wirbel() {
+        let (mut tl, mut rng) = (Vec::new(), 7u32);
+        for i in 0..2000 {
+            let zug = if i < 1000 { 0.9 } else { -0.8 };
+            super::teilchen_weiter(&mut tl, &mut rng, 0.016, i as f32 * 0.016, 4.5, zug);
+            assert!(tl.iter().all(|p| (62.0..=91.0).contains(&p[0])));
+        }
+        assert_eq!(tl.len(), 40);
+        // nicht alle gleich schnell: freie Bewegung
+        assert!(tl.iter().any(|p| p[2] < 0.9) && tl.iter().any(|p| p[2] > 1.2));
     }
 }

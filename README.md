@@ -82,6 +82,13 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 | Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
 | Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
 
+## Neu in Apps 1.5.3 (Server bleibt 1.5.0)
+
+- **Wirbel lebendiger:** jeder Punkt bewegt sich frei – eigenes Tempo, schlingert hin und her, innen schneller, taucht zufällig neu auf; die Spiralarme biegen und winden sich
+- **Trennen dreht nach links:** beim Trennen kehrt der Wirbel sofort um und dreht gegen den Uhrzeigersinn (nach außen), verbunden nach rechts
+- **Automatisch verbinden nur, wenn das VPN vorher an war:** startet Android die App neu (oder beim Hochfahren über „Durchgehend aktives VPN“), verbindet sie sich nur, wenn du sie nicht selbst getrennt hast; nach einem Update ebenso (Ausnahme: „Verbindungen ohne VPN blockieren“ ist an – sonst gäbe es gar kein Internet). Am PC startet der Dienst nach dem Trennen ohnehin nicht mehr mit Windows.
+- **Samsung „Automatische Sperre“:** vor dem Update erklärt die App, warum die Sperre das Update blockiert, und öffnet die Einstellungen (Sicherheit und Datenschutz → Automatische Sperre). Zurück in der App startet das Update von selbst. Wird ein Update trotzdem blockiert, kommt der Hinweis erneut.
+
 ## Neu in Apps 1.5.2 (Server bleibt 1.5.0)
 
 - **Wirbel folgt der Datenrate:** je mehr Daten durchs VPN fließen, desto schneller und kräftiger dreht sich der Wirbel um den Knopf (mit dem Lichtpunkt am Ring) – in Ruhe ganz langsam, bei vollem Download ein richtiger Tornado (Android und PC)
