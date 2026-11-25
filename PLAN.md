@@ -44,3 +44,40 @@ Handy/PC ── TLS 1.3 :443 ──► (Sophos) ──► nginx :443 ──► k
 ## Grenzen (ehrlich)
 - TCP-Tunnel ist bei Paketverlust langsamer als WireGuard/UDP – dafür kommt er überall durch. Zu Hause/unterwegs ohne Sperre bleibt WireGuard die schnellste Wahl.
 - Sperrt eine Firewall die Domain per Kategorie („Dynamic DNS"), hilft nur eine andere Domain (in der Server-Konfiguration änderbar).
+
+## Aufgaben 1.1.0
+
+**Krypto & Tarnung**
+- [x] Dynamische Cipher-Wahl: AES-256-GCM bei AES-NI/ARMv8-AES, sonst ChaCha20-Poly1305 (nur geprüfte Verfahren)
+- [x] Cipher im Client umschaltbar (Auto / AES-256 / ChaCha20) – PC + Android
+- [x] Multicore: Senden/Empfangen/Verschlüsseln parallel
+- [x] Tarn-Schicht pro Verbindung neu (Paketgrößen, Padding, Timing) – Sophos-Durchgang hat Vorrang
+
+**Auto-Update**
+- [x] Nur Geräte im Tunnel bekommen das Update, nur geänderte App
+- [x] App startet sich nach dem Patch selbst neu
+
+**Ortung (nur eigene Geräte)**
+- [x] GPS-Report + IP-Geo zusammenführen
+- [x] SSID/BSSID-Ortung über WiGLE + Google Geolocation API (Schlüssel in server.toml)
+- [x] Standort-Verlauf loggen + Bewegungs-Map je Gerät
+- [x] Anti-Diebstahl: frischer GPS-Fix auf Abruf
+
+**Webseite**
+- [x] Geräte still anpingen (ohne Benachrichtigung)
+- [x] Admin-Seite responsiv für jede Größe
+
+**Apps**
+- [x] Power-Button der PC-App auch auf Android
+- [x] Mehr Animationen
+- [x] Verständliche Fehlermeldungen
+- [x] Absturz-Logs über den Tunnel in Server-Ordner
+- [ ] Absturz-Logs gemeinsam besprechen
+- [x] Code-/QR-Anzeige entfernen
+- [x] Alle Berechtigungen beim ersten Start abfragen
+- [x] PC: nur einmalige Admin-Abfrage (UAC) – gebaut, auf echtem Windows noch zu pruefen
+- [x] Google Play Protect „gefährlich“: Benachrichtigung + Erklärung (Standort nie verdeckt); Prüfung/Einspruch bei Google selbst
+- [x] Gefundene Bugs beheben
+
+**Abschluss**
+- [x] Version 1.1.0, alles bauen, e2e-Tests, Doku, beide Repos pushen (Server: `kvpn-update`, Apps: `kvpn-server update`)

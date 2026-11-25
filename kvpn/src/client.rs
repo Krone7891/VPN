@@ -29,11 +29,20 @@ pub const ST_WAITING: u8 = 3;
 
 #[derive(Default, Clone, Serialize)]
 pub struct StatusInfo {
+    /// letzter Fehler in Klartext (fuer die Anzeige)
     pub last_error: String,
+    /// derselbe Fehler technisch (fuers Protokoll / "Details")
+    pub last_error_detail: String,
     pub tls_issuer: String,
     pub tls_trusted: bool,
     pub via_proxy: bool,
     pub server: String,
+    /// Verschluesselung der laufenden Verbindung ("AES-256-GCM" / "ChaCha20-Poly1305")
+    pub cipher: String,
+    /// eingestellte Wahl in der App ("auto", "aes", "chacha")
+    pub cipher_choice: String,
+    /// Prozessor hat AES-Befehle
+    pub aes_hw: bool,
 }
 
 /// Zustand fuer die Anzeige (Konsole, Android-App)
@@ -48,6 +57,14 @@ pub struct Status {
     pub connected_since: AtomicU64,
     pub connects: AtomicU64,
     pub info: Mutex<StatusInfo>,
+    /// Angaben fuer den Server (REC_INFO): (Zaehler, JSON) – wird bei jeder Aenderung und nach jedem Verbinden gesendet
+    pub report: Mutex<(u64, Vec<u8>)>,
+    /// Zaehler der Orten-Anfragen von der Admin-Seite (REC_LOCATE); die App holt dann einen frischen Standort
+    pub locate: AtomicU64,
+    /// Absturz-Protokolle fuer den Server: (Name, Text); gehen nach dem Verbinden hinaus
+    pub crash_out: Mutex<Vec<(String, Vec<u8>)>>,
+    /// vom Server bestaetigt (Name) – die App darf ihre Kopie loeschen
+    pub crash_ok: Mutex<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -60,11 +77,41 @@ struct StatusJson<'a> {
     rtt_ms: f64,
     connected_since: u64,
     connects: u64,
+    locate: u64,
+    crash_ok: Vec<String>,
     #[serde(flatten)]
     info: StatusInfo,
 }
 
 impl Status {
+    /// Angaben des Geraets an den Server melden (z. B. {"ssid":…,"lat":…,"lon":…}); leer = nichts
+    pub fn set_report(&self, json: &[u8]) {
+        if json.len() > crate::proto::MAX_INFO {
+            return;
+        }
+        let mut r = self.report.lock().unwrap();
+        r.0 += 1;
+        r.1 = json.to_vec();
+    }
+
+    /// Absturz-Protokoll zum Senden vormerken (Name = Dateiname, z. B. "1764000000-java.txt")
+    pub fn add_crash(&self, name: &str, text: &[u8]) {
+        let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(80).collect();
+        if name.is_empty() {
+            return;
+        }
+        let mut q = self.crash_out.lock().unwrap();
+        if q.iter().any(|(n, _)| *n == name) || q.len() >= 20 {
+            return;
+        }
+        q.push((name, text[..text.len().min(crate::proto::MAX_CRASH)].to_vec()));
+    }
+
+    /// bestaetigte Absturz-Protokolle abholen (die App loescht sie dann)
+    pub fn take_crash_ok(&self) -> Vec<String> {
+        std::mem::take(&mut *self.crash_ok.lock().unwrap())
+    }
+
     pub fn state_name(&self) -> &'static str {
         match self.state.load(Relaxed) {
             ST_CONNECTING => "connecting",
@@ -83,12 +130,16 @@ impl Status {
             rtt_ms: self.rtt_us.load(Relaxed) as f64 / 1000.0,
             connected_since: self.connected_since.load(Relaxed),
             connects: self.connects.load(Relaxed),
+            locate: self.locate.load(Relaxed),
+            crash_ok: self.crash_ok.lock().unwrap().clone(),
             info: self.info.lock().unwrap().clone(),
         })
         .unwrap()
     }
     fn error(&self, e: &str) {
-        self.info.lock().unwrap().last_error = e.to_string();
+        let mut i = self.info.lock().unwrap();
+        i.last_error = crate::fehler::klartext(e);
+        i.last_error_detail = e.to_string();
     }
 }
 
@@ -105,6 +156,8 @@ pub struct ClientOptions {
     pub on_connected: Option<Arc<dyn Fn(&crate::proto::Welcome, &TransportInfo) + Send + Sync>>,
     /// automatische Aktualisierung (None = aus)
     pub update: Option<Arc<crate::update::Updater>>,
+    /// gewaehlte Verschluesselung ("auto", "aes", "chacha"), wird vor jedem Verbindungsaufbau gefragt (None = auto)
+    pub cipher: Option<Arc<dyn Fn() -> String + Send + Sync>>,
 }
 
 static LAST_TS: AtomicU64 = AtomicU64::new(0);
@@ -128,16 +181,18 @@ pub async fn connect_once(
     protect: &Option<ProtectFn>,
     dns: &transport::DnsCache,
 ) -> Result<(transport::Ws, Sealer, Opener, Welcome, TransportInfo), String> {
-    connect_once_with(cfg, proxy, protect, dns, false).await
+    connect_once_with(cfg, proxy, protect, dns, false, "auto").await
 }
 
-/// wie `connect_once`; `upd` = dem Server melden, dass sich diese App selbst aktualisieren kann
+/// wie `connect_once`; `upd` = dem Server melden, dass sich diese App selbst aktualisieren kann,
+/// `cipher` = Wahl der Verschluesselung ("auto", "aes", "chacha")
 pub async fn connect_once_with(
     cfg: &ClientConfig,
     proxy: Option<&Proxy>,
     protect: &Option<ProtectFn>,
     dns: &transport::DnsCache,
     upd: bool,
+    cipher: &str,
 ) -> Result<(transport::Ws, Sealer, Opener, Welcome, TransportInfo), String> {
     let (mut ws, info) = transport::connect(&cfg.url, proxy, protect, dns).await?;
     let hello = Hello {
@@ -148,7 +203,9 @@ pub async fn connect_once_with(
         tls_trusted: info.tls_trusted,
         via_proxy: info.via_proxy,
         upd,
-        ciphers: vec![crate::proto::CIPHER_AES256.to_string()],
+        ciphers: crypto::cipher_wish(cipher),
+        pick: true,
+        pad: crate::tarn::fuellzeichen(160),
     };
     let (hs, m1) = crypto::client_init(&cfg.client_key()?, &cfg.server_key()?, &hello).map_err(|e| e.to_string())?;
     ws.send(Message::Binary(m1.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;
@@ -158,7 +215,7 @@ pub async fn connect_once_with(
             Ok(None) | Ok(Some(Ok(Message::Close(_)))) => {
                 return Err("Server hat den Handshake abgelehnt (Geraet entfernt, Code veraltet oder alle 8 Plaetze belegt)".into())
             }
-            Ok(Some(Err(e))) => return Err(format!("Verbindung abgebrochen: {e}")),
+            Ok(Some(Err(e))) => return Err(format!("Server hat den Handshake abgebrochen: {e}")),
             Ok(Some(Ok(Message::Binary(b)))) => break b,
             Ok(Some(Ok(_))) => continue,
         }
@@ -181,8 +238,14 @@ pub async fn run(
     let mut routes = if opts.routes.is_empty() { vec![None] } else { opts.routes.clone() };
     while !*stop.borrow() {
         status.state.store(ST_CONNECTING, Relaxed);
+        let choice = crypto::normalize_choice(&opts.cipher.as_ref().map(|f| f()).unwrap_or_default());
+        {
+            let mut i = status.info.lock().unwrap();
+            i.cipher_choice = choice.into();
+            i.aes_hw = crypto::aes_hw();
+        }
         let attempt = tokio::select! {
-            r = connect_once_with(&cfg, routes[0].as_ref(), &opts.protect, &opts.dns, opts.update.is_some()) => r,
+            r = connect_once_with(&cfg, routes[0].as_ref(), &opts.protect, &opts.dns, opts.update.is_some(), choice) => r,
             _ = stop.changed() => break,
         };
         if attempt.is_err() && routes.len() > 1 {
@@ -196,7 +259,9 @@ pub async fn run(
                     i.tls_trusted = info.tls_trusted;
                     i.via_proxy = info.via_proxy;
                     i.server = info.peer.map(|p| p.to_string()).unwrap_or_default();
+                    i.cipher = crypto::cipher_label(&welcome.cipher).into();
                     i.last_error.clear();
+                    i.last_error_detail.clear();
                 }
                 if let (Some(u), Some(o)) = (&opts.update, &welcome.upd) {
                     u.offer(o);
@@ -214,8 +279,9 @@ pub async fn run(
                 if let Some(k) = &kick {
                     let _ = futures_util::FutureExt::now_or_never(k.notified());
                 }
+                let tarn = welcome.tarn.map(|t| t.sicher()).unwrap_or_else(crate::proto::Tarn::alt);
                 let r = tokio::select! {
-                    r = session(ws, sealer, opener, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone(), opts.update.clone()) => r,
+                    r = session(ws, sealer, opener, tarn, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone(), opts.update.clone()) => r,
                     _ = async { match &kick { Some(k) => k.notified().await, None => std::future::pending().await } } => {
                         backoff = 0;
                         Err("Netzwerk gewechselt – verbinde neu".to_string())
@@ -252,36 +318,99 @@ pub async fn run(
     status.state.store(ST_STOPPED, Relaxed);
 }
 
-/// eine bestehende Verbindung bedienen; Senden und Empfangen laufen als eigene Tasks (mehrere Kerne)
+/// eine bestehende Verbindung bedienen. Fliessband ueber mehrere Kerne:
+///   TUN lesen + buendeln + verschluesseln  ->  TLS/WebSocket senden        (je ein Task)
+///   TLS/WebSocket empfangen                ->  entschluesseln + TUN schreiben (je ein Task)
+#[allow(clippy::too_many_arguments)]
 pub async fn session(
     ws: transport::Ws,
     mut sealer: Sealer,
     mut opener: Opener,
+    tarn: crate::proto::Tarn,
     tun_in: Arc<tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>>,
     tun_out: Arc<dyn TunWriter>,
     status: Arc<Status>,
     mut stop: watch::Receiver<bool>,
     update: Option<Arc<crate::update::Updater>>,
 ) -> Result<(), String> {
-    let (mut sink, mut stream) = ws.split();
+    let (sink, stream) = ws.split();
+    let (out, out_err, _w) = crate::pipe::writer(sink, 64);
+    let (mut inc, _r) = crate::pipe::reader(stream, 64);
     let t0 = Instant::now();
     let st_tx = status.clone();
     let upd_rx = update.clone();
+    // Antworten des Empfangs-Tasks (z. B. auf stilles Anpingen), gehen mit dem naechsten Buendel hinaus
+    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Vec<u8>>(16);
 
     let mut sender = tokio::spawn(async move {
+        let send_fail = |out_err: &Arc<Mutex<String>>| {
+            let e = out_err.lock().unwrap().clone();
+            if e.is_empty() { "Verbindung zum Server unterbrochen".to_string() } else { format!("Senden fehlgeschlagen: {e}") }
+        };
+        // verschluesseln (mit Tarn-Fuellung) und an die Sende-Stufe geben
+        macro_rules! senden {
+            ($buf:expr) => {{
+                let mut b = $buf;
+                tarn.fuellen(&mut b);
+                sealer.seal(&mut b).map_err(|e| e.to_string())?;
+                if out.send(b).await.is_err() {
+                    return Err(send_fail(&out_err));
+                }
+            }};
+        }
         // neuere Version angeboten: Datei (weiter) anfordern
         if let Some(off) = update.as_ref().and_then(|u| u.request()) {
             let mut buf = Vec::with_capacity(64);
             push_record(&mut buf, REC_UPD_GET, &off.to_be_bytes());
-            sealer.seal(&mut buf).map_err(|e| e.to_string())?;
-            sink.send(Message::Binary(buf.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;
+            senden!(buf);
         }
         let mut rx = tun_in.lock().await;
-        let mut ping = tokio::time::interval(Duration::from_secs(10));
-        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Angaben des Geraets (falls freigegeben) gleich nach dem Verbinden und danach bei jeder Aenderung
+        let mut report_seq = 0u64;
+        let take_report = |seq: &mut u64| -> Option<Vec<u8>> {
+            let r = st_tx.report.lock().unwrap();
+            (r.0 != *seq && !r.1.is_empty()).then(|| {
+                *seq = r.0;
+                r.1.clone()
+            })
+        };
+        if let Some(r) = take_report(&mut report_seq) {
+            let mut buf = Vec::with_capacity(r.len() + 32);
+            push_record(&mut buf, REC_INFO, &r);
+            senden!(buf);
+        }
+        // Absturz-Protokolle (bleiben vorgemerkt, bis der Server sie bestaetigt)
+        let mut crash_sent: std::collections::HashSet<String> = Default::default();
+        let take_crash = |sent: &mut std::collections::HashSet<String>| -> Vec<Vec<u8>> {
+            let q = st_tx.crash_out.lock().unwrap();
+            q.iter()
+                .filter(|(n, _)| sent.insert(n.clone()))
+                .map(|(n, t)| {
+                    let mut d = Vec::with_capacity(n.len() + 1 + t.len());
+                    d.push(n.len() as u8);
+                    d.extend_from_slice(n.as_bytes());
+                    d.extend_from_slice(t);
+                    let mut b = Vec::with_capacity(d.len() + 3);
+                    push_record(&mut b, REC_CRASH, &d);
+                    b
+                })
+                .collect()
+        };
+        for b in take_crash(&mut crash_sent) {
+            senden!(b);
+        }
+        // Lebenszeichen in zufaelligen Abstaenden (Tarn-Profil), erstes gleich zu Beginn (Ping-Messung)
+        let ka = tokio::time::sleep(Duration::from_millis(300));
+        tokio::pin!(ka);
+        let mut report_tick = tokio::time::interval(Duration::from_secs(2));
+        report_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let mut buf = Vec::with_capacity(BUNDLE_TARGET + 2048);
             tokio::select! {
+                c = ctrl_rx.recv() => {
+                    let Some(c) = c else { continue };
+                    buf.extend_from_slice(&c);
+                }
                 p = rx.recv() => {
                     let Some(p) = p else { return Err("TUN geschlossen".to_string()) };
                     let mut n = 0u64;
@@ -297,34 +426,37 @@ pub async fn session(
                     st_tx.tx_packets.fetch_add(n, Relaxed);
                     st_tx.tx_bytes.fetch_add(bytes, Relaxed);
                 }
-                _ = ping.tick() => {
+                _ = report_tick.tick() => {
+                    for b in take_crash(&mut crash_sent) {
+                        senden!(b);
+                    }
+                    // neue Angaben des Geraets (WLAN, Standort)? sonst nichts senden
+                    let Some(r) = take_report(&mut report_seq) else { continue };
+                    push_record(&mut buf, REC_INFO, &r);
+                }
+                _ = &mut ka => {
+                    ka.as_mut().reset(tokio::time::Instant::now() + tarn.lebenszeichen());
                     let mut d = [0u8; 12];
                     d[..8].copy_from_slice(&(t0.elapsed().as_micros() as u64).to_be_bytes());
                     d[8..].copy_from_slice(&(st_tx.rtt_us.load(Relaxed).min(u32::MAX as u64) as u32).to_be_bytes());
                     push_record(&mut buf, REC_PING, &d);
-                    // Fuellbytes: Keepalives haben keine feste Groesse
+                    // Fuellbytes: Lebenszeichen haben keine feste Groesse
                     let pad = vec![0u8; (rand::random::<u8>() % 96) as usize];
                     push_record(&mut buf, REC_PAD, &pad);
                 }
             }
-            sealer.seal(&mut buf).map_err(|e| e.to_string())?;
-            sink.send(Message::Binary(buf.into())).await.map_err(|e| format!("Senden fehlgeschlagen: {e}"))?;
+            senden!(buf);
         }
     });
 
     let st_rx = status.clone();
     let mut receiver = tokio::spawn(async move {
         loop {
-            let msg = match tokio::time::timeout(Duration::from_secs(35), stream.next()).await {
+            let mut buf = match tokio::time::timeout(Duration::from_secs(35), inc.recv()).await {
                 Err(_) => return Err("keine Antwort vom Server seit 35 s – verbinde neu".to_string()),
-                Ok(None) => return Err("Server hat die Verbindung beendet".to_string()),
-                Ok(Some(Err(e))) => return Err(format!("Verbindung abgebrochen: {e}")),
-                Ok(Some(Ok(m))) => m,
-            };
-            let mut buf: Vec<u8> = match msg {
-                Message::Binary(b) => b.into(),
-                Message::Close(_) => return Err("Server hat die Verbindung beendet".to_string()),
-                _ => continue,
+                Ok(None) | Ok(Some(crate::pipe::Rein::Ende)) => return Err("Server hat die Verbindung beendet".to_string()),
+                Ok(Some(crate::pipe::Rein::Fehler(e))) => return Err(format!("Verbindung abgebrochen: {e}")),
+                Ok(Some(crate::pipe::Rein::Daten(b))) => b,
             };
             opener.open(&mut buf).map_err(|e| e.to_string())?;
             let (mut n, mut bytes) = (0u64, 0u64);
@@ -342,6 +474,23 @@ pub async fn session(
                 REC_UPD_DATA => {
                     if let Some(u) = &upd_rx {
                         u.data(data);
+                    }
+                }
+                // stilles Anpingen von der Admin-Seite: der Kern antwortet selbst (keine Anzeige in der App)
+                REC_SPING if data.len() <= 16 => {
+                    let mut b = Vec::with_capacity(24);
+                    push_record(&mut b, REC_SPONG, data);
+                    let _ = ctrl_tx.try_send(b);
+                }
+                REC_LOCATE => {
+                    st_rx.locate.fetch_add(1, Relaxed);
+                }
+                REC_CRASH_OK => {
+                    let n = String::from_utf8_lossy(data).to_string();
+                    st_rx.crash_out.lock().unwrap().retain(|(x, _)| *x != n);
+                    let mut ok = st_rx.crash_ok.lock().unwrap();
+                    if !ok.contains(&n) {
+                        ok.push(n);
                     }
                 }
                 _ => {}

@@ -6,14 +6,14 @@
 //!   --proxy host:port                 HTTP-Proxy erzwingen (sonst: Systemproxy, dann direkt)
 //!   --routes 10.0.0.0/8,...           nur diese Netze durch den Tunnel (Standard: alles)
 //!   --reset                           gespeicherten Code loeschen
-//!   --code                            gespeicherten Verbindungscode + QR-Code anzeigen (z. B. fuers Handy)
+//!   --verschluesselung auto|aes|chacha  Verschluesselung waehlen (Auto = nach Prozessor, wird gemerkt)
 //!   --kein-update                     nicht automatisch aktualisieren
 //!   --profile                         gespeicherte Profile (Verbindungscodes) auflisten
 //!   --profil <nr|name>                mit diesem Profil verbinden (wird das aktive Profil)
 //!   --klassisch / --fenster           Windows: alte Text-Ansicht bzw. neues Programmfenster (wird gemerkt)
 //!
 //! Unter Windows oeffnet sich ein Programmfenster (gui.rs); das VPN selbst laeuft als Dienst im Hintergrund.
-//! Mit --vordergrund, --test, --code usw. gibt es wie frueher die Textanzeige in einer Konsole.
+//! Mit --vordergrund, --test usw. gibt es wie frueher die Textanzeige in einer Konsole.
 //!
 //! Neue Versionen kommen automatisch ueber die VPN-Verbindung (signiert, siehe kvpn::update): das Programm
 //! ersetzt sich selbst und startet neu.
@@ -50,7 +50,13 @@ pub struct Args {
     pub routes: Option<Vec<String>>,
     pub test: bool,
     pub reset: bool,
-    pub show_code: bool,
+    /// --verschluesselung: neue Wahl (wird gemerkt)
+    pub cipher: Option<String>,
+    /// Windows: --einrichten (vom Fenster mit Admin-Abfrage gestartet) und wohin das Ergebnis geschrieben wird
+    pub setup: bool,
+    pub result_file: Option<PathBuf>,
+    /// --still: ohne Rueckfragen/Pause beenden
+    pub quiet: bool,
     pub no_update: bool,
     /// Windows: im Fenster laufen statt als Dienst
     pub foreground: bool,
@@ -69,13 +75,16 @@ pub struct Args {
 }
 
 pub fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, show_code: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None };
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, cipher: None, setup: false, result_file: None, quiet: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
             "--test" | "--selftest" => a.test = true,
             "--reset" => a.reset = true,
-            "--code" | "--zeige-code" => a.show_code = true,
+            "--verschluesselung" | "--cipher" => a.cipher = it.next(),
+            "--einrichten" => a.setup = true,
+            "--ergebnis" => a.result_file = it.next().map(PathBuf::from),
+            "--still" => a.quiet = true,
             "--kein-update" | "--no-update" => a.no_update = true,
             "--vordergrund" | "--foreground" => a.foreground = true,
             "--hintergrund" | "--background" => a.background = true,
@@ -97,7 +106,7 @@ pub fn parse_args() -> Args {
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
                 konsole(true);
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--code] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]", kvpn::VERSION);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--verschluesselung auto|aes|chacha] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
@@ -116,6 +125,12 @@ pub fn parse_args() -> Args {
 pub fn konsole(_anhaengen: bool) {
     #[cfg(windows)]
     plat::konsole(_anhaengen);
+}
+
+/// Datei mit dem aktiven Verbindungscode (fuer --einrichten)
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn config_file(a: &Args) -> PathBuf {
+    config_path(a)
 }
 
 fn config_path(a: &Args) -> PathBuf {
@@ -260,6 +275,12 @@ pub fn set_classic_view(a: &Args, classic: bool) {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn restart_in_view(classic: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    restart_exe(&exe, classic)
+}
+
+/// `exe` mit denselben Argumenten (ohne Code) in der gewuenschten Ansicht starten
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn restart_exe(exe: &std::path::Path, classic: bool) -> Result<(), String> {
     let mut args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|x| !x.starts_with("kronevpn://") && !matches!(x.as_str(), "--klassisch" | "--classic" | "--konsole" | "--fenster" | "--gui"))
@@ -333,15 +354,57 @@ pub fn ways(a: &Args, cfg: &ClientConfig) -> Vec<Option<Proxy>> {
     }
 }
 
-pub fn qr(text: &str) -> String {
-    match qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L) {
-        Ok(c) => c
-            .render::<qrcode::render::unicode::Dense1x2>()
-            .dark_color(qrcode::render::unicode::Dense1x2::Light)
-            .light_color(qrcode::render::unicode::Dense1x2::Dark)
-            .quiet_zone(true)
-            .build(),
-        Err(_) => "(QR-Code zu gross)".into(),
+fn cipher_path(a: &Args) -> PathBuf {
+    // Windows: beim Dienst (laeuft als SYSTEM) in C:\ProgramData\KroneVPN, damit Fenster und Dienst dieselbe sehen
+    #[cfg(windows)]
+    if a.config.is_none() {
+        return plat::dienst::data_dir().join("verschluesselung.txt");
+    }
+    config_path(a).with_file_name("verschluesselung.txt")
+}
+
+/// Ordner fuer Absturz-Protokolle (Windows: C:\ProgramData\KroneVPN\absturz, wie beim Dienst)
+pub fn crash_dir(a: &Args) -> PathBuf {
+    #[cfg(windows)]
+    if a.config.is_none() {
+        return plat::dienst::data_dir().join("absturz");
+    }
+    config_path(a).with_file_name("absturz")
+}
+
+/// letzte Zeilen des Protokolls fuer ein Absturz-Protokoll
+fn log_tail() -> String {
+    #[cfg(windows)]
+    {
+        let t = std::fs::read_to_string(plat::dienst::log_file()).unwrap_or_default();
+        let z: Vec<&str> = t.lines().collect();
+        format!("Letzte Zeilen des Protokolls:\n{}", z[z.len().saturating_sub(40)..].join("\n"))
+    }
+    #[cfg(not(windows))]
+    String::new()
+}
+
+/// gewaehlte Verschluesselung: "auto" (Standard), "aes" oder "chacha"
+pub fn cipher_choice(a: &Args) -> String {
+    let s = std::fs::read_to_string(cipher_path(a)).unwrap_or_default();
+    kvpn::crypto::normalize_choice(&s).to_string()
+}
+
+pub fn set_cipher_choice(a: &Args, choice: &str) -> Result<(), String> {
+    let p = cipher_path(a);
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    std::fs::write(&p, kvpn::crypto::normalize_choice(choice)).map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// Anzeige der Wahl, z. B. "Auto (AES-256-GCM, Prozessor hat AES-Befehle)"
+pub fn cipher_text(choice: &str) -> String {
+    match kvpn::crypto::normalize_choice(choice) {
+        "aes" => "AES-256-GCM (fest)".into(),
+        "chacha" => "ChaCha20-Poly1305 (fest)".into(),
+        _ if kvpn::crypto::aes_hw() => "Auto – AES-256-GCM (Prozessor hat AES-Befehle)".into(),
+        _ => "Auto – ChaCha20-Poly1305 (schneller ohne AES-Befehle)".into(),
     }
 }
 
@@ -383,6 +446,8 @@ pub fn apply_update(new: &std::path::Path, restart: bool) -> Result<(), String> 
 
 fn main() {
     let mut a = parse_args();
+    // Abstuerze protokollieren (die Datei geht beim naechsten Verbinden an den Server)
+    kvpn::fehler::absturz_haken(crash_dir(&a), "PC", log_tail);
     // Rest eines Updates aufraeumen
     if let Some(old) = beside_exe("old") {
         let _ = std::fs::remove_file(old);
@@ -392,6 +457,11 @@ fn main() {
     if a.service {
         plat::dienst::run_service();
         return;
+    }
+    // Windows: vom Fenster mit Admin-Abfrage gestartet, um den Dienst einzurichten
+    #[cfg(windows)]
+    if a.setup {
+        plat::dienst::setup_cli(&a);
     }
     // Vorschau des Programmfensters (Linux, nur zum Entwickeln)
     #[cfg(feature = "vorschau")]
@@ -418,21 +488,26 @@ fn main() {
                 }
             }
         }
-        if !(a.foreground || a.test || a.show_code || a.disconnect || a.uninstall || a.reset) && !classic_view(&a) {
+        if !(a.foreground || a.test || a.disconnect || a.uninstall || a.reset) && !classic_view(&a) {
             fenster(&a);
         }
-        konsole(false);
+        // Text-Modi richten den Dienst bzw. den Adapter selbst ein: dafuer Admin (einmal Abfrage, wie frueher)
+        if !a.test && !a.list_profiles {
+            plat::dienst::ensure_admin();
+        }
+        if !a.quiet {
+            konsole(false);
+        }
     }
     if a.disconnect || a.uninstall {
         plat::dienst::control(&a);
     }
     let cfg = load_config(&a);
-    if a.show_code {
-        let code = cfg.to_code();
-        println!("{}", qr(&code));
-        println!("{} – Verbindungscode fuer '{}' (geheim halten):\n\n{code}\n", cfg.display_name(), cfg.name);
-        println!("Auf dem Server merken (dann geht dort 'kvpn-server code'):  kvpn-server import '<code>'");
-        pause_and_exit(0);
+    if let Some(c) = &a.cipher {
+        match set_cipher_choice(&a, c) {
+            Ok(()) => say(&format!("Verschluesselung: {} (gilt ab der naechsten Verbindung)", cipher_text(c))),
+            Err(e) => say(&format!("Verschluesselung konnte nicht gespeichert werden: {e}")),
+        }
     }
     let ways = ways(&a, &cfg);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
@@ -445,9 +520,10 @@ fn main() {
             for w in &ways {
                 let via = w.as_ref().map(|p| format!("ueber Proxy {}:{}", p.host, p.port)).unwrap_or_else(|| "direkt".into());
                 let t = std::time::Instant::now();
-                match client::connect_once(&cfg, w.as_ref(), &None, &kvpn::transport::new_dns_cache()).await {
+                match client::connect_once_with(&cfg, w.as_ref(), &None, &kvpn::transport::new_dns_cache(), false, &cipher_choice(&a)).await {
                     Ok((_ws, _s, _o, welcome, info)) => {
                         println!("  OK {via}: Handshake in {} ms", t.elapsed().as_millis());
+                        println!("     Verschluesselung: {} (Einstellung: {}){}", kvpn::crypto::cipher_label(&welcome.cipher), cipher_text(&cipher_choice(&a)), if welcome.tarn.is_some() { ", Tarn-Schicht aktiv" } else { "" });
                         println!("     Server: {}", info.peer.map(|p| p.to_string()).unwrap_or_default());
                         println!(
                             "     TLS-Zertifikat: {} – {}",
@@ -458,7 +534,14 @@ fn main() {
                         ok = true;
                         break;
                     }
-                    Err(e) => println!("  FEHLER {via}: {e}"),
+                    Err(e) => {
+                        let k = kvpn::fehler::klartext(&e);
+                        if k == e {
+                            println!("  FEHLER {via}: {e}");
+                        } else {
+                            println!("  FEHLER {via}: {e}\n         -> {k}");
+                        }
+                    }
                 }
             }
             if ok {
@@ -567,6 +650,7 @@ pub fn timestamp() -> String {
 
 /// Zustand fuer Fenster und Status-Datei
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+#[serde(default)]
 pub struct Zustand {
     pub state: String,
     pub title: String,
@@ -583,10 +667,17 @@ pub struct Zustand {
     pub rtt_ms: f64,
     pub since: u64,
     pub error: String,
+    /// technische Fassung des Fehlers
+    pub error_detail: String,
     pub update_version: String,
     pub update_got: u64,
     pub update_size: u64,
     pub ts: u64,
+    /// Verschluesselung der laufenden Verbindung ("AES-256-GCM" / "ChaCha20-Poly1305")
+    pub cipher: String,
+    /// Wahl ("auto", "aes", "chacha")
+    pub cipher_choice: String,
+    pub aes_hw: bool,
 }
 
 /// eine Zeile Live-Werte
@@ -668,12 +759,19 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
         }))),
         _ => None,
     };
-    let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None, update: updater.clone() };
+    let ca = a.clone();
+    let cipher: Arc<dyn Fn() -> String + Send + Sync> = Arc::new(move || cipher_choice(&ca));
+    let opts = ClientOptions { routes: ways, protect: p.protect(), dns, reconnect: None, on_connected: None, update: updater.clone(), cipher: Some(cipher) };
     let task = tokio::spawn(client::run(cfg.clone(), opts, p.take_reader(), p.writer(), status.clone(), stop_rx));
     if console {
         println!("Beenden mit Strg+C (oder Fenster schliessen).\n");
     }
 
+    // Absturz-Protokolle von frueher: gehen beim Verbinden an den Server, nach Bestaetigung wird geloescht
+    let crashes = crash_dir(a);
+    for (n, b) in kvpn::fehler::absturz_dateien(&crashes) {
+        status.add_crash(&n, &b);
+    }
     let st = status.clone();
     let title = cfg.display_name().to_string();
     let name = cfg.name.clone();
@@ -688,6 +786,11 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
         let mut upd_shown = String::new();
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            for n in st.take_crash_ok() {
+                if std::fs::remove_file(crashes.join(&n)).is_ok() {
+                    say(&format!("\rAbsturz-Protokoll {n} an den Server uebertragen                    "));
+                }
+            }
             let info = st.info.lock().unwrap().clone();
             let (rx, tx) = (st.rx_bytes.load(Relaxed), st.tx_bytes.load(Relaxed));
             let us = updater.as_ref().map(|u| u.status()).unwrap_or_default();
@@ -707,10 +810,14 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
                 rtt_ms: st.rtt_us.load(Relaxed) as f64 / 1000.0,
                 since: st.connected_since.load(Relaxed),
                 error: info.last_error.clone(),
+                error_detail: info.last_error_detail.clone(),
                 update_version: if us.done { String::new() } else { us.version.clone() },
                 update_got: us.got,
                 update_size: us.size,
                 ts: kvpn::util::now_secs(),
+                cipher: info.cipher.clone(),
+                cipher_choice: info.cipher_choice.clone(),
+                aes_hw: info.aes_hw,
             };
             (lrx, ltx) = (rx, tx);
             if !z.update_version.is_empty() && z.update_version != upd_shown {
@@ -726,7 +833,12 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
                 last_state = z.state.clone();
             }
             if !z.error.is_empty() && z.error != last_err && z.state != "connected" {
-                say(&format!("\r{}                                        ", z.error));
+                // Klartext und – fuers Protokoll – die technische Meldung
+                if z.error_detail.is_empty() || z.error_detail == z.error {
+                    say(&format!("\r{}                                        ", z.error));
+                } else {
+                    say(&format!("\r{} [{}]                    ", z.error, z.error_detail));
+                }
             }
             last_err = z.error.clone();
             match &ui {

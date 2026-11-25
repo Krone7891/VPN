@@ -6,7 +6,6 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.res.Configuration;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,7 +22,6 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -41,13 +39,19 @@ public class MainActivity extends Activity {
     private boolean dark;
     private int cBg, cCard, cInk, cMute, cAcc, cOk, cWarn, cBad, cSoft;
     private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle, tUpd;
-    private Button bMain, bUpd, bProfiles;
-    private View dot;
+    private Button bUpd, bProfiles, bLoc, bCipher;
+    private TextView tLoc;
+    private static final int REQ_LOC = 3, REQ_LOC_BG = 4;
+    private PowerButton power;
     private long lastRx = -1, lastTx = -1;
+    /** Zeitpunkt des Trennens (Knopf zeigt kurz "wird getrennt") */
+    private long stopAt = 0;
+    private final java.util.List<View> cards = new java.util.ArrayList<>();
 
     @Override
     protected void onCreate(Bundle s) {
         super.onCreate(s);
+        Absturz.install(this);
         dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         cBg = dark ? 0xFF0F1115 : 0xFFF4F5F8;
         cCard = dark ? 0xFF171A21 : 0xFFFFFFFF;
@@ -62,10 +66,23 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(cBg);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         build();
-        // Android 13+: einmal fragen, ob die App Hinweise zeigen darf (z. B. "Update bereit")
-        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2);
+        // erster Start (bzw. erstes Mal mit 1.1.0): alle Erlaubnisse auf einer Seite erklaert und nacheinander abfragen
+        if (!KroneVpnService.prefs(this).getBoolean("setup_done", false)) {
+            ui.postDelayed(this::showSetup, 500);
+            handleIntent(getIntent());
+            return;
         }
+        // spaeter: fehlende Erlaubnisse einmal gesammelt anfordern (Android zeigt seine eigene Abfrage)
+        java.util.List<String> want = new java.util.ArrayList<>();
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            want.add("android.permission.POST_NOTIFICATIONS");
+        }
+        if (Standort.enabled(this) && !Standort.permitted(this) && !KroneVpnService.prefs(this).getBoolean("loc_asked", false)) {
+            KroneVpnService.prefs(this).edit().putBoolean("loc_asked", true).apply();
+            want.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
+            want.add(android.Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+        if (!want.isEmpty()) requestPermissions(want.toArray(new String[0]), REQ_LOC);
         handleIntent(getIntent());
     }
 
@@ -115,6 +132,11 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(14);
         c.setLayoutParams(lp);
+        // ein-/ausblendende Hinweise (Update, Fehler) gleiten weich statt zu springen
+        android.animation.LayoutTransition lt = new android.animation.LayoutTransition();
+        lt.enableTransitionType(android.animation.LayoutTransition.CHANGING);
+        c.setLayoutTransition(lt);
+        cards.add(c);
         return c;
     }
 
@@ -164,25 +186,23 @@ public class MainActivity extends Activity {
         tName.setOnClickListener(v -> showProfiles());
         root.addView(tName);
 
-        // Status + grosser Knopf
+        // Status + grosser Ein/Aus-Knopf (wie in der PC-App)
         LinearLayout c1 = card();
-        LinearLayout head = new LinearLayout(this);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        dot = new View(this);
-        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(12), dp(12));
-        dl.rightMargin = dp(10);
-        dot.setLayoutParams(dl);
-        dot.setBackground(round(cMute, 6));
-        head.addView(dot);
-        tState = text("Getrennt", 22, cInk, true);
-        head.addView(tState);
-        c1.addView(head);
+        c1.setGravity(Gravity.CENTER_HORIZONTAL);
+        power = new PowerButton(this);
+        power.setColors(cCard, dark ? 0xFF262B35 : 0xFFE2E6EE, cMute, cAcc, cOk, cWarn, dark);
+        power.setOnClickListener(v -> toggle());
+        LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(dp(172), dp(172));
+        pl.topMargin = dp(2);
+        c1.addView(power, pl);
+        tState = text("Nicht verbunden", 24, cInk, true);
+        tState.setGravity(Gravity.CENTER);
+        tState.setPadding(0, dp(4), 0, 0);
+        c1.addView(tState);
         tSub = text("", 14, cMute, false);
-        tSub.setPadding(0, dp(4), 0, 0);
+        tSub.setGravity(Gravity.CENTER);
+        tSub.setPadding(0, dp(4), 0, dp(2));
         c1.addView(tSub);
-        bMain = button("Verbinden", true);
-        bMain.setOnClickListener(v -> toggle());
-        c1.addView(bMain);
         tUpd = text("", 13, cAcc, false);
         tUpd.setPadding(0, dp(10), 0, 0);
         tUpd.setVisibility(View.GONE);
@@ -220,9 +240,10 @@ public class MainActivity extends Activity {
         Button paste = button("Profil hinzufügen (Code einfügen)", false);
         paste.setOnClickListener(v -> askCode());
         c3.addView(paste);
-        Button show = button("Code anzeigen (QR-Code + Text)", false);
-        show.setOnClickListener(v -> showCode());
-        c3.addView(show);
+        bCipher = button("", false);
+        bCipher.setOnClickListener(v -> chooseCipher());
+        c3.addView(bCipher);
+        showCipher();
         Button always = button("Immer verbunden (Always-on VPN) …", false);
         always.setOnClickListener(v -> {
             try {
@@ -233,6 +254,13 @@ public class MainActivity extends Activity {
             }
         });
         c3.addView(always);
+        bLoc = button("", false);
+        bLoc.setOnClickListener(v -> toggleLocation());
+        c3.addView(bLoc);
+        tLoc = text("", 12.5f, cMute, false);
+        tLoc.setPadding(dp(3), dp(4), dp(3), 0);
+        c3.addView(tLoc);
+        showLocation();
         Button stats = button("Statistik im Browser öffnen", false);
         stats.setOnClickListener(v -> openStats());
         c3.addView(stats);
@@ -241,7 +269,7 @@ public class MainActivity extends Activity {
         c3.addView(admin);
         TextView help = text("Den Code erzeugt der Server mit  kvpn-server add \"Name\". Am einfachsten den QR-Code mit der Kamera scannen – die App öffnet sich dann von selbst.\n\n"
                 + "KroneVPN läuft über HTTPS (Port 443) und kommt dadurch auch durch strenge Firmen-Firewalls (z. B. Sophos). "
-                + "Alle Daten sind zusätzlich Ende-zu-Ende verschlüsselt (Noise/ChaCha20) – auch wenn die Firewall HTTPS aufbricht.", 13, cMute, false);
+                + "Alle Daten sind zusätzlich Ende-zu-Ende verschlüsselt (Noise + AES-256/ChaCha20) – auch wenn die Firewall HTTPS aufbricht.", 13, cMute, false);
         help.setPadding(dp(3), dp(12), dp(3), 0);
         c3.addView(help);
         root.addView(c3);
@@ -250,10 +278,209 @@ public class MainActivity extends Activity {
         ver.setPadding(dp(3), dp(14), 0, 0);
         root.addView(ver);
         setContentView(sv);
+        // Karten gleiten nacheinander herein
+        for (int i = 0; i < cards.size(); i++) {
+            View v = cards.get(i);
+            v.setAlpha(0f);
+            v.setTranslationY(dp(22));
+            v.animate().alpha(1f).translationY(0).setStartDelay(60L * i).setDuration(420)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f)).start();
+        }
+    }
+
+    /** Text weich wechseln (kurz ausblenden, neuer Text, einblenden) */
+    private void swapText(TextView t, String s, int color) {
+        if (s.contentEquals(t.getText()) && t.getCurrentTextColor() == color) return;
+        if (t.getText().length() == 0 || t.getAlpha() < 1f) {
+            t.setText(s);
+            t.setTextColor(color);
+            return;
+        }
+        t.animate().alpha(0f).setDuration(110).withEndAction(() -> {
+            t.setText(s);
+            t.setTextColor(color);
+            t.animate().alpha(1f).setDuration(180).start();
+        }).start();
+    }
+
+    // ------------------------------------------------------------------ Standort teilen (freiwillig)
+
+    private void showLocation() {
+        if (bLoc == null) return;
+        bLoc.setText(Standort.enabled(this) ? "📍 Standort teilen: AN" : "📍 Standort teilen: aus");
+        tLoc.setText(Standort.summary(this));
+    }
+
+    /** laufendes VPN: Benachrichtigung ("Standort wird geteilt") auf den neuen Stand bringen */
+    private void refreshOngoing() {
+        if (KroneVpnService.handle != 0) {
+            try {
+                startService(new Intent(this, KroneVpnService.class));
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void toggleLocation() {
+        ui.postDelayed(this::refreshOngoing, 300);
+        if (Standort.enabled(this)) {
+            Standort.set(this, false);
+            showLocation();
+            Toast.makeText(this, "Standort wird nicht mehr geteilt – der Server löscht den gespeicherten Stand", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Standort.set(this, true);
+        if (Standort.permitted(this)) askBackgroundLocation();
+        else requestPermissions(new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOC);
+        showLocation();
+    }
+
+    /** damit auch bei geschlossener App gemeldet wird: Android fragt nach "Immer zulassen" (eigene Einstellungsseite) */
+    private void askBackgroundLocation() {
+        if (android.os.Build.VERSION.SDK_INT < 29) return;
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
+        if (KroneVpnService.prefs(this).getBoolean("loc_bg_asked", false)) return;
+        KroneVpnService.prefs(this).edit().putBoolean("loc_bg_asked", true).apply();
+        if (android.os.Build.VERSION.SDK_INT >= 30)
+            Toast.makeText(this, "Für den Standort auch bei geschlossener App: „Immer zulassen“ wählen", Toast.LENGTH_LONG).show();
+        requestPermissions(new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_LOC_BG);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(req, perms, res);
+        if (req == REQ_SETUP || req == REQ_SETUP_BG) {
+            showLocation();
+            setupNext();
+            return;
+        }
+        if (req == REQ_LOC) {
+            if (Standort.enabled(this) && Standort.permitted(this)) {
+                Standort.report(this);
+                askBackgroundLocation();
+            }
+            showLocation();
+        } else if (req == REQ_LOC_BG) {
+            Standort.report(this);
+            showLocation();
+        }
     }
 
     private String code() {
         return KroneVpnService.prefs(this).getString("code", null);
+    }
+
+    // ------------------------------------------------------------------ Einrichtung beim ersten Start
+
+    private static final int REQ_SETUP = 5, REQ_SETUP_BG = 6, REQ_VPN_SETUP = 7;
+    private int setupStep = -1;
+    private boolean setupWaitInstall;
+
+    private LinearLayout setupRow(String icon, String title, String text) {
+        LinearLayout r = new LinearLayout(this);
+        r.setPadding(0, dp(8), 0, dp(8));
+        TextView i = text(icon, 22, cInk, false);
+        i.setPadding(0, 0, dp(12), 0);
+        r.addView(i);
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.VERTICAL);
+        t.addView(text(title, 15.5f, cInk, true));
+        t.addView(text(text, 13.5f, cMute, false));
+        r.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        return r;
+    }
+
+    /** Alle Erlaubnisse auf einen Blick: wozu sie da sind. Ein Knopf fragt dann alles nacheinander ab. */
+    private void showSetup() {
+        if (isFinishing()) return;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(6), dp(22), dp(4));
+        box.addView(text("KroneVPN braucht dafür ein paar Erlaubnisse von Android. Alles bleibt zwischen diesem Gerät und deinem eigenen Server.", 14, cMute, false));
+        box.addView(setupRow("🔒", "VPN-Verbindung", "Damit der Datenverkehr verschlüsselt über deinen Server läuft."));
+        box.addView(setupRow("🔔", "Benachrichtigungen", "Zeigt, dass das VPN läuft und ob der Standort geteilt wird, und meldet Updates."));
+        box.addView(setupRow("📍", "Standort – auch im Hintergrund", "WLAN-Name und Standort gehen nur an deinen Server: Admin-Seite, Bewegungs-Karte und Orten, falls das Handy verloren geht oder gestohlen wird. Jederzeit in der App abschaltbar."));
+        box.addView(setupRow("📦", "Updates installieren", "Damit sich KroneVPN selbst aktualisieren kann – nur geprüfte, signierte Versionen von deinem Server."));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle("Einrichtung")
+                .setView(sv)
+                .setCancelable(false)
+                .setPositiveButton("Alles einrichten", (d, w) -> {
+                    setupStep = -1;
+                    setupNext();
+                })
+                .setNegativeButton("Später", (d, w) -> KroneVpnService.prefs(this).edit().putBoolean("setup_done", true).apply())
+                .show();
+    }
+
+    private boolean granted(String p) {
+        return checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** naechste Abfrage der Einrichtung (VPN -> Hinweise + Standort -> Standort im Hintergrund -> Updates) */
+    private void setupNext() {
+        setupStep++;
+        switch (setupStep) {
+            case 0: {
+                Intent prep = VpnService.prepare(this);
+                if (prep != null) {
+                    startActivityForResult(prep, REQ_VPN_SETUP);
+                    return;
+                }
+                setupNext();
+                return;
+            }
+            case 1: {
+                java.util.List<String> want = new java.util.ArrayList<>();
+                if (android.os.Build.VERSION.SDK_INT >= 33 && !granted("android.permission.POST_NOTIFICATIONS")) want.add("android.permission.POST_NOTIFICATIONS");
+                if (Standort.enabled(this) && !granted(android.Manifest.permission.ACCESS_FINE_LOCATION)) {
+                    want.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
+                    want.add(android.Manifest.permission.ACCESS_COARSE_LOCATION);
+                }
+                KroneVpnService.prefs(this).edit().putBoolean("loc_asked", true).apply();
+                if (!want.isEmpty()) {
+                    requestPermissions(want.toArray(new String[0]), REQ_SETUP);
+                    return;
+                }
+                setupNext();
+                return;
+            }
+            case 2: {
+                KroneVpnService.prefs(this).edit().putBoolean("loc_bg_asked", true).apply();
+                if (android.os.Build.VERSION.SDK_INT >= 29 && Standort.enabled(this) && Standort.permitted(this)
+                        && !granted(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
+                    if (android.os.Build.VERSION.SDK_INT >= 30)
+                        Toast.makeText(this, "Für den Standort auch bei geschlossener App: „Immer zulassen“ wählen", Toast.LENGTH_LONG).show();
+                    requestPermissions(new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_SETUP_BG);
+                    return;
+                }
+                setupNext();
+                return;
+            }
+            case 3: {
+                if (!getPackageManager().canRequestPackageInstalls()) {
+                    try {
+                        Toast.makeText(this, "Bei KroneVPN „Aus dieser Quelle zulassen“ einschalten, dann zurück", Toast.LENGTH_LONG).show();
+                        startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                        setupWaitInstall = true;
+                        return;
+                    } catch (Exception ignored) {
+                    }
+                }
+                setupNext();
+                return;
+            }
+            default:
+                setupStep = -1;
+                KroneVpnService.prefs(this).edit().putBoolean("setup_done", true).apply();
+                Standort.report(this);
+                showLocation();
+                Toast.makeText(this, code() == null ? "Fertig! Jetzt den Verbindungscode einfügen." : "Fertig eingerichtet – zum Verbinden auf den Knopf tippen.", Toast.LENGTH_LONG).show();
+                if (code() == null) askCode();
+                refresh();
+        }
     }
 
     // ------------------------------------------------------------------ Profile
@@ -396,65 +623,49 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** gespeicherten Code wieder anzeigen: als QR-Code (z. B. fuer ein zweites Geraet) und als Text */
-    private void showCode() {
-        String c = code();
-        if (c == null) {
-            Toast.makeText(this, "Noch kein Verbindungscode gespeichert", Toast.LENGTH_SHORT).show();
-            return;
+    // ------------------------------------------------------------------ Verschluesselung (Auto / AES-256 / ChaCha20)
+
+    static final String[] CIPHERS = {"auto", "aes", "chacha"};
+
+    static String cipherPref(android.content.Context c) {
+        return KroneVpnService.prefs(c).getString("cipher", "auto");
+    }
+
+    private String cipherName(String c) {
+        switch (c) {
+            case "aes": return "AES-256-GCM";
+            case "chacha": return "ChaCha20-Poly1305";
+            default: return "Auto (" + (Native.aesHw() ? "AES-256-GCM" : "ChaCha20") + ")";
         }
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(20), dp(12), dp(20), dp(4));
-        Bitmap bm = qrBitmap(c);
-        if (bm != null) {
-            ImageView iv = new ImageView(this);
-            iv.setImageBitmap(bm);
-            iv.setAdjustViewBounds(true);
-            box.addView(iv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
-        TextView t = text(c, 12, cInk, false);
-        t.setTypeface(Typeface.MONOSPACE);
-        t.setTextIsSelectable(true);
-        t.setPadding(0, dp(10), 0, 0);
-        box.addView(t);
-        TextView warn = text("Geheim halten – wer den Code hat, kann sich als dieses Gerät verbinden. Auf dem Server merken: kvpn-server import '<code>'", 12, cMute, false);
-        warn.setPadding(0, dp(8), 0, 0);
-        box.addView(warn);
-        ScrollView sv = new ScrollView(this);
-        sv.addView(box);
+    }
+
+    private void showCipher() {
+        if (bCipher != null) bCipher.setText("🔒 Verschlüsselung: " + cipherName(cipherPref(this)));
+    }
+
+    private void chooseCipher() {
+        boolean hw = Native.aesHw();
+        String[] items = {
+                "Auto (empfohlen) – " + (hw ? "nimmt AES-256-GCM, dieses Handy hat AES-Befehle" : "nimmt ChaCha20, ohne AES-Befehle schneller"),
+                "AES-256-GCM – " + (hw ? "sehr schnell auf diesem Handy" : "langsamer auf diesem Handy"),
+                "ChaCha20-Poly1305 – schnell auf jedem Gerät"};
+        int cur = java.util.Arrays.asList(CIPHERS).indexOf(cipherPref(this));
         new AlertDialog.Builder(this)
-                .setTitle("Verbindungscode")
-                .setView(sv)
-                .setPositiveButton("Kopieren", (d, w) -> {
-                    getSystemService(ClipboardManager.class).setPrimaryClip(ClipData.newPlainText("Verbindungscode", c));
-                    Toast.makeText(this, "Code kopiert", Toast.LENGTH_SHORT).show();
+                .setTitle("Verschlüsselung")
+                .setSingleChoiceItems(items, Math.max(cur, 0), (d, w) -> {
+                    String c = CIPHERS[w];
+                    d.dismiss();
+                    if (c.equals(cipherPref(this))) return;
+                    KroneVpnService.prefs(this).edit().putString("cipher", c).apply();
+                    Native.cipher(c);
+                    showCipher();
+                    if (KroneVpnService.handle != 0) {
+                        Native.reconnect(KroneVpnService.handle);
+                        Toast.makeText(this, cipherName(c) + " – verbinde neu …", Toast.LENGTH_SHORT).show();
+                    }
                 })
                 .setNegativeButton("Schließen", null)
                 .show();
-    }
-
-    private Bitmap qrBitmap(String s) {
-        try {
-            String[] rows = Native.qr(s).split("\n");
-            int w = Integer.parseInt(rows[0].trim());
-            int q = 4, scale = 10, size = (w + 2 * q) * scale;
-            int[] px = new int[size * size];
-            java.util.Arrays.fill(px, Color.WHITE);
-            for (int y = 0; y < w; y++) {
-                String r = rows[y + 1];
-                for (int x = 0; x < w; x++) {
-                    if (r.charAt(x) != '1') continue;
-                    for (int dy = 0; dy < scale; dy++) {
-                        int base = ((y + q) * scale + dy) * size + (x + q) * scale;
-                        java.util.Arrays.fill(px, base, base + scale, Color.BLACK);
-                    }
-                }
-            }
-            return Bitmap.createBitmap(px, size, size, Bitmap.Config.ARGB_8888);
-        } catch (Exception e) {
-            return null;
-        }
     }
 
     private void installUpdate() {
@@ -510,12 +721,14 @@ public class MainActivity extends Activity {
             }
             refresh();
         } catch (Exception e) {
-            Toast.makeText(this, "Code ungültig", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Das ist kein gültiger Verbindungscode – er beginnt mit kronevpn://v1/ und kommt vom Server (kvpn-server add).", Toast.LENGTH_LONG).show();
         }
     }
 
     private void toggle() {
         if (KroneVpnService.handle != 0) {
+            stopAt = System.currentTimeMillis();
+            power.setState(PowerButton.DISCONNECTING);
             startService(new Intent(this, KroneVpnService.class).setAction(KroneVpnService.ACTION_STOP));
             ui.postDelayed(this::refresh, 300);
         } else {
@@ -535,11 +748,17 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
+        if (req == REQ_VPN_SETUP) {
+            setupNext();
+            return;
+        }
         if (req == REQ_VPN && res == RESULT_OK) {
             KroneVpnService.lastError = "";
+            stopAt = 0;
+            if (power != null) power.setState(PowerButton.CONNECTING);
             startService(new Intent(this, KroneVpnService.class));
         } else if (req == REQ_VPN) {
-            Toast.makeText(this, "Ohne VPN-Berechtigung geht es nicht", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Ohne die VPN-Erlaubnis von Android geht es nicht. Nochmal auf den Knopf tippen und „OK“ wählen. (Läuft ein anderes VPN? Dann dort ausschalten.)", Toast.LENGTH_LONG).show();
         }
     }
 
@@ -553,7 +772,7 @@ public class MainActivity extends Activity {
             }
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://" + host + "/stats")));
         } catch (Exception e) {
-            Toast.makeText(this, "Kein Browser gefunden", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Kein Browser gefunden – bitte einen Browser installieren", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -614,28 +833,27 @@ public class MainActivity extends Activity {
             state = j.optString("state", "stopped");
         } catch (Exception ignored) {
         }
-        int col;
-        switch (state) {
+        boolean stopping = System.currentTimeMillis() - stopAt < 1500;
+        if (stopping) {
+            swapText(tState, "Trenne …", cWarn);
+            power.setState(PowerButton.DISCONNECTING);
+        } else switch (state) {
             case "connected":
-                tState.setText("Verbunden");
-                col = cOk;
+                swapText(tState, "Verbunden", cOk);
+                power.setState(PowerButton.CONNECTED);
                 break;
             case "connecting":
-                tState.setText("Verbinde …");
-                col = cWarn;
+                swapText(tState, "Verbinde …", cAcc);
+                power.setState(PowerButton.CONNECTING);
                 break;
             case "waiting":
-                tState.setText("Warte auf Netz …");
-                col = cWarn;
+                swapText(tState, "Warte auf Netz …", cWarn);
+                power.setState(PowerButton.CONNECTING);
                 break;
             default:
-                tState.setText("Getrennt");
-                col = cMute;
+                swapText(tState, "Nicht verbunden", cInk);
+                power.setState(h != 0 ? PowerButton.CONNECTING : PowerButton.OFF);
         }
-        dot.setBackground(round(col, 6));
-        bMain.setText(h != 0 ? "Trennen" : "Verbinden");
-        bMain.setBackground(round(h != 0 ? cSoft : cAcc, 14));
-        bMain.setTextColor(h != 0 ? cInk : Color.WHITE);
 
         String err = KroneVpnService.lastError;
         if (j != null && h != 0) {
@@ -655,6 +873,7 @@ public class MainActivity extends Activity {
                     : "");
             StringBuilder info = new StringBuilder();
             if ("connected".equals(state)) {
+                if (!j.optString("cipher").isEmpty()) info.append("🔒 ").append(j.optString("cipher")).append(" · Tarnung aktiv. ");
                 if (j.optBoolean("via_proxy")) info.append("Über Proxy verbunden. ");
                 if (!j.optString("tls_issuer").isEmpty()) {
                     if (j.optBoolean("tls_trusted")) info.append("TLS direkt (Zertifikat: ").append(j.optString("tls_issuer")).append(").");
@@ -671,7 +890,7 @@ public class MainActivity extends Activity {
             tUp.setText("–");
             tPing.setText("–");
             tTotal.setText("–");
-            tSub.setText(c == null ? "Zuerst den Verbindungscode einfügen" : "Tippe auf Verbinden");
+            tSub.setText(c == null ? "Zuerst den Verbindungscode einfügen" : "Zum Verbinden auf den Knopf tippen");
             tInfo.setText("");
         }
         tErr.setText(err == null ? "" : err);
@@ -707,8 +926,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (setupWaitInstall) {
+            setupWaitInstall = false;
+            ui.postDelayed(this::setupNext, 300);
+        }
         Updater.visible = this;
         ui.post(tick);
+        Standort.report(this);
+        ui.postDelayed(this::showLocation, 2500);
         ui.postDelayed(this::updateOnOpen, 1500);
     }
 

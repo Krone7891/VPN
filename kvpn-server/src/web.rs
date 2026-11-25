@@ -45,6 +45,7 @@ pub async fn handle<S>(
     s: &mut S,
     method: &str,
     path: &str,
+    query: &str,
     headers: &HashMap<String, String>,
     remote: IpAddr,
     via_nginx: bool,
@@ -104,6 +105,60 @@ pub async fn handle<S>(
             Err(e) => json!({"ok": false, "err": e}),
         };
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
+    }
+    // Geraet still anpingen / jetzt orten – nur Admin-Seite (lokal bzw. im VPN mit Passwort)
+    if method == "POST" && (p.contains("/ping/") || p.starts_with("ping/") || p.contains("/orten/") || p.starts_with("orten/")) {
+        if !local {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Nur auf der Admin-Seite"}"#).await;
+        }
+        let name = pct_decode(p.rsplit('/').next().unwrap_or(""));
+        let b = if p.contains("ping/") {
+            match sh.ping_device(&name).await {
+                Ok(ms) => json!({"ok": true, "ms": (ms * 10.0).round() / 10.0}),
+                Err(e) => json!({"ok": false, "err": e}),
+            }
+        } else {
+            match sh.locate_device(&name) {
+                Ok(()) => {
+                    crate::log!("{name}: Ortung von der Admin-Seite angefordert");
+                    json!({"ok": true})
+                }
+                Err(e) => json!({"ok": false, "err": e}),
+            }
+        };
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.to_string().as_bytes()).await;
+    }
+    // Karten-Bibliothek (Leaflet, im Server eingebaut – die Seite laedt keine fremden Skripte)
+    if p.ends_with("/leaflet.js") || p == "leaflet.js" || p.ends_with("/leaflet.css") || p == "leaflet.css" {
+        let (ct, b): (&str, &[u8]) = if p.ends_with(".js") {
+            ("application/javascript; charset=utf-8", include_bytes!("vendor/leaflet/leaflet.js"))
+        } else {
+            ("text/css; charset=utf-8", include_bytes!("vendor/leaflet/leaflet.css"))
+        };
+        return respond(s, "200 OK", ct, "", b).await;
+    }
+    // Standort-Verlauf eines Geraets (Bewegungs-Karte) – nur Admin-Seite, nur mit eingeschaltetem Standort
+    let pfad = p;
+    if pfad.ends_with("/verlauf.json") || pfad == "verlauf.json" || pfad.ends_with("/verlauf.gpx") || pfad == "verlauf.gpx" {
+        let cfg = sh.cfg();
+        if !local || !cfg.geo {
+            return respond(s, "403 Forbidden", "application/json", "", br#"{"ok":false,"err":"Nur auf der Admin-Seite mit eingeschaltetem Standort"}"#).await;
+        }
+        let arg = |k: &str| query.split('&').find_map(|kv| kv.split_once('=').filter(|(a, _)| *a == k).map(|(_, v)| pct_decode(v)));
+        let geraet = arg("geraet").unwrap_or_default();
+        let tage: u64 = arg("tage").and_then(|t| t.parse().ok()).unwrap_or(7).min(3650);
+        let seit = if tage == 0 { 0 } else { kvpn::util::now_secs().saturating_sub(tage * 86400) };
+        let gpx = pfad.ends_with(".gpx");
+        let sd = cfg.state_dir.clone();
+        let g2 = geraet.clone();
+        let punkte = tokio::task::spawn_blocking(move || crate::geo::verlauf(&sd, &g2, seit, if gpx { 50_000 } else { 5_000 })).await.unwrap_or_default();
+        if gpx {
+            let datei: String = geraet.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+            let extra = format!("Content-Disposition: attachment; filename=\"standorte-{datei}.gpx\"\r\n");
+            return respond(s, "200 OK", "application/gpx+xml; charset=utf-8", &extra, crate::geo::gpx(&geraet, &punkte).as_bytes()).await;
+        }
+        let b = json!({"ok": true, "geraet": geraet, "tage": tage, "punkte": punkte}).to_string();
+        return respond(s, "200 OK", "application/json; charset=utf-8", "", b.as_bytes()).await;
     }
     // Einstellungen auf der Webseite (wie kvpn-server einstellungen) – nur lokal bzw. Admin im VPN
     if p.ends_with("/settings.json") || (method == "POST" && (p.ends_with("/settings") || p.ends_with("/restart"))) {
@@ -184,10 +239,27 @@ pub async fn handle<S>(
         let cfg = sh.cfg();
         if local && cfg.geo {
             if let Some(list) = j["peers"].as_array_mut() {
+                let now = kvpn::util::now_secs();
                 for p in list {
                     let ip = p["info"]["remote"].as_str().unwrap_or("").to_string();
-                    if let Some(g) = crate::geo::get(&cfg.state_dir, &ip) {
+                    let name = p["name"].as_str().unwrap_or("").to_string();
+                    let g = crate::geo::get(&cfg.state_dir, &ip);
+                    if let Some(g) = &g {
                         p["geo"] = json!(g);
+                    }
+                    // vom Geraet selbst gemeldet (WLAN-Name, Standort des Handys) – nur wenn dort freigegeben
+                    let d = crate::geo::device_info(&cfg.state_dir, &name);
+                    if let Some(d) = &d {
+                        p["dev"] = d.clone();
+                    }
+                    // bester Standort aus allen Quellen (GPS, WLAN-Datenbanken, IP)
+                    let ip_t = if p["online"].as_bool().unwrap_or(false) { now } else { p["last_seen"].as_u64().unwrap_or(0) };
+                    let w = crate::geo::wlan_info(&cfg.state_dir, &name);
+                    if let Some(w) = &w {
+                        p["wlan"] = w.clone();
+                    }
+                    if let Some(b) = crate::geo::best(d.as_ref(), w.as_ref(), g.as_ref(), ip_t, now) {
+                        p["pos"] = b;
                     }
                 }
             }
@@ -295,6 +367,8 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
         "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn, "geo": c.geo,
         "admin_url": c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_default(),
         "admin_password_set": !c.admin_password.is_empty(),
+        // Zugangsdaten fuer die WLAN-Ortung: nur ob gesetzt, nie der Wert
+        "google_geo_key": !c.google_geo_key.is_empty(), "wigle_api": !c.wigle_api.is_empty(),
         "max_devices": c.max_devices, "max_possible": c.capacity().unwrap_or(0), "devices": c.device_count(),
         "vpn_name": c.display_name(),
         "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot,
@@ -303,7 +377,8 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
     })
 }
 
-/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?}
+/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?,
+/// google_geo_key?, wigle_api?}
 /// Rueckgabe: (Einstellungen + Meldung, Admin-Passwort geaendert)
 fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value, bool), String> {
     if !body.is_object() {
@@ -335,6 +410,12 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
             c.set("vpn_name", n)?;
         }
     }
+    // Zugangsdaten fuer die WLAN-Ortung: "" = so lassen, "aus" = entfernen
+    for k in ["google_geo_key", "wigle_api"] {
+        if let Some(v) = body.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()) {
+            c.set(k, v)?;
+        }
+    }
     if let Some(pw) = body.get("admin_password").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
         crate::admin::check_new(pw)?;
         c.admin_password = crate::admin::hash(pw);
@@ -352,6 +433,12 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     }
     if c.geo != before.geo {
         msgs.push(format!("Standort {}", onoff(c.geo)));
+    }
+    if c.google_geo_key != before.google_geo_key {
+        msgs.push(format!("Google-Ortung {}", if c.google_geo_key.is_empty() { "entfernt" } else { "eingetragen" }));
+    }
+    if c.wigle_api != before.wigle_api {
+        msgs.push(format!("WiGLE {}", if c.wigle_api.is_empty() { "entfernt" } else { "eingetragen" }));
     }
     if c.max_devices != before.max_devices {
         msgs.push(format!("höchstens {} Geräte", c.max_devices));
@@ -584,6 +671,7 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
     if want.is_empty() {
         let name = html_esc(cfg.display_name());
         let ver = html_esc(&apps_version(&cfg));
+        let vers = app_versions(&cfg);
         let lv = logo_version(sh);
         let (logo_img, icon) = if lv > 0 {
             (format!("<img class=\"lg\" src=\"logo?v={lv}\" alt=\"\">"), format!("<link rel=\"icon\" href=\"logo?v={lv}\">"))
@@ -599,6 +687,9 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
         };
         let cards: String = files.iter().map(|(n, sz)| {
             let (ic, os, how) = kind(n);
+            let l = n.to_lowercase();
+            let key = if l.ends_with(".apk") { "android" } else if l.ends_with(".exe") { "windows" } else { "linux" };
+            let ver = vers.get(key).and_then(|v| v.as_str()).map(html_esc).unwrap_or_else(|| ver.clone());
             format!("<a class=\"dl\" href=\"{}\" download><span class=\"ic\">{ic}</span><span><b>{}</b><span class=\"m\">{os} · Version {ver} · {:.1} MB</span><span class=\"h\">{}</span></span></a>",
                 pct_encode(n), html_esc(n), *sz as f64 / 1048576.0, html_esc(how))
         }).collect();
@@ -633,12 +724,25 @@ async fn downloads<S: AsyncWrite + Unpin>(sh: &Shared, s: &mut S, rest: &str, he
     respond(s, "200 OK", ctype, &extra, &data).await
 }
 
-/// aktuelle App-Version: die freigegebene (falls neuer als der Server), sonst die des Servers
+/// aktuelle App-Version: die neueste freigegebene, sonst die des Servers
 pub fn apps_version(cfg: &crate::config::Config) -> String {
     match crate::updates::offered(cfg) {
-        Some(m) if kvpn::update::newer(&m.version, kvpn::VERSION) => m.version,
-        _ => kvpn::VERSION.to_string(),
+        Some(m) => m.version,
+        None => kvpn::VERSION.to_string(),
     }
+}
+
+/// Version je App ("android", "windows", "linux") – jede App hat ihre eigene; leer, solange nichts freigegeben ist
+pub fn app_versions(cfg: &crate::config::Config) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    if let Some(m) = crate::updates::offered(cfg) {
+        for os in m.files.keys() {
+            if let Some(v) = m.version_for(os) {
+                out.insert(os.clone(), json!(v));
+            }
+        }
+    }
+    out
 }
 
 fn proc_cpu_seconds() -> f64 {
@@ -712,6 +816,7 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
         "server": {
             "version": kvpn::VERSION, "name": cfg.display_name(), "logo": logo_version(sh), "downloads": !cfg.downloads_dir.is_empty(), "started": sh.started, "queues": sh.queues,
             "cores": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+            "admin_url": cfg.admin_addr().map(|a| format!("http://{a}/")).unwrap_or_default(),
             "url": cfg.public_url, "tun": cfg.tun, "net4": cfg.net4, "net6": cfg.net6, "mtu": cfg.mtu,
             "cpu_pct": proc_cpu_seconds() / up as f64 * 100.0, "rss_mb": rss_mb(),
             "tun_drops": sh.tun_drops.load(Relaxed),
@@ -725,6 +830,7 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
             "offered": crate::updates::offered(&cfg).map(|m| m.version).unwrap_or_default(),
             "pending": crate::updates::pending(&cfg).map(|m| m.version).unwrap_or_default(),
             "apps": apps_version(&cfg),
+            "app_versions": app_versions(&cfg),
             "repo": cfg.update_repo,
         },
         "peers": list,

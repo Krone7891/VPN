@@ -1,0 +1,14 @@
+{
+ "android": {
+  "version": "1.1.0",
+  "fp": "1e36a91d3f1b4741d7e2af0cf2442c790822e2e7ef5321425dca31d994cbe4bf"
+ },
+ "windows": {
+  "version": "1.1.0",
+  "fp": "8f24510a8bf59291c3a81d52ca986018c87adbf7660705a98a7549d35b127eaf"
+ },
+ "linux": {
+  "version": "1.1.0",
+  "fp": "8f24510a8bf59291c3a81d52ca986018c87adbf7660705a98a7549d35b127eaf"
+ }
+}

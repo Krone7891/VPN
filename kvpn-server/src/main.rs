@@ -14,6 +14,7 @@
 //!
 //! Konfiguration: /etc/krone-vpn/server.toml (anderer Ort: --config <datei> oder KVPN_CONFIG)
 
+mod absturz;
 mod admin;
 mod config;
 mod geo;
@@ -41,7 +42,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         kvpn::VERSION
     );
     std::process::exit(2)
@@ -91,6 +92,8 @@ fn main() {
         "update-sign" => cmd_update_sign(&args[1..]),
         "password" => cmd_password(&cfg_path, &args[1..].join(" ")),
         "set" => cmd_set(&cfg_path, &args[1..]),
+        "orte" | "standorte" | "bewegungen" => cmd_orte(&cfg_path, &args[1..]),
+        "abstuerze" | "absturz" | "crashes" => cmd_abstuerze(&cfg_path, args.get(1).map(|s| s.as_str())),
         "max" | "max-geraete" | "max_devices" => cmd_max(&cfg_path, args.get(1).map(|s| s.as_str())),
         "logo" | "bild" => cmd_logo(&cfg_path, &args[1..]),
         "run" => cmd_run(cfg_path),
@@ -253,8 +256,8 @@ fn cmd_list(path: &str) {
         }
     }
     if missing > 0 {
-        println!("\nCode wieder anzeigen geht fuer Geraete, die vor Version 1.0.1 angelegt wurden, nur vom Geraet aus:");
-        println!("  Android-App: \"Code anzeigen\" · Windows: KroneVPN.exe --code · danach hier: kvpn-server import '<code>'");
+        println!("\nFuer Geraete, die vor Version 1.0.1 angelegt wurden, ist kein Code gespeichert (die Apps zeigen ihn ab 1.1.0");
+        println!("nicht mehr an). Bei Bedarf neu anlegen: kvpn-server remove <name> && kvpn-server add <name>");
     }
 }
 
@@ -278,8 +281,7 @@ fn cmd_code(path: &str, name: &str) {
         }
         None => die(format!(
             "fuer '{}' ist kein Code gespeichert (vor Version 1.0.1 angelegt).\n\
-             Den Code gibt es noch auf dem Geraet: Android-App \"Code anzeigen\", Windows: KroneVPN.exe --code\n\
-             Dann hier merken: kvpn-server import '<code>'   – oder neu anlegen: remove + add",
+             Neu anlegen: kvpn-server remove <name> && kvpn-server add <name>   (oder einen vorhandenen Code merken: kvpn-server import '<code>')",
             p.name
         )),
     }
@@ -358,17 +360,22 @@ fn cmd_update_keygen(args: &[String]) {
 fn cmd_update_sign(args: &[String]) {
     let (Some(k), Some(dist)) = (args.first(), args.get(1)) else { die("Aufruf: kvpn-server update-sign <schluessel.pk8> <dist-ordner>") };
     let pk8 = std::fs::read(k).unwrap_or_else(|e| die(format!("{k}: {e}")));
+    // Version je App aus <dist>/app-versions.json (von build-all.sh: sie steigt nur, wenn sich die App geaendert hat)
+    let av: serde_json::Value = std::fs::read(std::path::Path::new(dist).join("app-versions.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let mut files = std::collections::BTreeMap::new();
     for (os, name) in [("android", "KroneVPN.apk"), ("windows", "KroneVPN.exe"), ("linux", "kronevpn-linux")] {
         let f = std::path::Path::new(dist).join(name);
         if let Ok(data) = std::fs::read(&f) {
-            files.insert(os.to_string(), kvpn::update::FileEntry { name: name.into(), size: data.len() as u64, sha256: kvpn::update::sha256_hex(&data) });
+            let version = av[os]["version"].as_str().unwrap_or("").to_string();
+            files.insert(os.to_string(), kvpn::update::FileEntry { name: name.into(), size: data.len() as u64, sha256: kvpn::update::sha256_hex(&data), version });
         }
     }
     if files.is_empty() {
         die(format!("keine Apps in {dist}"));
     }
-    let version = std::env::var("KVPN_UPDATE_VERSION").unwrap_or_else(|_| kvpn::VERSION.to_string());
+    // Gesamtversion = neueste App-Version (aendert sich also nur, wenn sich eine App geaendert hat)
+    let newest = files.values().map(|f| f.version.clone()).filter(|v| !v.is_empty()).reduce(|a, b| if kvpn::update::newer(&b, &a) { b } else { a });
+    let version = std::env::var("KVPN_UPDATE_VERSION").ok().or(newest).unwrap_or_else(|| kvpn::VERSION.to_string());
     let manifest = serde_json::to_string_pretty(&kvpn::update::Manifest { version, files }).unwrap();
     let (sig, pubhex) = kvpn::update::sign(&pk8, &manifest).unwrap_or_else(|e| die(e));
     if pubhex != kvpn::update::PUBLIC_KEY_HEX.trim() {
@@ -379,6 +386,65 @@ fn cmd_update_sign(args: &[String]) {
     std::fs::write(d.join("update.json"), &manifest).unwrap_or_else(|e| die(e));
     std::fs::write(d.join("update.json.sig"), &sig).unwrap_or_else(|e| die(e));
     println!("{}/update.json signiert", dist);
+}
+
+/// Standort-Verlauf eines Geraets (wie die Bewegungs-Karte auf der Admin-Seite); --gpx <datei> speichert ihn als GPX
+fn cmd_orte(path: &str, args: &[String]) {
+    let mut args = args.to_vec();
+    let gpx = take_opt(&mut args, &["--gpx"]);
+    let Some(name) = args.first().cloned() else { die("Aufruf: kvpn-server orte <geraet> [tage, 0 = alles] [--gpx datei.gpx]") };
+    let tage: u64 = args.get(1).and_then(|t| t.parse().ok()).unwrap_or(7);
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let seit = if tage == 0 { 0 } else { kvpn::util::now_secs().saturating_sub(tage * 86400) };
+    let p = geo::verlauf(&cfg.state_dir, &name, seit, 1_000_000);
+    if let Some(f) = gpx {
+        std::fs::write(&f, geo::gpx(&name, &p)).unwrap_or_else(|e| die(format!("{f}: {e}")));
+        println!("{} Punkte nach {f} geschrieben", p.len());
+        return;
+    }
+    if p.is_empty() {
+        println!("Keine Standorte von '{name}' in den letzten {tage} Tagen (Standort an? Handy: \"Standort teilen\").");
+        return;
+    }
+    let mut km = 0.0;
+    let mut vorher: Option<(f64, f64)> = None;
+    for x in &p {
+        let (lat, lon) = (x["lat"].as_f64().unwrap_or(0.0), x["lon"].as_f64().unwrap_or(0.0));
+        let src = x["src"].as_str().unwrap_or("");
+        if src != "ip" {
+            if let Some((a, b)) = vorher {
+                km += geo::dist_m(a, b, lat, lon) / 1000.0;
+            }
+            vorher = Some((lat, lon));
+        }
+        println!(
+            "  {}  {:<4} {:>10.5} {:>10.5}  ±{:<6} {}",
+            users::datetime(x["t"].as_u64().unwrap_or(0) as i64),
+            src,
+            lat,
+            lon,
+            x["acc"].as_f64().unwrap_or(0.0),
+            x["ssid"].as_str().map(|s| format!("WLAN {s}")).or_else(|| x["city"].as_str().map(String::from)).unwrap_or_default()
+        );
+    }
+    println!("{} Punkte, Strecke ca. {km:.1} km (Karte: Admin-Seite -> Geraet -> Bewegungen)", p.len());
+}
+
+/// Absturz-Protokolle der Apps auflisten (bzw. das neueste eines Geraets zeigen)
+fn cmd_abstuerze(path: &str, geraet: Option<&str>) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let l = absturz::liste(&cfg.state_dir);
+    let l: Vec<_> = l.into_iter().filter(|x| geraet.map(|g| x.0 == g).unwrap_or(true)).collect();
+    if l.is_empty() {
+        println!("Keine Absturz-Protokolle{} (Ordner: {})", geraet.map(|g| format!(" von '{g}'")).unwrap_or_default(), absturz::ordner(&cfg.state_dir).display());
+        return;
+    }
+    for (g, p, n, t) in &l {
+        println!("  {} UTC  {:<20} {:>6} B  {}", users::datetime(*t as i64), g, n, p.display());
+    }
+    if let (Some(_), Some((_, p, _, _))) = (geraet, l.last()) {
+        println!("\n--- neuestes: {} ---\n{}", p.display(), std::fs::read_to_string(p).unwrap_or_default());
+    }
 }
 
 fn cmd_set(path: &str, args: &[String]) {
@@ -392,7 +458,13 @@ fn cmd_set(path: &str, args: &[String]) {
     let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
     cfg.set(&args[0], &args[1..].join(" ")).unwrap_or_else(|e| die(e));
     cfg.save(path).unwrap_or_else(|e| die(e));
-    println!("{} = {}", args[0], args[1..].join(" "));
+    let geheim = matches!(args[0].as_str(), "google_geo_key" | "google" | "wigle_api" | "wigle" | "stats_password");
+    let wert = args[1..].join(" ");
+    if geheim {
+        println!("{} = {}", args[0], if matches!(wert.trim(), "" | "aus" | "off" | "-") { "(entfernt)" } else { "(eingetragen)" });
+    } else {
+        println!("{} = {wert}", args[0]);
+    }
 }
 
 fn cmd_logo(path: &str, args: &[String]) {
@@ -753,7 +825,7 @@ fn cmd_settings(path: &str, args: &[String]) {
         println!("{} – Einstellungen (Enter = so lassen, sonst an/aus bzw. Zahl):", cfg.display_name());
         for (k, q, cur) in [
             ("users", "Benutzerverwaltung (SQLite: Benutzer, sperren, Ablaufdatum, Verlauf)", onoff(cfg.users).to_string()),
-            ("aes256", "AES-256-GCM statt ChaCha20 fuer die Daten (Apps ab 1.0.6)", onoff(cfg.aes256).to_string()),
+            ("aes256", "AES-256-GCM fuer aeltere Apps 1.0.6–1.0.13 (ab 1.1.0 waehlt die App selbst)", onoff(cfg.aes256).to_string()),
             ("performance", "Leistungsmodus (alle CPU-Kerne, mehr Durchsatz, mehr Last)", onoff(cfg.performance).to_string()),
             (
                 "admin_vpn",
@@ -799,6 +871,11 @@ fn cmd_settings(path: &str, args: &[String]) {
         onoff(c.geo),
         c.max_devices,
         c.device_count()
+    );
+    println!(
+        "Ortung ueber WLAN: Google {} · WiGLE {}   (eintragen: kvpn-server set google_geo_key <schluessel> | kvpn-server set wigle_api <name:token>)",
+        if c.google_geo_key.is_empty() { "–" } else { "eingetragen" },
+        if c.wigle_api.is_empty() { "–" } else { "eingetragen" }
     );
     if restart {
         println!("Leistungsmodus/Admin-Seite gelten nach einem Neustart des Servers: systemctl restart krone-vpn   (Docker: docker restart krone-vpn)");
@@ -857,6 +934,8 @@ fn cmd_status(path: &str) {
         let i = &p["info"];
         let ver = i["ver"].as_str().unwrap_or("");
         let os = i["os"].as_str().unwrap_or("");
+        // jede App hat ihre eigene Version
+        let offered = d["update"]["app_versions"][os].as_str().map(String::from).unwrap_or_else(|| offered.clone());
         let upd = if ver.is_empty() {
             "seit Server-Start nicht verbunden".to_string()
         } else if !i["upd_sent"].as_str().unwrap_or("").is_empty() {
@@ -879,6 +958,20 @@ fn cmd_status(path: &str) {
         if let Ok(g) = serde_json::from_value::<geo::Geo>(p["geo"].clone()) {
             if p["geo"].is_object() {
                 println!("  {:<24} {}{} (von {})", "", if p["online"].as_bool().unwrap_or(false) { "Standort: " } else { "zuletzt: " }, geo::describe(&g), i["remote"].as_str().unwrap_or(""));
+            }
+        }
+        // vom Handy selbst gemeldet ("Standort teilen")
+        let dv = &p["dev"];
+        if dv.is_object() {
+            let mut parts = Vec::new();
+            if let Some(x) = dv["ssid"].as_str() {
+                parts.push(format!("WLAN \"{x}\""));
+            }
+            if let (Some(a), Some(b)) = (dv["lat"].as_f64(), dv["lon"].as_f64()) {
+                parts.push(format!("Handy-Standort {a:.5}, {b:.5}{}", dv["acc"].as_f64().map(|x| format!(" (±{x:.0} m)")).unwrap_or_default()));
+            }
+            if !parts.is_empty() {
+                println!("  {:<24} {}", "", parts.join(" · "));
             }
         }
     }

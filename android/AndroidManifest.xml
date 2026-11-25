@@ -6,8 +6,22 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- automatische Updates (die App installiert ihre eigene neue Version) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- ab Android 12: eigene Updates OHNE Rueckfrage einspielen (sonst fragt Android jedes Mal nach – und aus dem
+         Hintergrund kann die Rueckfrage gar nicht erscheinen) -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- ab Android 14: Voraussetzung fuer setRequestUpdateOwnership -->
+    <uses-permission android:name="android.permission.ENFORCE_UPDATE_OWNERSHIP" />
     <!-- Hinweis "Update bereit – tippen zum Installieren" (Android 13+ fragt einmal nach) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Vordergrund-Dienst mit dauerhafter Benachrichtigung, solange das VPN laeuft ("verbunden", "Standort wird
+         geteilt") – so laeuft nichts verdeckt; auch fuer den Neustart nach einem Update -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- fuer "Standort teilen" (Standard an, in der App abschaltbar): WLAN-Name und Standort an den eigenen VPN-Server -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <application
         android:label="@string/app_name"
@@ -38,10 +52,13 @@
         <service
             android:name=".KroneVpnService"
             android:exported="false"
+            android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="VPN-Verbindung mit sichtbarer Benachrichtigung (verbunden, Standort-Teilen an/aus)" />
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="true" />
         </service>
 

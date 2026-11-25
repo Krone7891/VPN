@@ -1,11 +1,11 @@
-//! Programmfenster (Windows): grosser Ein/Aus-Knopf, Live-Werte, Verlauf, Code anzeigen, Protokoll.
+//! Programmfenster (Windows): grosser Ein/Aus-Knopf, Live-Werte, Verlauf, Verschluesselung, Protokoll.
 //!
 //! Das Fenster ist nur die Oberflaeche – das VPN selbst laeuft als Windows-Dienst (siehe dienst_windows.rs) und
 //! meldet seinen Zustand jede Sekunde in status.json. Das Fenster darf deshalb jederzeit zu.
 //! Zum Ansehen ohne Windows: `cargo run -p kronevpn --features vorschau` mit KVPN_VORSCHAU=an|aus|verbinde|neu|update|fehler
 
 use crate::Zustand;
-use eframe::egui::{self, pos2, vec2, Color32, CornerRadius, FontFamily, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind};
+use eframe::egui::{self, pos2, vec2, Color32, CornerRadius, FontFamily, FontId, Margin, Pos2, Rect, RichText, Sense, Stroke};
 use kvpn::code::ClientConfig;
 use kvpn::util::{human_bytes, human_rate};
 use std::collections::VecDeque;
@@ -53,6 +53,10 @@ pub trait Steuerung: Send + Sync + 'static {
     fn trennen(&self) -> Result<(), String>;
     /// Code als aktives Profil speichern (kommt auch in die Profil-Liste)
     fn code_speichern(&self, cfg: &ClientConfig);
+    /// gewaehlte Verschluesselung ("auto", "aes", "chacha")
+    fn verschluesselung(&self) -> String;
+    /// Verschluesselung waehlen; eine laufende Verbindung wird damit neu aufgebaut
+    fn verschluesselung_setzen(&self, wahl: &str) -> Result<(), String>;
     /// gespeicherte Profile (Verbindungscodes)
     fn profile(&self) -> Vec<ClientConfig>;
     fn profile_speichern(&self, list: &[ClientConfig]);
@@ -61,6 +65,11 @@ pub trait Steuerung: Send + Sync + 'static {
     fn protokoll_oeffnen(&self);
     /// zur alten Text-Ansicht wechseln (startet sie; das Fenster schliesst sich danach)
     fn klassisch(&self) -> Result<(), String>;
+    /// Dienst laeuft schon mit einer neueren Version (Auto-Update): Fenster in der neuen Version neu starten.
+    /// true = neues Fenster gestartet, dieses schliesst sich
+    fn neue_version_starten(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -92,15 +101,30 @@ struct App {
     eingabe: String,
     eingabe_fehler: String,
     code_aendern: bool,
-    zeige_code: bool,
+    zeige_sicherheit: bool,
+    /// gewaehlte Verschluesselung und laufende Uebernahme
+    wahl: String,
+    wahl_arbeit: Option<mpsc::Receiver<Result<(), String>>>,
     zeige_profile: bool,
     profile: Vec<ClientConfig>,
     titel_setzen: bool,
     danach_verbinden: bool,
-    kopiert: Option<Instant>,
     log: Option<String>,
     logo: egui::TextureHandle,
     start: Instant,
+    /// Version, fuer die der Neustart des Fensters schon versucht wurde
+    neu_versucht: String,
+    schliessen: bool,
+    /// Animation: Farbe des Knopfs blendet weich um (von, zu, seit), "Plopp" beim Verbinden
+    farbe: (Color32, Color32, Instant),
+    plopp: Option<Instant>,
+    letzte_anz: Option<Anzeige>,
+}
+
+/// weiches Ein-/Ausblenden (0..1 -> 0..1)
+fn sanft(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    1.0 - (1.0 - x).powi(3)
 }
 
 pub fn run(st: Arc<dyn Steuerung>, cfg: Option<ClientConfig>, sofort: bool) -> Result<(), String> {
@@ -253,16 +277,23 @@ impl App {
             eingabe: String::new(),
             eingabe_fehler: String::new(),
             code_aendern: false,
-            zeige_code: false,
+            zeige_sicherheit: false,
+            wahl: String::new(),
+            wahl_arbeit: None,
             zeige_profile: false,
             profile: Vec::new(),
             titel_setzen: false,
             danach_verbinden: false,
-            kopiert: None,
             log: None,
             logo,
             start: Instant::now(),
+            neu_versucht: String::new(),
+            schliessen: false,
+            farbe: (MUTE, MUTE, Instant::now()),
+            plopp: None,
+            letzte_anz: None,
         };
+        app.wahl = app.st.verschluesselung();
         // Profile: das aktive gehoert immer dazu (z. B. Code aus einer aelteren Version)
         app.profile = app.st.profile();
         if let Some(c) = app.cfg.clone() {
@@ -302,6 +333,19 @@ impl App {
     }
 
     fn abfragen(&mut self) {
+        if let Some(rx) = &self.wahl_arbeit {
+            match rx.try_recv() {
+                Ok(r) => {
+                    if let Err(e) = r {
+                        self.fehler = format!("Verschlüsselung: {e}");
+                    }
+                    self.wahl_arbeit = None;
+                    self.abgefragt = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.wahl_arbeit = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if let Some((_, rx)) = &self.arbeit {
             match rx.try_recv() {
                 Ok(r) => {
@@ -324,6 +368,13 @@ impl App {
         self.abgefragt = Some(Instant::now());
         self.lage = self.st.lage();
         self.z = self.st.zustand();
+        // Auto-Update: der Dienst laeuft schon mit der neuen Version -> Fenster startet sich mit dem Patch neu
+        if let Some(v) = self.z.as_ref().map(|z| z.version.clone()) {
+            if kvpn::update::newer(&v, kvpn::VERSION) && self.neu_versucht != v {
+                self.neu_versucht = v;
+                self.schliessen = self.st.neue_version_starten();
+            }
+        }
         if let Some(z) = &self.z {
             if z.ts != self.letzter_ts {
                 self.letzter_ts = z.ts;
@@ -385,6 +436,20 @@ impl App {
         }
     }
 
+    /// Verschluesselung wechseln (im Hintergrund: Dienst startet dafuer kurz neu)
+    fn wahl_setzen(&mut self, w: &str) {
+        if self.wahl_arbeit.is_some() || self.wahl == w {
+            return;
+        }
+        self.wahl = w.to_string();
+        self.fehler.clear();
+        let (st, w, (tx, rx)) = (self.st.clone(), w.to_string(), mpsc::channel());
+        std::thread::spawn(move || {
+            let _ = tx.send(st.verschluesselung_setzen(&w));
+        });
+        self.wahl_arbeit = Some(rx);
+    }
+
     fn ist_aktiv(&self, c: &ClientConfig) -> bool {
         self.cfg.as_ref().is_some_and(|x| crate::same_profile(x, c))
     }
@@ -395,6 +460,10 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.abfragen();
+        if self.schliessen {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         if std::mem::take(&mut self.titel_setzen) {
             if let Some(c) = &self.cfg {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Title(c.display_name().to_string()));
@@ -409,7 +478,10 @@ impl eframe::App for App {
                 .show_separator_line(false)
                 .show(ctx, |ui| self.fuss(ui));
         }
+        // beim Oeffnen sanft einblenden
+        let ein = sanft(self.start.elapsed().as_secs_f32() / 0.45);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(Margin { left: 18, right: 18, top: 16, bottom: 4 })).show(ctx, |ui| {
+            ui.multiply_opacity(ein);
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 self.kopf(ui);
                 ui.add_space(6.0);
@@ -422,8 +494,12 @@ impl eframe::App for App {
         });
         self.dialoge(ctx);
 
-        if matches!(anz, Anzeige::Verbinde | Anzeige::Trenne) {
+        let animiert = ein < 1.0 || self.farbe.2.elapsed() < Duration::from_millis(400) || self.plopp.is_some_and(|t| t.elapsed() < Duration::from_millis(700));
+        if animiert || matches!(anz, Anzeige::Verbinde | Anzeige::Trenne) {
             ctx.request_repaint_after(Duration::from_millis(16));
+        } else if anz == Anzeige::Verbunden {
+            // ruhiges "Atmen" des Leuchtens
+            ctx.request_repaint_after(Duration::from_millis(40));
         } else {
             ctx.request_repaint_after(Duration::from_millis(500));
         }
@@ -465,12 +541,22 @@ impl App {
     }
 
     fn haupt(&mut self, ui: &mut egui::Ui, anz: Anzeige) {
-        let farbe = match anz {
+        let ziel = match anz {
             Anzeige::Verbunden => OK,
             Anzeige::Verbinde => ACC,
             Anzeige::Trenne => WARN,
             Anzeige::Aus => MUTE,
         };
+        // Farbe weich umblenden, beim Verbinden kurz "ploppen"
+        let jetzt_farbe = self.farbe.0.lerp_to_gamma(self.farbe.1, sanft(self.farbe.2.elapsed().as_secs_f32() / 0.35));
+        if ziel != self.farbe.1 {
+            self.farbe = (jetzt_farbe, ziel, Instant::now());
+        }
+        if anz == Anzeige::Verbunden && self.letzte_anz.is_some_and(|a| a != Anzeige::Verbunden) {
+            self.plopp = Some(Instant::now());
+        }
+        self.letzte_anz = Some(anz);
+        let farbe = self.farbe.0.lerp_to_gamma(self.farbe.1, sanft(self.farbe.2.elapsed().as_secs_f32() / 0.35));
         ui.add_space(8.0);
         ui.vertical_centered(|ui| {
             if self.schalter(ui, anz, farbe) {
@@ -519,7 +605,10 @@ impl App {
             karte().fill(Color32::from_rgb(0x2a, 0x16, 0x1c)).stroke(linie(1.0, BAD.gamma_multiply(0.5))).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(fett("Problem", 15.0).color(BAD));
-                ui.label(RichText::new(f).size(13.5));
+                ui.label(RichText::new(kvpn::fehler::klartext(&f)).size(13.5));
+                if kvpn::fehler::klartext(&f) != f {
+                    ui.label(RichText::new(format!("Technisch: {f}")).color(MUTE).size(11.5));
+                }
                 if ui.link("Protokoll ansehen").clicked() {
                     self.log = Some(self.st.protokoll());
                 }
@@ -545,43 +634,48 @@ impl App {
         let c = rect.center();
         let t = self.start.elapsed().as_secs_f32();
         let hover = resp.hovered() && anz != Anzeige::Trenne;
-        // Leuchten
+        // Druecken federt ein, beim Verbinden ploppt der Knopf kurz auf
+        let gedrueckt = resp.is_pointer_button_down_on() && anz != Anzeige::Trenne;
+        let druck = ui.ctx().animate_value_with_time(egui::Id::new("knopf-druck"), if gedrueckt { 0.93 } else { 1.0 }, 0.12);
+        let plopp = self.plopp.map(|s| s.elapsed().as_secs_f32() / 0.6).filter(|x| *x < 1.0).map(|x| 1.0 + 0.07 * (x * std::f32::consts::PI).sin() * (1.0 - x)).unwrap_or(1.0);
+        let k = druck * plopp;
+        let hv = ui.ctx().animate_bool_with_time(egui::Id::new("knopf-hover"), hover, 0.15);
+        // Leuchten (verbinden: pulsiert, verbunden: atmet ruhig)
         let an = anz != Anzeige::Aus;
         if an {
-            let puls = if anz == Anzeige::Verbunden { 0.5 } else { 0.5 + 0.5 * (t * 3.0).sin() };
+            let puls = if anz == Anzeige::Verbunden { 0.55 + 0.25 * (t * 1.7).sin() } else { 0.5 + 0.5 * (t * 3.0).sin() };
             for (r, a) in [(77.0, 0.05), (71.0, 0.08), (65.0, 0.12)] {
-                p.circle_filled(c, r, farbe.gamma_multiply(a * (0.6 + 0.4 * puls)));
+                p.circle_filled(c, r * k, farbe.gamma_multiply(a * (0.6 + 0.4 * puls)));
             }
         }
-        let innen = if hover { Color32::from_rgb(0x1f, 0x23, 0x2c) } else { CARD };
-        p.circle_filled(c, 60.0, innen);
-        p.circle_stroke(c, 60.0, linie(1.0, LINE));
+        let innen = CARD.lerp_to_gamma(Color32::from_rgb(0x1f, 0x23, 0x2c), hv);
+        p.circle_filled(c, 60.0 * k, innen);
+        p.circle_stroke(c, 60.0 * k, linie(1.0, LINE));
         // Ring
         match anz {
             Anzeige::Verbunden => {
-                p.circle_stroke(c, 60.0, linie(5.0, farbe));
+                p.circle_stroke(c, 60.0 * k, linie(5.0, farbe));
             }
             Anzeige::Verbinde | Anzeige::Trenne => {
-                p.circle_stroke(c, 60.0, linie(5.0, farbe.gamma_multiply(0.18)));
+                p.circle_stroke(c, 60.0 * k, linie(5.0, farbe.gamma_multiply(0.18)));
                 let a0 = t * 4.0;
-                bogen(p, c, 60.0, a0, a0 + 1.6, linie(5.0, farbe));
+                bogen(p, c, 60.0 * k, a0, a0 + 1.6, linie(5.0, farbe));
             }
             Anzeige::Aus => {
-                p.circle_stroke(c, 60.0, linie(5.0, if hover { ACC.gamma_multiply(0.7) } else { LINE }));
+                p.circle_stroke(c, 60.0 * k, linie(5.0, LINE.lerp_to_gamma(ACC.gamma_multiply(0.7), hv)));
             }
         }
         // Symbol (Ein/Aus)
         let sym = match anz {
-            Anzeige::Aus if hover => ACC,
-            Anzeige::Aus => MUTE,
+            Anzeige::Aus => MUTE.lerp_to_gamma(ACC, hv),
             _ => farbe,
         };
         let s = linie(5.5, sym);
         let pi = std::f32::consts::PI;
-        bogen(p, c + vec2(0.0, 3.0), 24.0, -pi / 2.0 + 0.75, -pi / 2.0 + 2.0 * pi - 0.75, s);
-        p.line_segment([c + vec2(0.0, -26.0), c + vec2(0.0, -4.0)], s);
-        p.circle_filled(c + vec2(0.0, -26.0), 2.6, sym);
-        p.circle_filled(c + vec2(0.0, -4.0), 2.6, sym);
+        bogen(p, c + vec2(0.0, 3.0 * k), 24.0 * k, -pi / 2.0 + 0.75, -pi / 2.0 + 2.0 * pi - 0.75, s);
+        p.line_segment([c + vec2(0.0, -26.0 * k), c + vec2(0.0, -4.0 * k)], s);
+        p.circle_filled(c + vec2(0.0, -26.0 * k), 2.6, sym);
+        p.circle_filled(c + vec2(0.0, -4.0 * k), 2.6, sym);
         resp.clicked() && anz != Anzeige::Trenne
     }
 
@@ -666,6 +760,11 @@ impl App {
                     if z.tls_trusted { "TLS 1.3 + Noise – verschlüsselt".into() } else { format!("Firewall prüft HTTPS ({}) – Daten bleiben trotzdem verschlüsselt", z.tls_issuer) },
                     if z.tls_trusted { OK } else { WARN },
                 ),
+                (
+                    "Daten",
+                    if z.cipher.is_empty() { "–".into() } else { format!("{} · Tarnung aktiv", z.cipher) },
+                    INK,
+                ),
             ],
             None => vec![("Server", server, INK), ("Schutz", "nicht aktiv – Datenverkehr geht direkt ins Internet".into(), MUTE)],
         };
@@ -681,8 +780,9 @@ impl App {
     fn fuss(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().button_padding.x = 6.0;
         ui.columns(3, |c| {
-            if c[0].add_sized([c[0].available_width(), 36.0], knopf("Code", false)).on_hover_text("Verbindungscode + QR-Code anzeigen (z. B. fürs Handy)").clicked() {
-                self.zeige_code = true;
+            if c[0].add_sized([c[0].available_width(), 36.0], knopf("Sicherheit", false)).on_hover_text("Verschlüsselung wählen (Auto, AES-256, ChaCha20)").clicked() {
+                self.wahl = self.st.verschluesselung();
+                self.zeige_sicherheit = true;
             }
             if c[1].add_sized([c[1].available_width(), 36.0], knopf("Protokoll", false)).clicked() {
                 self.log = Some(self.st.protokoll());
@@ -754,41 +854,68 @@ impl App {
 
     fn dialoge(&mut self, ctx: &egui::Context) {
         let breite = (ctx.screen_rect().width() - 48.0).clamp(280.0, 560.0);
-        if self.zeige_code {
-            if let Some(cfg) = self.cfg.clone() {
-                let code = cfg.to_code();
-                let r = egui::Modal::new(egui::Id::new("code")).show(ctx, |ui| {
-                    ui.set_width(breite.min(400.0));
-                    ui.label(fett("Verbindungscode", 19.0));
-                    ui.label(RichText::new("Zum Einrichten auf einem anderen Gerät (z. B. QR-Code in der Handy-App scannen). Geheim halten – wer den Code hat, kann sich als dieses Gerät verbinden.").color(MUTE).size(13.0));
-                    ui.add_space(6.0);
-                    ui.vertical_centered(|ui| qr_zeichnen(ui, &code, ui.available_width().min(260.0)));
-                    ui.add_space(6.0);
-                    egui::Frame::new().fill(Color32::from_rgb(0x0b, 0x0d, 0x11)).corner_radius(8).inner_margin(Margin::same(8)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        egui::ScrollArea::vertical().max_height(70.0).show(ui, |ui| {
-                            ui.add(egui::Label::new(RichText::new(&code).monospace().size(11.0).color(MUTE)).wrap().selectable(true));
-                        });
-                    });
-                    ui.add_space(4.0);
-                    let mut zu = false;
-                    ui.columns(2, |c| {
-                        let kopiert = self.kopiert.is_some_and(|t| t.elapsed() < Duration::from_secs(2));
-                        if c[0].add_sized([c[0].available_width(), 38.0], knopf(if kopiert { "Kopiert!" } else { "Kopieren" }, true)).clicked() {
-                            c[0].ctx().copy_text(code.clone());
-                            self.kopiert = Some(Instant::now());
-                        }
-                        if c[1].add_sized([c[1].available_width(), 38.0], knopf("Schließen", false)).clicked() {
-                            zu = true;
-                        }
-                    });
-                    zu
-                });
-                if r.inner || r.should_close() {
-                    self.zeige_code = false;
+        if self.zeige_sicherheit {
+            let mut zu = false;
+            let mut neu = None;
+            let aes_hw = self.z.as_ref().map(|z| z.aes_hw).unwrap_or_else(kvpn::crypto::aes_hw);
+            let laeuft = self.z.as_ref().filter(|z| z.state == "connected").map(|z| z.cipher.clone()).filter(|c| !c.is_empty());
+            let r = egui::Modal::new(egui::Id::new("sicherheit")).show(ctx, |ui| {
+                ui.set_width(breite.min(420.0));
+                ui.label(fett("Verschlüsselung", 19.0));
+                ui.label(RichText::new("Alle drei sind geprüfte Standard-Verfahren mit 256-Bit-Schlüsseln. Unterschied ist nur die Geschwindigkeit auf diesem Gerät.").color(MUTE).size(13.0));
+                ui.add_space(6.0);
+                let auto_txt = if aes_hw { "nimmt AES-256-GCM – dieser Prozessor hat AES-Befehle" } else { "nimmt ChaCha20 – ohne AES-Befehle schneller" };
+                for (w, titel, unter) in [
+                    ("auto", "Auto (empfohlen)", auto_txt),
+                    ("aes", "AES-256-GCM", if aes_hw { "sehr schnell auf diesem PC (Hardware)" } else { "langsamer auf diesem PC (keine AES-Befehle)" }),
+                    ("chacha", "ChaCha20-Poly1305", "schnell auf jedem Gerät, auch ohne AES-Befehle"),
+                ] {
+                    let an = self.wahl == w;
+                    let resp = egui::Frame::new()
+                        .fill(if an { Color32::from_rgb(0x18, 0x20, 0x33) } else { SOFT })
+                        .stroke(linie(1.0, if an { ACC.gamma_multiply(0.8) } else { LINE }))
+                        .corner_radius(12)
+                        .inner_margin(Margin::symmetric(12, 10))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                                ui.painter().circle_stroke(r.center(), 8.0, linie(1.5, if an { ACC } else { MUTE }));
+                                if an {
+                                    ui.painter().circle_filled(r.center(), 4.5, ACC);
+                                }
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 1.0;
+                                    ui.label(fett(titel, 15.0));
+                                    ui.label(RichText::new(unter).color(MUTE).size(12.5));
+                                });
+                            });
+                        })
+                        .response;
+                    if ui.interact(resp.rect, egui::Id::new(("wahl", w)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        neu = Some(w);
+                    }
+                    ui.add_space(2.0);
                 }
-            } else {
-                self.zeige_code = false;
+                ui.add_space(4.0);
+                let info = if self.wahl_arbeit.is_some() {
+                    "Wird übernommen – VPN verbindet kurz neu …".to_string()
+                } else if let Some(c) = &laeuft {
+                    format!("Jetzt aktiv: {c}. Dazu kommt eine Tarn-Schicht, die sich bei jeder Verbindung ändert (Paketgrößen, Takt) – sieht für Firewalls wie normales HTTPS aus.")
+                } else {
+                    "Gilt ab der nächsten Verbindung.".to_string()
+                };
+                ui.label(RichText::new(info).color(MUTE).size(12.5));
+                ui.add_space(4.0);
+                if ui.add(knopf("Schließen", false).min_size(vec2(ui.available_width(), 38.0))).clicked() {
+                    zu = true;
+                }
+            });
+            if let Some(w) = neu {
+                self.wahl_setzen(w);
+            }
+            if zu || r.should_close() {
+                self.zeige_sicherheit = false;
             }
         }
         if self.zeige_profile {
@@ -935,28 +1062,6 @@ fn bogen(p: &egui::Painter, c: Pos2, r: f32, a0: f32, a1: f32, s: Stroke) {
     p.add(egui::Shape::line(pts, s));
 }
 
-fn qr_zeichnen(ui: &mut egui::Ui, text: &str, groesse: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(groesse, groesse), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 12, Color32::WHITE);
-    let Ok(code) = qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::L) else {
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, "QR-Code zu groß", FontId::proportional(14.0), Color32::BLACK);
-        return;
-    };
-    let w = code.width();
-    let farben = code.to_colors();
-    let rand = 4.0;
-    let m = ((groesse / (w as f32 + 2.0 * rand)) * 2.0).floor() / 2.0; // Modulgroesse (halbe Pixel genau)
-    let start = rect.center() - vec2(m * w as f32, m * w as f32) / 2.0;
-    for (i, f) in farben.iter().enumerate() {
-        if *f == qrcode::Color::Dark {
-            let (x, y) = ((i % w) as f32, (i / w) as f32);
-            p.rect_filled(Rect::from_min_size(start + vec2(x * m, y * m), vec2(m + 0.3, m + 0.3)), 0, Color32::BLACK);
-        }
-    }
-    let _ = StrokeKind::Inside;
-}
-
 // ------------------------------------------------------------------------------------------------ Vorschau (Linux)
 
 #[cfg(feature = "vorschau")]
@@ -967,6 +1072,7 @@ pub fn vorschau(modus: &str) {
         t0: Instant,
         an: Mutex<bool>,
         profile: Mutex<Vec<ClientConfig>>,
+        wahl: Mutex<String>,
     }
     impl Steuerung for Demo {
         fn lage(&self) -> Lage {
@@ -990,7 +1096,7 @@ pub fn vorschau(modus: &str) {
                 state: state.into(),
                 title: "KroneVPN".into(),
                 name: "Mein PC".into(),
-                version: kvpn::VERSION.into(),
+                version: if self.modus == "neustart" { "99.0.0".into() } else { kvpn::VERSION.into() },
                 server: "203.0.113.10:443".into(),
                 via_proxy: self.modus == "fehler",
                 tls_trusted: self.modus != "fehler",
@@ -1001,11 +1107,15 @@ pub fn vorschau(modus: &str) {
                 rate_tx: tx,
                 rtt_ms: 23.0 + (t * 2.0).sin() * 3.0,
                 since: kvpn::util::now_secs() - 4_391,
-                error: if state == "waiting" { "Server nicht erreichbar (Zeitüberschreitung) – neuer Versuch in 4 s".into() } else { String::new() },
+                error: if state == "waiting" { kvpn::fehler::klartext("203.0.113.10:443: keine Antwort (Firewall?)") } else { String::new() },
+                error_detail: if state == "waiting" { "203.0.113.10:443: keine Antwort (Firewall?)".into() } else { String::new() },
                 update_version: if self.modus == "update" { "1.0.4".into() } else { String::new() },
                 update_got: 3_100_000,
                 update_size: 7_400_000,
                 ts: (t * 4.0) as u64 + 1,
+                cipher: "AES-256-GCM".into(),
+                cipher_choice: "auto".into(),
+                aes_hw: true,
             })
         }
         fn gewollt(&self) -> bool {
@@ -1028,6 +1138,14 @@ pub fn vorschau(modus: &str) {
                 None => p.push(cfg.clone()),
             }
         }
+        fn verschluesselung(&self) -> String {
+            self.wahl.lock().unwrap().clone()
+        }
+        fn verschluesselung_setzen(&self, wahl: &str) -> Result<(), String> {
+            std::thread::sleep(Duration::from_millis(900));
+            *self.wahl.lock().unwrap() = wahl.to_string();
+            Ok(())
+        }
         fn profile(&self) -> Vec<ClientConfig> {
             self.profile.lock().unwrap().clone()
         }
@@ -1040,6 +1158,10 @@ pub fn vorschau(modus: &str) {
         fn protokoll_oeffnen(&self) {}
         fn klassisch(&self) -> Result<(), String> {
             Err("in der Vorschau nicht verfügbar".into())
+        }
+        fn neue_version_starten(&self) -> bool {
+            println!("NEUSTART in neuer Version");
+            true
         }
     }
     let an = !matches!(modus, "aus" | "neu");
@@ -1066,7 +1188,7 @@ pub fn vorschau(modus: &str) {
         profile.push(demo("Büro-VPN", "Laptop", "wss://buero.example.com/api/v1/stream"));
         profile.push(demo("Eltern", "Mein PC", "wss://eltern.example.net/api/v1/stream"));
     }
-    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile) });
+    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile), wahl: Mutex::new("auto".into()) });
     if let Err(e) = run(st, cfg, false) {
         eprintln!("{e}");
     }

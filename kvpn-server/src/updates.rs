@@ -172,7 +172,8 @@ fn refresh_downloads(dl: &Path, root: &Path, m: &Manifest, say: &dyn Fn(&str)) {
     if let Some(fj) = fj.filter(|f| f.exists()) {
         let mut files = Vec::new();
         for f in m.files.values() {
-            files.push(serde_json::json!({"name": f.name, "size": f.size, "sha256": f.sha256}));
+            let v = if f.version.is_empty() { &m.version } else { &f.version };
+            files.push(serde_json::json!({"name": f.name, "size": f.size, "sha256": f.sha256, "version": v}));
         }
         let j = serde_json::json!({"version": m.version, "date": date_de(kvpn::util::now_secs()), "files": files});
         let _ = std::fs::write(&fj, serde_json::to_string_pretty(&j).unwrap_or_default());

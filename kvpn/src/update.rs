@@ -28,6 +28,10 @@ pub struct FileEntry {
     pub name: String,
     pub size: u64,
     pub sha256: String,
+    /// Version dieser App (jede App hat ihre eigene; leer = `Manifest::version`). So bekommt ein Geraet nur dann
+    /// ein Update, wenn sich SEINE App geaendert hat.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
 }
 
 /// Inhalt von update.json; `files` nach Plattform: "android", "windows", "linux"
@@ -64,6 +68,13 @@ pub fn newer(a: &str, b: &str) -> bool {
         }
     }
     false
+}
+
+impl Manifest {
+    /// Version der App fuer diese Plattform
+    pub fn version_for(&self, os: &str) -> Option<&str> {
+        self.files.get(os).map(|f| if f.version.is_empty() { self.version.as_str() } else { f.version.as_str() })
+    }
 }
 
 /// Signatur pruefen und Liste lesen
@@ -149,7 +160,8 @@ impl Updater {
                 return false;
             }
         };
-        if !newer(&m.version, &self.current) {
+        let Some(ver) = m.version_for(&self.os).map(String::from) else { return false };
+        if !newer(&ver, &self.current) {
             return false;
         }
         let Some(f) = m.files.get(&self.os).cloned() else { return false };
@@ -157,7 +169,7 @@ impl Updater {
             st.error = "Update-Datei hat eine unzulaessige Groesse".into();
             return false;
         }
-        let t = Some((m.version.clone(), f));
+        let t = Some((ver, f));
         if st.target != t {
             *st = St { target: t, ..Default::default() };
         }
@@ -217,7 +229,7 @@ mod tests {
 
     fn manifest(ver: &str, data: &[u8]) -> String {
         let mut files = BTreeMap::new();
-        files.insert("linux".to_string(), FileEntry { name: "x".into(), size: data.len() as u64, sha256: sha256_hex(data) });
+        files.insert("linux".to_string(), FileEntry { name: "x".into(), size: data.len() as u64, sha256: sha256_hex(data), version: String::new() });
         serde_json::to_string(&Manifest { version: ver.into(), files }).unwrap()
     }
 
@@ -254,7 +266,7 @@ mod tests {
         assert!(!u.offer(&UpdateOffer { manifest: manifest("9.9.9", &data), sig: "AAAA".into() }));
         assert_eq!(u.request(), None);
         // Ziel direkt setzen (Signatur ist oben getestet)
-        u.st.lock().unwrap().target = Some(("9.9.9".into(), FileEntry { name: "x".into(), size: data.len() as u64, sha256: sha256_hex(&data) }));
+        u.st.lock().unwrap().target = Some(("9.9.9".into(), FileEntry { name: "x".into(), size: data.len() as u64, sha256: sha256_hex(&data), version: String::new() }));
         let mut off = 0usize;
         for c in data.chunks(CHUNK) {
             assert_eq!(u.request(), Some(off as u32));

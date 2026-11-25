@@ -79,6 +79,13 @@ pub struct Config {
     /// ungefaehren Standort der Geraete (aus der IP-Adresse, ueber ipwho.is) auf der lokalen/Admin-Seite zeigen
     #[serde(default = "d_true")]
     pub geo: bool,
+    /// Ortung ueber WLAN-Netze (nur Admin-Seite): Google Geolocation API – Schluessel aus der Google Cloud Console
+    /// (API "Geolocation API" aktivieren). Leer = aus. Geht nur an Google, nie auf die Webseite.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub google_geo_key: String,
+    /// Ortung ueber WLAN-Netze: WiGLE (wigle.net -> Account -> "Show my token"): "API-Name:API-Token". Leer = aus.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub wigle_api: String,
     /// Passwort dafuer als PBKDF2-Hash (leer = wird beim ersten Aufruf im VPN festgelegt)
     #[serde(default)]
     pub admin_password: String,
@@ -286,8 +293,23 @@ impl Config {
             "users" | "benutzer" | "benutzerverwaltung" => self.users = on_off(val)?,
             "admin_vpn" | "admin" => self.admin_vpn = on_off(val)?,
             "geo" | "standort" => self.geo = on_off(val)?,
+            "google_geo_key" | "google" => {
+                let v = val.trim();
+                if v.contains(char::is_whitespace) || v.contains('"') {
+                    return Err("google_geo_key: Schluessel ohne Leerzeichen (leer oder \"aus\" = abschalten)".into());
+                }
+                self.google_geo_key = if matches!(v, "aus" | "off" | "-") { String::new() } else { v.into() }
+            }
+            "wigle_api" | "wigle" => {
+                let v = val.trim();
+                let aus = v.is_empty() || matches!(v, "aus" | "off" | "-");
+                if !aus && (!v.contains(':') || v.contains(char::is_whitespace) || v.contains('"')) {
+                    return Err("wigle_api: als API-Name:API-Token (von wigle.net -> Account), leer oder \"aus\" = abschalten".into());
+                }
+                self.wigle_api = if aus { String::new() } else { v.into() }
+            }
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api)")),
         }
         self.check()
     }
@@ -350,6 +372,8 @@ impl Config {
             mtu: self.mtu,
             upd: None,
             cipher: String::new(),
+            tarn: None,
+            pad: String::new(),
         }
     }
 

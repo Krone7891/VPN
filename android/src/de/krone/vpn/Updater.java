@@ -53,6 +53,22 @@ final class Updater {
      * Wurde die App von Hand (Browser/Dateien) installiert, muss Android das erste Update einmal bestaetigen lassen –
      * danach aktualisiert sie sich (ab Android 12) ohne Rueckfrage.
      */
+    /** einfache Benachrichtigung (leiser Kanal "KroneVPN"), z. B. fuer den Neustart nach einem Update */
+    static Notification notice(Context ctx, String title, String text, boolean install) {
+        NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new NotificationChannel("vpn", "KroneVPN", NotificationManager.IMPORTANCE_LOW));
+        Intent open = new Intent(ctx, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (install) open.setAction(ACTION_INSTALL);
+        PendingIntent pi = PendingIntent.getActivity(ctx, 9, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new Notification.Builder(ctx, "vpn")
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(pi)
+                .setOngoing(true)
+                .build();
+    }
+
     static void notifyUser(Context ctx, String title, String text, boolean install) {
         try {
             SharedPreferences pr = KroneVpnService.prefs(ctx);
@@ -102,6 +118,8 @@ final class Updater {
                 p.setAppPackageName(app.getPackageName());
                 p.setSize(apk.length());
                 if (Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+                // ab Android 14: diese App wird "Update-Besitzer" – spaetere Updates gehen dann sicher ohne Rueckfrage
+                if (Build.VERSION.SDK_INT >= 34) p.setRequestUpdateOwnership(true);
                 int id = pi.createSession(p);
                 session = id;
                 try (PackageInstaller.Session s = pi.openSession(id)) {
@@ -227,12 +245,28 @@ final class Updater {
         @Override
         public void onReceive(Context ctx, Intent intent) {
             if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) return;
+            installing = "";
+            ((NotificationManager) ctx.getSystemService(NotificationManager.class)).cancel(42);
             if (!KroneVpnService.prefs(ctx).getBoolean("on", false)) return;
             if (VpnService.prepare(ctx) != null) return;
+            // App mit dem Patch neu starten: VPN-Dienst wieder an. Aus dem Hintergrund geht das nur als
+            // Vordergrund-Dienst (nach MY_PACKAGE_REPLACED ausdruecklich erlaubt) – startService() wuerde Android blockieren
             try {
-                ctx.startService(new Intent(ctx, KroneVpnService.class));
-            } catch (Exception ignored) {
-                // Android erlaubt den Start aus dem Hintergrund nicht immer – "Durchgehend aktives VPN" startet es dann
+                ctx.startForegroundService(new Intent(ctx, KroneVpnService.class).putExtra(KroneVpnService.EXTRA_AFTER_UPDATE, true));
+            } catch (Exception e) {
+                // blockiert (z. B. Energiesparmodus): Hinweis zum Antippen
+                try {
+                    PendingIntent pi = PendingIntent.getActivity(ctx, 0, new Intent(ctx, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+                    Notification n = new Notification.Builder(ctx, "updates")
+                            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                            .setContentTitle("KroneVPN wurde aktualisiert")
+                            .setContentText("Tippen, um wieder zu verbinden")
+                            .setContentIntent(pi)
+                            .setAutoCancel(true)
+                            .build();
+                    ((NotificationManager) ctx.getSystemService(NotificationManager.class)).notify(44, n);
+                } catch (Exception ignored) {
+                }
             }
         }
     }

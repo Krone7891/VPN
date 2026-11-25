@@ -5,12 +5,11 @@
 //! Richtung – der Transport (TCP/WebSocket) liefert in Reihenfolge, jede Luecke, Wiederholung oder Aenderung fuehrt
 //! zum Abbruch der Verbindung.
 //!
-//! Verschluesselung der Daten: ChaCha20-Poly1305 (Standard) oder – wenn der Server es so eingestellt hat und die App
-//! es kann – AES-256-GCM (mit Hardware-Beschleunigung, ring). Beide mit 256-Bit-Schluesseln aus dem Noise-Handshake.
+//! Verschluesselung der Daten (ab 1.1.0 dynamisch): die App waehlt "Auto" (AES-256-GCM, wenn der Prozessor
+//! AES-Befehle hat, sonst ChaCha20-Poly1305) oder fest eins von beiden. Nur gepruefte Standard-Verfahren (ring),
+//! beide mit 256-Bit-Schluesseln aus dem Noise-Handshake.
 
 use crate::proto::{Hello, Welcome, NOISE_PARAMS, PROLOGUE};
-use chacha20poly1305::aead::{AeadInPlace, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use std::fmt;
 
 #[derive(Debug)]
@@ -51,41 +50,101 @@ pub fn public_from_private(private: &Key32) -> Key32 {
     x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(*private)).to_bytes()
 }
 
-enum Aead {
-    ChaCha(ChaCha20Poly1305),
-    Aes(ring::aead::LessSafeKey),
-}
+struct Aead(ring::aead::LessSafeKey);
 
 impl Aead {
     fn new(key: &Key32, cipher: &str) -> Self {
-        if cipher == crate::proto::CIPHER_AES256 {
-            Aead::Aes(ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, key).expect("AES-Schluessel")))
-        } else {
-            Aead::ChaCha(ChaCha20Poly1305::new(Key::from_slice(key)))
-        }
+        // beides ring (handoptimiert: AES-NI/ARMv8-AES bzw. SIMD/NEON fuer ChaCha20), Ergebnis wie RFC 8439 / NIST
+        let alg = if cipher == crate::proto::CIPHER_AES256 { &ring::aead::AES_256_GCM } else { &ring::aead::CHACHA20_POLY1305 };
+        Aead(ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(alg, key).expect("Schluessel")))
     }
     fn seal(&self, n: u64, buf: &mut Vec<u8>) -> Result<(), ()> {
-        match self {
-            Aead::ChaCha(a) => a.encrypt_in_place(&nonce(n), b"", buf).map_err(|_| ()),
-            Aead::Aes(k) => k.seal_in_place_append_tag(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ()),
-        }
+        self.0.seal_in_place_append_tag(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ())
     }
     fn open(&self, n: u64, buf: &mut Vec<u8>) -> Result<(), ()> {
-        match self {
-            Aead::ChaCha(a) => a.decrypt_in_place(&nonce(n), b"", buf).map_err(|_| ()),
-            Aead::Aes(k) => {
-                let len = k.open_in_place(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ())?.len();
-                buf.truncate(len);
-                Ok(())
-            }
-        }
+        let len = self.0.open_in_place(ring_nonce(n), ring::aead::Aad::empty(), buf).map_err(|_| ())?.len();
+        buf.truncate(len);
+        Ok(())
     }
 }
 
+/// Nonce = Zaehler der Richtung (Bytes 4..12, little endian), wie bei Noise/WireGuard
 fn ring_nonce(n: u64) -> ring::aead::Nonce {
     let mut b = [0u8; 12];
     b[4..].copy_from_slice(&n.to_le_bytes());
     ring::aead::Nonce::assume_unique_for_key(b)
+}
+
+/// hat dieser Prozessor AES-Befehle (x86: AES-NI + PCLMULQDQ, ARM: ARMv8-Crypto)? Dann ist AES-256-GCM am
+/// schnellsten, sonst ChaCha20-Poly1305 (ohne AES-Hardware deutlich schneller und trotzdem gleich sicher).
+pub fn aes_hw() -> bool {
+    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    {
+        std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("pclmulqdq")
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        std::arch::is_aarch64_feature_detected!("aes") && std::arch::is_aarch64_feature_detected!("pmull")
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86", target_arch = "aarch64")))]
+    {
+        false
+    }
+}
+
+/// Einstellung der App ("auto", "aes", "chacha") -> Wunschliste fuer den Server
+pub fn cipher_wish(choice: &str) -> Vec<String> {
+    use crate::proto::{CIPHER_AES256 as A, CIPHER_CHACHA as C};
+    match normalize_choice(choice) {
+        "aes" => vec![A.into()],
+        "chacha" => vec![C.into()],
+        _ if aes_hw() => vec![A.into(), C.into()],
+        _ => vec![C.into(), A.into()],
+    }
+}
+
+/// "AES-256", "aes256gcm", "ChaCha20" … -> "auto" | "aes" | "chacha"
+pub fn normalize_choice(choice: &str) -> &'static str {
+    let c = choice.trim().to_ascii_lowercase();
+    if c.starts_with("aes") {
+        "aes"
+    } else if c.starts_with("chacha") {
+        "chacha"
+    } else {
+        "auto"
+    }
+}
+
+/// Server: Verschluesselung fuer diese Verbindung waehlen ("" = ChaCha20, sonst "aes256gcm").
+/// Apps ab 1.1.0 schicken eine Wunschliste – die gilt (dort entscheidet die App bzw. ihre Hardware).
+/// Aeltere Apps nur ["aes256gcm"]: dann wie bisher die Server-Einstellung `aes256`.
+pub fn choose_cipher(hello: &Hello, server_aes: bool) -> String {
+    use crate::proto::{CIPHER_AES256 as A, CIPHER_CHACHA as C};
+    if hello.pick {
+        for c in &hello.ciphers {
+            if c == A {
+                return A.into();
+            }
+            if c == C {
+                return String::new();
+            }
+        }
+        return String::new();
+    }
+    if server_aes && hello.ciphers.iter().any(|c| c == A) {
+        A.into()
+    } else {
+        String::new()
+    }
+}
+
+/// Anzeigename ("" bzw. "chacha20" = ChaCha20-Poly1305)
+pub fn cipher_label(c: &str) -> &'static str {
+    if c == crate::proto::CIPHER_AES256 {
+        "AES-256-GCM"
+    } else {
+        "ChaCha20-Poly1305"
+    }
 }
 
 /// Verschluesseln einer Richtung
@@ -97,12 +156,6 @@ pub struct Sealer {
 pub struct Opener {
     aead: Aead,
     n: u64,
-}
-
-fn nonce(n: u64) -> Nonce {
-    let mut b = [0u8; 12];
-    b[4..].copy_from_slice(&n.to_le_bytes());
-    *Nonce::from_slice(&b)
 }
 
 impl Sealer {
@@ -173,7 +226,7 @@ pub fn client_finish(mut hs: snow::HandshakeState, msg2: &[u8]) -> Result<(Welco
     if !hs.is_handshake_finished() {
         return Err(err("Handshake unvollstaendig"));
     }
-    if !w.cipher.is_empty() && w.cipher != crate::proto::CIPHER_AES256 {
+    if !w.cipher.is_empty() && w.cipher != crate::proto::CIPHER_AES256 && w.cipher != crate::proto::CIPHER_CHACHA {
         return Err(err(format!("Server will unbekannte Verschluesselung '{}' – App aktualisieren", w.cipher)));
     }
     let (s, o) = split(&mut hs, true, &w.cipher);
@@ -210,7 +263,7 @@ mod tests {
     use super::*;
 
     fn welcome() -> Welcome {
-        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400, upd: None, cipher: String::new() }
+        Welcome { name: "Test".into(), ip4: "10.77.0.2/24".into(), ip6: "fd77:6b76::2/64".into(), dns: vec!["1.1.1.1".into()], mtu: 1400, upd: None, cipher: String::new(), tarn: None, pad: String::new() }
     }
 
     #[test]
@@ -303,5 +356,61 @@ mod tests {
         let (other_priv, _) = generate_keypair();
         let (_, m1) = client_init(&cpriv, &spub, &Hello::default()).unwrap();
         assert!(server_read(&other_priv, &m1).is_err());
+    }
+
+    /// ring-ChaCha20 (ab 1.1.0) muss genau wie die bisherige Umsetzung (RustCrypto) verschluesseln,
+    /// sonst koennten alte Apps nicht mehr mit neuem Server (und umgekehrt)
+    #[test]
+    fn chacha_wie_bisher() {
+        use chacha20poly1305::aead::{AeadInPlace, KeyInit};
+        let key = [0x42u8; 32];
+        let alt = chacha20poly1305::ChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&key));
+        let mut s = Sealer::new(&key);
+        let mut o = Opener::new(&key);
+        for n in 0..20u64 {
+            let msg = vec![n as u8; 100 + n as usize * 37];
+            let mut a = msg.clone();
+            let mut nb = [0u8; 12];
+            nb[4..].copy_from_slice(&n.to_le_bytes());
+            alt.encrypt_in_place(chacha20poly1305::Nonce::from_slice(&nb), b"", &mut a).unwrap();
+            let mut b = msg.clone();
+            s.seal(&mut b).unwrap();
+            assert_eq!(a, b, "Nachricht {n}");
+            o.open(&mut a).unwrap();
+            assert_eq!(a, msg);
+        }
+    }
+
+    #[test]
+    fn wahl_der_verschluesselung() {
+        use crate::proto::{CIPHER_AES256 as A, CIPHER_CHACHA as C};
+        let h = |c: &[&str], pick: bool| Hello { ciphers: c.iter().map(|s| s.to_string()).collect(), pick, ..Default::default() };
+        // alte App (bis 1.0.13): Server-Einstellung entscheidet
+        assert_eq!(choose_cipher(&h(&[A], false), false), "");
+        assert_eq!(choose_cipher(&h(&[A], false), true), A);
+        assert_eq!(choose_cipher(&h(&[], false), true), "");
+        // neue App: ihre Wahl gilt, egal wie der Server steht
+        assert_eq!(choose_cipher(&h(&[A], true), false), A);
+        assert_eq!(choose_cipher(&h(&[C], true), true), "");
+        assert_eq!(choose_cipher(&h(&[C, A], true), true), "");
+        assert_eq!(choose_cipher(&h(&["neu-unbekannt", A], true), false), A);
+        // Einstellung der App
+        assert_eq!(cipher_wish("aes"), vec![A.to_string()]);
+        assert_eq!(cipher_wish("ChaCha20"), vec![C.to_string()]);
+        let auto = cipher_wish("auto");
+        assert_eq!(auto.len(), 2);
+        assert_eq!(auto[0] == A, aes_hw());
+        // Antwort "chacha20" vom Server wird verstanden
+        let (spriv, spub) = generate_keypair();
+        let (cpriv, _) = generate_keypair();
+        let (chs, m1) = client_init(&cpriv, &spub, &h(&[C], true)).unwrap();
+        let (shs, _, _) = server_read(&spriv, &m1).unwrap();
+        let mut w = welcome();
+        w.cipher = C.into();
+        let (m2, mut ss, _) = server_reply(shs, &w).unwrap();
+        let (_, _, mut co) = client_finish(chs, &m2).unwrap();
+        let mut b = b"ok".to_vec();
+        ss.seal(&mut b).unwrap();
+        co.open(&mut b).unwrap();
     }
 }

@@ -41,7 +41,7 @@ const EXIT_UPDATE: u32 = 3;
 fn env_dir(var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(fallback)).join("KroneVPN")
 }
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     env_dir("ProgramData", r"C:\ProgramData")
 }
 fn prog_dir() -> PathBuf {
@@ -56,12 +56,187 @@ fn proxy_file() -> PathBuf {
 fn status_file() -> PathBuf {
     data_dir().join("status.json")
 }
-fn log_file() -> PathBuf {
+pub fn log_file() -> PathBuf {
     data_dir().join("protokoll.txt")
 }
 
 fn sc(args: &[&str]) -> bool {
     Command::new("sc").args(args).creation_flags(CREATE_NO_WINDOW).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+// ------------------------------------------------------------------------------------------------ nur einmal Admin
+//
+// Das Fenster laeuft OHNE Administratorrechte. Nur das Einrichten (erster Start, neuer Code, neue Programmversion)
+// braucht sie einmal: dann startet kurz "KroneVPN.exe --einrichten" mit Admin-Abfrage. Dabei bekommt der Dienst eine
+// Berechtigung, damit angemeldete Benutzer ihn starten und stoppen duerfen, und ein paar Dateien in ProgramData
+// werden fuer Benutzer beschreibbar (an/aus, Verschluesselung, Absturz-Protokolle). Verbinden und Trennen gehen
+// danach ohne Abfrage. Klappt etwas davon nicht, wird wie frueher mit Admin-Abfrage eingerichtet.
+
+/// Dienst-Berechtigungen: SYSTEM/Administratoren alles, angemeldete (interaktive) Benutzer starten/stoppen/abfragen
+const DIENST_SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPDTLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
+
+/// "an"/"aus": soll das VPN laufen? (in der App getrennt = "aus": der Dienst beendet sich dann beim Windows-Start)
+fn wanted_file() -> PathBuf {
+    data_dir().join("gewollt.txt")
+}
+
+/// Kennung des eingerichteten Codes (ohne Geheimnis) – das Fenster erkennt daran, ob neu eingerichtet werden muss
+fn fp_file() -> PathBuf {
+    data_dir().join("verbindung.id")
+}
+
+fn fingerprint(cfg: &ClientConfig) -> String {
+    let cpub = cfg.client_key().map(|k| kvpn::code::key_to_b64(&kvpn::crypto::public_from_private(&k))).unwrap_or_default();
+    format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", cfg.url, cfg.server_pub, cpub, cfg.name, cfg.ip4, cfg.ip6, cfg.dns.join(","), cfg.mtu, cfg.title, cfg.proxy)
+}
+
+/// Datei/Ordner fuer Benutzer beschreibbar machen (Benutzer = S-1-5-32-545)
+fn allow_users(p: &Path, dir: bool) {
+    let r = if dir { "*S-1-5-32-545:(OI)(CI)M" } else { "*S-1-5-32-545:M" };
+    let _ = Command::new("icacls").arg(p).args(["/grant", r]).creation_flags(CREATE_NO_WINDOW).output();
+}
+
+/// Benutzer duerfen den Dienst starten/stoppen; Dateien fuer an/aus, Verschluesselung, Abstuerze sind beschreibbar.
+/// Laeuft beim Einrichten und bei jedem Dienst-Start (SYSTEM) – so braucht auch ein per Auto-Update aktualisierter
+/// Dienst keine neue Admin-Abfrage.
+fn benutzer_rechte(cfg: &ClientConfig) {
+    sc(&["sdset", NAME, DIENST_SDDL]);
+    let _ = std::fs::write(fp_file(), fingerprint(cfg));
+    let vf = data_dir().join("verschluesselung.txt");
+    if !vf.exists() {
+        let _ = std::fs::write(&vf, "auto");
+    }
+    for f in [wanted_file(), vf, copies_file()] {
+        if !f.exists() {
+            let _ = std::fs::write(&f, if f == wanted_file() { "an" } else { "" });
+        }
+        allow_users(&f, false);
+    }
+    let ad = data_dir().join("absturz");
+    let _ = std::fs::create_dir_all(&ad);
+    allow_users(&ad, true);
+}
+
+/// laeuft dieses Programm mit Administratorrechten?
+pub fn is_admin() -> bool {
+    ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE).is_ok()
+}
+
+/// dieses Programm mit Admin-Abfrage (UAC) starten. `warten`: auf Ende warten und den Rueckgabewert liefern
+fn run_elevated(args: &[String], warten: bool) -> Result<i32, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let q = |s: &str| s.replace('\'', "''");
+    // jedes Argument in "…" (fuer Pfade mit Leerzeichen)
+    let liste = args.iter().map(|a| format!("\"{}\"", a.replace('"', "\\\""))).collect::<Vec<_>>().join(" ");
+    let ps = if warten {
+        format!("try {{ $p = Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs -Wait -PassThru; exit $p.ExitCode }} catch {{ exit 1223 }}", q(&exe.display().to_string()), q(&liste))
+    } else {
+        format!("try {{ Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs; exit 0 }} catch {{ exit 1223 }}", q(&exe.display().to_string()), q(&liste))
+    };
+    // als -EncodedCommand (Base64 von UTF-16LE): keine Probleme mit Anfuehrungszeichen in Pfaden
+    let o = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &ps_encoded(&ps)])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("powershell: {e}"))?;
+    Ok(o.status.code().unwrap_or(1))
+}
+
+/// PowerShell -EncodedCommand: Skript als UTF-16LE, Base64
+fn ps_encoded(script: &str) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let b: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let mut o = String::with_capacity(b.len() * 4 / 3 + 4);
+    for c in b.chunks(3) {
+        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            o.push(if i <= c.len() { T[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+        }
+    }
+    o
+}
+
+/// Text-Modi (alte Ansicht, --vordergrund, --trennen …) brauchen Admin: einmal mit Abfrage neu starten
+pub fn ensure_admin() {
+    if is_admin() {
+        return;
+    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match run_elevated(&args, false) {
+        Ok(0) => std::process::exit(0),
+        _ => {
+            crate::konsole(false);
+            println!("KroneVPN braucht dafür Administratorrechte – die Abfrage wurde abgebrochen.");
+            crate::pause_and_exit(1)
+        }
+    }
+}
+
+/// Fenster ohne Admin: neu einrichten ueber "KroneVPN.exe --einrichten" mit Admin-Abfrage
+fn einrichten_als_admin(a: &Args) -> Result<(), String> {
+    let ergebnis = std::env::temp_dir().join(format!("kronevpn-einrichten-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&ergebnis);
+    let mut args: Vec<String> = vec!["--einrichten".into(), "--config".into(), crate::config_file(a).display().to_string(), "--ergebnis".into(), ergebnis.display().to_string()];
+    if let Some(p) = &a.proxy {
+        args.extend(["--proxy".into(), p.clone()]);
+    }
+    if let Some(r) = &a.routes {
+        args.extend(["--routes".into(), r.join(",")]);
+    }
+    if a.no_update {
+        args.push("--kein-update".into());
+    }
+    let rc = run_elevated(&args, true)?;
+    let text = std::fs::read_to_string(&ergebnis).unwrap_or_default();
+    let _ = std::fs::remove_file(&ergebnis);
+    match rc {
+        0 => Ok(()),
+        1223 => Err("Abgebrochen – zum Einrichten des VPN-Dienstes braucht Windows einmal die Administrator-Erlaubnis (Abfrage mit „Ja“ bestätigen).".into()),
+        _ if !text.trim().is_empty() => Err(text.trim().to_string()),
+        n => Err(format!("Einrichten fehlgeschlagen (Rückgabewert {n})")),
+    }
+}
+
+/// --einrichten (mit Admin-Rechten, vom Fenster gestartet): Dienst einrichten, Ergebnis in --ergebnis schreiben
+pub fn setup_cli(a: &Args) -> ! {
+    let r = crate::known_code(a)
+        .ok_or_else(|| "Kein Verbindungscode gespeichert".to_string())
+        .and_then(|c| ClientConfig::from_code(&c).map_err(|e| e.to_string()))
+        .and_then(|cfg| install(&cfg, a));
+    if let Some(f) = &a.result_file {
+        let _ = std::fs::write(f, match &r {
+            Ok(()) => "ok".to_string(),
+            Err(e) => e.clone(),
+        });
+    }
+    std::process::exit(if r.is_ok() { 0 } else { 2 })
+}
+
+/// Verbinden ohne Admin: geht, wenn Dienst, Code, Programmversion und Systemproxy schon so eingerichtet sind
+fn verbinden_ohne_admin(cfg: &ClientConfig) -> bool {
+    let Some(svc) = open_service(ServiceAccess::QUERY_STATUS | ServiceAccess::START) else { return false };
+    if std::fs::read_to_string(fp_file()).ok().as_deref() != Some(fingerprint(cfg).as_str()) {
+        return false;
+    }
+    match installed_version(&prog_dir().join("KroneVPN.exe")) {
+        Some(v) if !kvpn::update::newer(kvpn::VERSION, &v) => {}
+        _ => return false,
+    }
+    let sp = super::system_proxy().unwrap_or_default();
+    if std::fs::read_to_string(proxy_file()).unwrap_or_default().trim() != sp {
+        return false;
+    }
+    if std::fs::write(wanted_file(), "an").is_err() {
+        return false;
+    }
+    if svc.query_status().map(|s| s.current_state == ServiceState::Running).unwrap_or(false) {
+        return true;
+    }
+    if svc.start::<&str>(&[]).is_err() {
+        return false;
+    }
+    wait_state(&svc, ServiceState::Running, 15);
+    true
 }
 
 /// Datei nur fuer SYSTEM und Administratoren (SIDs, damit es auf jeder Sprache geht)
@@ -124,6 +299,10 @@ async fn stopped(mut rx: tokio::sync::watch::Receiver<bool>) {
 fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
     let a = crate::parse_args();
     say(&format!("Dienst startet (Version {})", kvpn::VERSION));
+    if std::fs::read_to_string(wanted_file()).map(|s| s.trim() == "aus").unwrap_or(false) {
+        say("VPN wurde in der App ausgeschaltet – Dienst bleibt aus (wieder an: KroneVPN öffnen und verbinden)");
+        return ServiceExitCode::NO_ERROR;
+    }
     let path = a.config.clone().unwrap_or_else(code_file);
     let cfg = match std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|c| ClientConfig::from_code(&c)) {
         Ok(c) => c,
@@ -132,6 +311,7 @@ fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
             return ServiceExitCode::ServiceSpecific(1);
         }
     };
+    benutzer_rechte(&cfg);
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     let Ok(rt) = tokio::runtime::Builder::new_multi_thread().worker_threads(cores.clamp(2, 8)).enable_all().build() else {
         return ServiceExitCode::ServiceSpecific(2);
@@ -307,6 +487,9 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
 
     shortcut(cfg.display_name(), &dst);
 
+    let _ = std::fs::write(wanted_file(), "an");
+    benutzer_rechte(cfg);
+
     let running = svc.query_status().map(|s| s.current_state == ServiceState::Running).unwrap_or(false);
     if running && (code_changed || proxy_changed || copied) {
         stop_and_wait(&svc);
@@ -319,6 +502,20 @@ fn install(cfg: &ClientConfig, a: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// laufenden Dienst neu starten (z. B. nach Wechsel der Verschluesselung); laeuft er nicht, passiert nichts
+fn restart_service() -> Result<(), String> {
+    let mgr = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).map_err(|e| format!("Dienstverwaltung: {e}"))?;
+    let svc = mgr.open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::STOP).map_err(|e| format!("Dienst: {e}"))?;
+    if svc.query_status().map(|s| s.current_state == ServiceState::Stopped).unwrap_or(true) {
+        return Ok(());
+    }
+    stop_and_wait(&svc);
+    let _ = std::fs::remove_file(status_file());
+    svc.start::<&str>(&[]).map_err(|e| format!("Dienst starten: {e}"))?;
+    wait_state(&svc, ServiceState::Running, 15);
+    Ok(())
+}
+
 // ------------------------------------------------------------------------------------------------ Fenster
 
 /// Dienst einrichten/starten und danach nur noch anzeigen. Das Fenster darf jederzeit zu.
@@ -326,7 +523,7 @@ fn menu() {
     println!("Befehle (Buchstabe eintippen, dann Enter):");
     println!("  f  neue Ansicht (Programmfenster)");
     println!("  p  Profil wechseln");
-    println!("  c  Verbindungscode + QR-Code anzeigen");
+    println!("  v  Verschluesselung wechseln (Auto / AES-256 / ChaCha20)");
     println!("  t  VPN ausschalten");
     println!("  h  diese Hilfe\n");
 }
@@ -421,10 +618,22 @@ pub fn background(cfg: &ClientConfig, a: &Args) -> ! {
                     choose_profile(cfg, a, &rx);
                     last_state.clear();
                 }
-                "c" => {
-                    let code = cfg.to_code();
-                    println!("\r{:90}\n{}", "", crate::qr(&code));
-                    println!("Verbindungscode fuer '{}' (geheim halten):\n{code}\n", cfg.name);
+                "v" => {
+                    // Auto -> AES-256 -> ChaCha20 -> Auto
+                    let neu = match crate::cipher_choice(a).as_str() {
+                        "auto" => "aes",
+                        "aes" => "chacha",
+                        _ => "auto",
+                    };
+                    match crate::set_cipher_choice(a, neu) {
+                        Ok(()) => {
+                            println!("\r{:90}\nVerschluesselung: {} – verbinde neu ...", "", crate::cipher_text(neu));
+                            if let Err(e) = restart_service() {
+                                println!("Neu verbinden fehlgeschlagen: {e}");
+                            }
+                        }
+                        Err(e) => println!("\rVerschluesselung konnte nicht gespeichert werden: {e}"),
+                    }
                 }
                 "h" | "?" | "hilfe" => {
                     println!("\r{:90}", "");
@@ -770,6 +979,9 @@ impl crate::gui::Steuerung for Fenster {
     }
 
     fn gewollt(&self) -> bool {
+        if std::fs::read_to_string(wanted_file()).map(|s| s.trim() == "aus").unwrap_or(false) {
+            return false;
+        }
         match open_service(ServiceAccess::QUERY_CONFIG) {
             None => true,
             Some(s) => s.query_config().map(|c| c.start_type == ServiceStartType::AutoStart).unwrap_or(true),
@@ -777,16 +989,45 @@ impl crate::gui::Steuerung for Fenster {
     }
 
     fn verbinden(&self, cfg: &ClientConfig) -> Result<(), String> {
-        install(cfg, &self.a)
+        if is_admin() {
+            return install(cfg, &self.a);
+        }
+        // schon eingerichtet: nur starten (keine Admin-Abfrage), sonst einmal mit Abfrage einrichten
+        if verbinden_ohne_admin(cfg) {
+            return Ok(());
+        }
+        einrichten_als_admin(&self.a)
     }
 
     fn trennen(&self) -> Result<(), String> {
-        disconnect();
-        Ok(())
+        if disconnect() || is_admin() {
+            return Ok(());
+        }
+        // aelter eingerichteter Dienst (ohne Benutzer-Berechtigung): einmal mit Admin-Abfrage trennen
+        match run_elevated(&["--trennen".into(), "--still".into()], true)? {
+            0 => Ok(()),
+            1223 => Err("Abgebrochen – zum Trennen braucht Windows diesmal die Administrator-Erlaubnis (danach nicht mehr).".into()),
+            n => Err(format!("Trennen fehlgeschlagen (Rückgabewert {n})")),
+        }
     }
 
     fn code_speichern(&self, cfg: &ClientConfig) {
         crate::save_code(&self.a, cfg);
+    }
+
+    fn neue_version_starten(&self) -> bool {
+        let Some(neu) = newer_installed() else { return false };
+        say(&format!("Neue Version installiert – Fenster startet neu: {}", neu.display()));
+        crate::restart_exe(&neu, false).is_ok()
+    }
+
+    fn verschluesselung(&self) -> String {
+        crate::cipher_choice(&self.a)
+    }
+
+    fn verschluesselung_setzen(&self, wahl: &str) -> Result<(), String> {
+        crate::set_cipher_choice(&self.a, wahl)?;
+        restart_service()
     }
 
     fn profile(&self) -> Vec<ClientConfig> {
@@ -813,19 +1054,21 @@ impl crate::gui::Steuerung for Fenster {
     }
 }
 
-fn disconnect() {
-    if let Ok(mgr) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) {
-        if let Ok(s) = mgr.open_service(NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP) {
-            stop_and_wait(&s);
-        }
-    }
-    // nicht mehr mit Windows starten, bis das Programm wieder geoeffnet wird
-    sc(&["config", NAME, "start=", "demand"]);
+/// VPN aus: Dienst stoppen und "aus" merken (startet dann auch mit Windows nicht, bis wieder verbunden wird).
+/// Geht ohne Admin, wenn der Dienst schon mit 1.1.0 eingerichtet wurde. false = keine Berechtigung.
+fn disconnect() -> bool {
+    let merk = std::fs::write(wanted_file(), "aus").is_ok();
+    let Some(s) = open_service(ServiceAccess::QUERY_STATUS | ServiceAccess::STOP) else { return merk && open_service(ServiceAccess::QUERY_STATUS).is_none() };
+    stop_and_wait(&s);
+    merk
 }
 
 /// --trennen / --entfernen
 pub fn control(a: &Args) -> ! {
     disconnect();
+    if a.quiet {
+        std::process::exit(0);
+    }
     if a.uninstall {
         let ok = sc(&["delete", NAME]);
         if let Ok(l) = std::fs::read_to_string(data_dir().join("verknuepfung.txt")) {

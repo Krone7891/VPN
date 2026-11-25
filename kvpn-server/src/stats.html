@@ -21,11 +21,20 @@ h1{font-size:28px;margin:12px 0 0;letter-spacing:-.02em}
 h2{font-size:17px;margin:26px 0 10px}
 .sub{color:var(--mute);font-size:14px;margin-top:4px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow);min-width:0}
-.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));margin-top:18px}
+.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fill,minmax(min(160px,100%),1fr));margin-top:18px}
 .kpi .l{color:var(--mute);font-size:13px}
 .kpi .v{font-size:26px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2;white-space:nowrap}
 .kpi .s{color:var(--mute);font-size:12.5px}
-.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(min(320px,100%),1fr))}
+/* Handy: Kennzahlen zu zweit nebeneinander, etwas kleiner; kleinere Ränder */
+@media (max-width:480px){
+  .kpis{grid-template-columns:1fr 1fr;gap:10px}
+  .kpis .card{padding:12px}
+  .kpi .v{font-size:21px}
+  .kpi .s{font-size:12px}
+  h1{font-size:24px}
+  .card{padding:14px;border-radius:14px}
+}
 .top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
 .ttl{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis}
 .mute{color:var(--mute);font-size:13px}
@@ -36,7 +45,7 @@ h2{font-size:17px;margin:26px 0 10px}
 .kv b{display:block;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kv span{white-space:nowrap;font-size:12px;color:var(--mute)}
 .badge{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;padding:2px 9px;border-radius:99px;background:var(--soft);color:var(--mute);margin:2px 4px 2px 0}
-.geo{font-size:13.5px;margin:4px 0 2px;min-height:0}.geo:empty{display:none}.geo a{color:var(--acc)}
+.geo{font-size:13.5px;margin:4px 0 2px;min-height:0}.geo:empty{display:none}.geo a{color:var(--acc)}.geo .pos{margin-bottom:2px}
 .vtag{font-size:12.5px;font-weight:600;padding:2px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--mute);margin-left:10px;vertical-align:4px;white-space:nowrap}
 .badge.warn{color:var(--warn)}.badge.ok{color:var(--ok)}
 .chart{position:relative}
@@ -55,6 +64,22 @@ table{border-collapse:collapse;width:100%;font-size:13.5px;font-variant-numeric:
 th,td{text-align:right;padding:6px 8px;border-top:1px solid var(--line);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 th{color:var(--mute);font-weight:600;border-top:0}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch}
+[data-m]{display:none}
+/* Handy: Tabellen der Verwaltung als Karten (jede Zeile ein Block, Knopf rechts) */
+@media (max-width:640px){
+  table.resp,table.resp tbody{display:block;width:100%}
+  table.resp thead{display:none}
+  table.resp tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 12px;padding:10px 0;border-top:1px solid var(--line);align-items:center}
+  table.resp tr:first-child{border-top:0}
+  table.resp td{display:block;border:0;padding:0;text-align:left;white-space:normal;min-width:0;overflow-wrap:anywhere}
+  table.resp td[data-l]{font-size:12.5px;color:var(--mute);grid-column:1}
+  table.resp td[data-l]::before{content:attr(data-l) ': '}
+  table.resp td.act{grid-column:2;grid-row:1 / span 4;text-align:right}
+  table.resp td.act .btn2{margin-top:0}
+  table.resp [data-m]{display:inline-block}
+  table.resp td.stc{display:none}
+}
 details summary{cursor:pointer;color:var(--mute);font-size:13.5px;margin-top:8px}
 .login{max-width:380px;margin:30px auto 0;display:flex;flex-direction:column;gap:10px}
 input{font:inherit;padding:9px 12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink);width:100%}
@@ -75,9 +100,21 @@ input.sw:checked{background:var(--acc)}input.sw:checked::after{left:21px}input.s
 @media (max-width:620px){.set{flex-wrap:wrap}.set input[type=text]{width:100%}.set .pw,.set .pw input{width:100%}}
 .upl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.upl img{width:56px;height:56px;border-radius:12px;object-fit:cover;background:var(--soft)}
 .upl label,.upl button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer}
+.pbtns{display:flex;flex-wrap:wrap;gap:0 8px}
 .btn2{font:inherit;font-size:13px;padding:5px 11px;border-radius:9px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer;margin-top:8px}
 dialog.code{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--ink);padding:18px;max-width:min(420px,calc(100vw - 32px))}
 dialog.code::backdrop{background:rgba(0,0,0,.45)}
+dialog.map{max-width:min(980px,calc(100vw - 24px));width:min(980px,calc(100vw - 24px));padding:14px}
+dialog.map .mh{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+dialog.map .mh h3{margin:0;flex:1 1 auto;min-width:8em}
+dialog.map .rng{display:flex;flex-wrap:wrap;gap:4px}
+dialog.map a.btn2{text-decoration:none;margin-top:0}
+dialog.map .rng button{padding:5px 10px;font-size:13px}
+dialog.map .rng button[aria-pressed="true"]{background:var(--acc);color:#fff;border-color:var(--acc)}
+#map{height:min(68vh,620px);border-radius:12px;border:1px solid var(--line);background:var(--soft)}
+dialog.map .mi{font-size:13px;margin-top:8px;display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center}
+dialog.map .lg i{display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 4px 0 0;vertical-align:-1px}
+.leaflet-popup-content{font:13px/1.4 system-ui,sans-serif}
 dialog.code .qr{background:#fff;border-radius:10px;padding:6px;display:flex;justify-content:center}
 dialog.code .qr svg{width:100%;max-width:300px;height:auto}
 dialog.code textarea{width:100%;box-sizing:border-box;font:12px ui-monospace,monospace;margin-top:10px;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px;resize:vertical}
@@ -97,7 +134,8 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const BASE=location.pathname.replace(/\/+$/,'')+'/';
 // Navigation: eingebunden in eine bestehende Werkzeuge-Seite oder eigenstaendig (Link zu den Apps)
 (()=>{const n=document.getElementById('nav');const w=location.pathname.startsWith('/werkzeuge/');
-  n.innerHTML=w?'<a href="/">🏠 Home</a><a href="/werkzeuge/">🧰 Werkzeuge</a>':'<a href="/download/" id="navapps" hidden>📦 Apps</a>'})();
+  const adm='<a id="navadm" hidden title="Nur erreichbar, wenn dieses Gerät mit dem VPN verbunden ist">🔐 Admin-Seite</a>';
+  n.innerHTML=w?'<a href="/">🏠 Home</a><a href="/werkzeuge/">🧰 Werkzeuge</a>'+adm:'<a href="/download/" id="navapps" hidden>📦 Apps</a>'+adm})();
 let RANGE='sec', LAST=null, T=null;
 try{RANGE=localStorage.getItem('kvpn-range')||'sec'}catch(e){}
 
@@ -133,15 +171,17 @@ function build(){
    '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte sperren</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
    '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
-   '<details><summary>Tabelle anzeigen</summary><div id="dtable"></div></details></div>'+
+   '<details><summary>Tabelle anzeigen</summary><div class="tw" id="dtable"></div></details></div>'+
    '<div id="setbox" hidden><h2>Einstellungen</h2><form class="card" id="setf" autocomplete="off">'+
    '<div class="set"><div class="t"><b>Name des VPN</b><span>erscheint in den Apps, auf den Webseiten und in neuen Codes</span></div><input type="text" id="s_name" maxlength="40"></div>'+
    '<div class="set"><div class="t"><b>Höchstzahl Geräte</b><span id="s_maxi"></span></div><input type="number" id="s_max" min="1"></div>'+
    '<div class="set"><div class="t"><b>Benutzerverwaltung</b><span>Benutzer, sperren, Ablaufdatum und Verlauf (SQLite)</span></div><input type="checkbox" class="sw" id="s_users"></div>'+
-   '<div class="set"><div class="t"><b>AES-256-GCM</b><span>statt ChaCha20 für die Daten · gilt für neue Verbindungen, ältere Apps bleiben bei ChaCha20</span></div><input type="checkbox" class="sw" id="s_aes"></div>'+
+   '<div class="set"><div class="t"><b>AES-256-GCM für ältere Apps</b><span>Apps ab 1.1.0 wählen selbst (Auto nach Prozessor oder fest in der App) · das hier gilt nur für Apps bis 1.0.13</span></div><input type="checkbox" class="sw" id="s_aes"></div>'+
    '<div class="set"><div class="t"><b>Leistungsmodus <span class="tag">Neustart</span></b><span>alle CPU-Kerne, mehr Durchsatz, mehr Last</span></div><input type="checkbox" class="sw" id="s_perf"></div>'+
    '<div class="set"><div class="t"><b>Admin-Seite im VPN <span class="tag">Neustart</span></b><span id="s_admi"></span></div><input type="checkbox" class="sw" id="s_admin"></div>'+
-   '<div class="set"><div class="t"><b>Standort der Geräte</b><span>ungefähr aus der IP-Adresse (Stadt, Land, Anbieter) – nur hier auf der Admin-Seite. Dafür fragt der Server ipwho.is.</span></div><input type="checkbox" class="sw" id="s_geo"></div>'+
+   '<div class="set"><div class="t"><b>Standort der Geräte</b><span>aus GPS des Handys, WLAN-Netzen und IP-Adresse – nur hier auf der Admin-Seite. Für die IP fragt der Server ipwho.is.</span></div><input type="checkbox" class="sw" id="s_geo"></div>'+
+   '<div class="set"><div class="t"><b>Ortung über WLAN</b><span id="s_wli">Google Geolocation API (Schlüssel aus der Google Cloud Console) und/oder WiGLE (wigle.net → Account → API-Name:Token). Leer lassen = bleibt, „aus“ = entfernen.</span></div><div class="pw">'+
+   '<input type="password" id="s_gk" placeholder="Google-Schlüssel" autocomplete="off"><input type="password" id="s_wk" placeholder="WiGLE Name:Token" autocomplete="off"></div></div>'+
    '<div class="set"><div class="t"><b>Admin-Passwort ändern</b><span id="s_pwi">mindestens 8 Zeichen · leer lassen = bleibt</span></div><div class="pw">'+
    '<input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
    '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
@@ -177,7 +217,8 @@ function render(d){
     $('#updok').hidden=!d.local}}
   const vt=$('#vtag'),av=(d.update&&d.update.apps)||s.version;vt.hidden=false;
   setT(vt,'v'+s.version+(av!==s.version?' · Apps v'+av:''));vt.title='Server-Version '+s.version+' · App-Version für die Geräte: '+av+(d.update&&d.update.pending?' · auf GitHub schon '+d.update.pending:'');
-  APPV=av;
+  APPV=av;APPVS=(d.update&&d.update.app_versions)||{};
+  const nad=$('#navadm');if(nad){const u=!d.local&&s.admin_url;nad.hidden=!u;if(u&&nad.getAttribute('href')!==u)nad.href=u}
   const na=$('#navapps');if(na)na.hidden=!s.downloads;
   if(s.name){setT($('#h1'),(s.logo?'':'🛡️ ')+s.name+' – Statistik');if(document.title!==s.name+' – Statistik')document.title=s.name+' – Statistik'}
   const down=d.peers.reduce((a,p)=>a+p.rate_tx,0), up=d.peers.reduce((a,p)=>a+p.rate_rx,0);
@@ -192,11 +233,11 @@ function render(d){
   daysTable($('#dtable'),d);
   setT($('#foot'),(s.name||'KroneVPN')+' '+s.version+' · läuft seit '+dur(now-s.started)+' · Tunnel '+s.net4+(s.net6?' / '+s.net6:'')+' · MTU '+s.mtu+' · Last '+s.load+
    (s.tun_drops?' · '+s.tun_drops+' Pakete verworfen (Gerät zu langsam)':'')+' · '+s.url+
-   (d.settings?' · Verschlüsselung '+(d.settings.aes256?'AES-256-GCM':'ChaCha20')+' · Benutzerverwaltung '+(d.settings.users?'an':'aus'):''));
+   (d.settings?' · Verschlüsselung je Gerät (AES-256-GCM oder ChaCha20) + Tarn-Schicht · Benutzerverwaltung '+(d.settings.users?'an':'aus'):''));
 }
 
 /* Geraete-Karten: je Geraet einmal angelegt, danach nur Werte aendern */
-let LOCAL=false, APPV='';
+let LOCAL=false, APPV='', APPVS={};
 /* gespeicherten Verbindungscode eines Geraets zeigen (nur lokale Seite) */
 async function showCode(name){
   let dlg=$('#codedlg');
@@ -210,12 +251,80 @@ async function showCode(name){
       '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><button class="btn2" data-a="copy">Kopieren</button><button class="btn" data-a="close">Schließen</button></div>';
   }else{
     dlg.innerHTML='<h3 style="margin:0 0 10px">'+esc(name)+'</h3><p class="mute">Für dieses Gerät ist kein Code auf dem Server gespeichert (vor Version 1.0.1 angelegt). '+
-      'Den Code gibt es noch auf dem Gerät: Android-App „Code anzeigen“, Windows <code>KroneVPN.exe --code</code>. Dann auf dem Server merken: <code>kvpn-server import \'&lt;code&gt;\'</code></p>'+
+      'Die Apps zeigen ihn ab 1.1.0 nicht mehr an. Bei Bedarf neu anlegen: <code>kvpn-server remove &lt;name&gt;</code> und <code>kvpn-server add &lt;name&gt;</code></p>'+
       '<div style="display:flex;justify-content:flex-end"><button class="btn" data-a="close">Schließen</button></div>';
   }
   dlg.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{if(b.dataset.a==='close')dlg.close();else{const t=dlg.querySelector('textarea');t.select();
     (navigator.clipboard?navigator.clipboard.writeText(t.value):Promise.reject()).then(()=>{b.textContent='Kopiert ✓'},()=>{document.execCommand('copy');b.textContent='Kopiert ✓'})}});
   dlg.showModal();
+}
+// Geraet still anpingen (der VPN-Kern antwortet selbst – auf dem Geraet erscheint nichts) bzw. jetzt orten
+async function devPost(what,name){const r=await fetch(BASE+what+'/'+encodeURIComponent(name),{method:'POST'});return r.json()}
+function btnMsg(b,t,ms){const alt=b.dataset.t||b.textContent;b.dataset.t=alt;b.textContent=t;clearTimeout(b._t);b._t=setTimeout(()=>{b.textContent=alt;b.disabled=false},ms||6000)}
+async function pingDev(name,b){
+  b.disabled=true;b.textContent='📶 …';
+  try{const r=await devPost('ping',name);btnMsg(b,r.ok?'📶 Antwort in '+String(r.ms).replace('.',',')+' ms':'📶 '+(r.err||'Fehler'),r.ok?6000:9000)}
+  catch(e){btnMsg(b,'📶 Fehler: '+e.message)}
+}
+async function ortDev(name,b){
+  b.disabled=true;b.textContent='📍 …';
+  try{const r=await devPost('orten',name);
+    if(!r.ok){btnMsg(b,'📍 '+(r.err||'Fehler'));return}
+    btnMsg(b,'📍 angefordert – Standort kommt gleich',15000);
+    // die naechsten Sekunden oefter nachladen; offene Karte zeigt den neuen Punkt dann auch
+    for(const t of [3000,7000,12000,20000])setTimeout(()=>{clearTimeout(T);load();const d=$('#mapdlg');if(d&&d.open&&d.dataset.name===name)showMap(name,+(d.querySelector('[aria-pressed="true"]')||{dataset:{t:7}}).dataset.t)},t);
+  }catch(e){btnMsg(b,'📍 Fehler: '+e.message)}
+}
+// Bewegungs-Karte: Standort-Verlauf eines Geraets (GPS des Handys, WLAN-Ortung, IP) – Leaflet kommt vom Server selbst
+let LF=null,MAP=null,MAPT=0;
+function loadLeaflet(){
+  if(window.L)return Promise.resolve();if(LF)return LF;
+  LF=new Promise((ok,err)=>{const c=document.createElement('link');c.rel='stylesheet';c.href=BASE+'leaflet.css';document.head.appendChild(c);
+    const sc=document.createElement('script');sc.src=BASE+'leaflet.js';sc.onload=ok;sc.onerror=()=>{LF=null;err(new Error('Karte konnte nicht geladen werden'))};document.head.appendChild(sc)});
+  return LF;
+}
+const SRCN={gps:'GPS des Handys',wlan:'WLAN-Ortung',ip:'IP-Adresse'},SRCC={gps:'#2fb36d',wlan:'#4d7cff',ip:'#8a93a3'};
+function zeit(t){return new Date(t*1000).toLocaleString('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
+async function showMap(name,tage){
+  tage=tage===undefined?7:tage;
+  let dlg=$('#mapdlg');
+  if(!dlg){dlg=document.createElement('dialog');dlg.id='mapdlg';dlg.className='code map';document.body.appendChild(dlg);
+    dlg.addEventListener('click',e=>{if(e.target===dlg)dlg.close()});dlg.addEventListener('close',()=>{clearInterval(MAPT);if(MAP){MAP.remove();MAP=null}})}
+  const q='geraet='+encodeURIComponent(name)+'&tage='+tage;
+  if(!dlg.open||dlg.dataset.name!==name){
+    dlg.dataset.name=name;
+    dlg.innerHTML='<div class="mh"><h3>🗺️ '+esc(name)+'</h3><div class="rng">'+[[1,'24 h'],[7,'7 Tage'],[30,'30 Tage'],[365,'1 Jahr'],[0,'Alles']].map(([d,t])=>'<button type="button" class="btn2" data-t="'+d+'">'+t+'</button>').join('')+'</div>'+
+      '<a class="btn2" data-f="gpx" download>GPX</a><button type="button" class="btn" data-a="close">Schließen</button></div><div id="map"></div><div class="mi"><span data-f="info" class="mute">Lädt …</span>'+
+      '<span class="lg mute"><i style="background:'+SRCC.gps+'"></i>GPS <i style="background:'+SRCC.wlan+';margin-left:8px"></i>WLAN <i style="background:'+SRCC.ip+';margin-left:8px"></i>IP</span></div>';
+    dlg.querySelector('[data-a="close"]').onclick=()=>dlg.close();
+    dlg.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>showMap(name,+b.dataset.t));
+    if(!dlg.open)dlg.showModal();
+  }
+  dlg.querySelectorAll('[data-t]').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.t===tage)));
+  dlg.querySelector('[data-f="gpx"]').href=BASE+'verlauf.gpx?'+q;
+  const info=dlg.querySelector('[data-f="info"]');
+  try{await loadLeaflet()}catch(e){setT(info,e.message);return}
+  let r;try{r=await (await fetch(BASE+'verlauf.json?'+q,{cache:'no-store'})).json()}catch(e){setT(info,'Fehler: '+e.message);return}
+  if(!r.ok){setT(info,r.err||'Fehler');return}
+  if(!MAP){MAP=L.map('map',{zoomControl:true,attributionControl:true});
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,referrerPolicy:'strict-origin-when-cross-origin',attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende'}).addTo(MAP);
+    MAP.setView([51.2,10.4],5);MAP._kv=L.layerGroup().addTo(MAP)}
+  const g=MAP._kv;g.clearLayers();
+  const pts=r.punkte||[],genau=pts.filter(p=>p.src!=='ip');
+  if(!pts.length){setT(info,'Noch keine Standorte in diesem Zeitraum. Sie kommen, sobald das Gerät verbunden ist (am Handy: „Standort teilen“ an).');return}
+  if(genau.length>1)L.polyline(genau.map(p=>[p.lat,p.lon]),{color:'#4d7cff',weight:3,opacity:.75}).addTo(g);
+  let km=0;for(let i=1;i<genau.length;i++){const a=genau[i-1],b=genau[i];km+=L.latLng(a.lat,a.lon).distanceTo([b.lat,b.lon])/1000}
+  pts.forEach((p,i)=>{const last=i===pts.length-1;
+    const m=L.circleMarker([p.lat,p.lon],{radius:last?8:(p.src==='ip'?5:4),color:last?'#fff':SRCC[p.src]||'#999',weight:last?3:1,fillColor:SRCC[p.src]||'#999',fillOpacity:p.src==='ip'?.45:.9}).addTo(g);
+    m.bindPopup('<b>'+esc(zeit(p.t))+'</b><br>'+esc(SRCN[p.src]||p.src)+' · '+esc(accTxt(p.acc||0))+(p.ssid?'<br>WLAN „'+esc(p.ssid)+'“':'')+(p.via?' über '+esc(p.via):'')+(p.city?'<br>'+esc(p.city):'')+(last?'<br><b>letzter bekannter Standort</b>':''));
+    if(last){L.circle([p.lat,p.lon],{radius:Math.min(p.acc||50,30000),color:SRCC[p.src]||'#999',weight:1,fillOpacity:.08}).addTo(g)}});
+  const fit=(genau.length?genau:pts).map(p=>[p.lat,p.lon]);
+  if(!dlg.dataset.fit||dlg.dataset.fit!==q){dlg.dataset.fit=q;if(fit.length===1)MAP.setView(fit[0],genau.length?16:10);else MAP.fitBounds(fit,{padding:[24,24],maxZoom:17})}
+  setTimeout(()=>MAP&&MAP.invalidateSize(),60);
+  const l=pts[pts.length-1];
+  setT(info,pts.length+' Punkte'+(km>0.05?' · Strecke ca. '+km.toFixed(km<10?1:0).replace('.',',')+' km':'')+' · zuletzt '+zeit(l.t)+' ('+(SRCN[l.src]||l.src)+')');
+  // offen lassen = alle 30 s nachladen (z. B. wenn ein Handy gestohlen wurde)
+  clearInterval(MAPT);MAPT=setInterval(()=>{if(dlg.open)showMap(name,tage)},30000);
 }
 // Benutzerverwaltung: sperren/entsperren direkt auf der Seite (nur lokal bzw. Admin im VPN)
 let MG_T=0,MG_KEY='';
@@ -231,13 +340,13 @@ function showMgmt(r){
   const key=JSON.stringify([r.users,r.devices]);if(key===MG_KEY)return;MG_KEY=key;
   const btn=(kind,name,off)=>'<button type="button" class="btn2" style="margin:0" data-k="'+kind+'" data-n="'+esc(name)+'" data-a="'+(off?'entsperren':'sperren')+'">'+(off?'Entsperren':'Sperren')+'</button>';
   const st=(t,bad)=>'<span class="badge'+(bad?' warn':' ok')+'">'+esc(t)+'</span>';
-  $('#mgmtu').innerHTML=r.users.length?'<table><thead><tr><th>Benutzer</th><th>Geräte</th><th>Status</th><th></th></tr></thead><tbody>'+
-    r.users.map(u=>'<tr><td><b>'+esc(u.name)+'</b>'+(u.note?' <span class="mute">'+esc(u.note)+'</span>':'')+'</td><td>'+esc(u.devices.join(', ')||'–')+(u.max?' <span class="mute">(max. '+u.max+')</span>':'')+'</td><td>'+
-      st(u.disabled?'gesperrt':'aktiv',u.disabled)+'</td><td style="text-align:right">'+btn('user',u.name,u.disabled)+'</td></tr>').join('')+'</tbody></table>'
+  $('#mgmtu').innerHTML=r.users.length?'<table class="resp"><thead><tr><th>Benutzer</th><th>Geräte</th><th>Status</th><th></th></tr></thead><tbody>'+
+    r.users.map(u=>'<tr><td><b>'+esc(u.name)+'</b> '+st(u.disabled?'gesperrt':'aktiv',u.disabled).replace('<span','<span data-m')+(u.note?' <span class="mute">'+esc(u.note)+'</span>':'')+'</td><td data-l="Geräte">'+esc(u.devices.join(', ')||'–')+(u.max?' <span class="mute">(max. '+u.max+')</span>':'')+'</td><td class="stc">'+
+      st(u.disabled?'gesperrt':'aktiv',u.disabled)+'</td><td class="act" style="text-align:right">'+btn('user',u.name,u.disabled)+'</td></tr>').join('')+'</tbody></table>'
     :'<div class="mute">Noch keine Benutzer – anlegen auf dem Server: <code>kvpn-server benutzer add "Name"</code></div>';
-  $('#mgmtd').innerHTML='<table><thead><tr><th>Gerät</th><th>Benutzer</th><th>Adresse</th><th>Status</th><th></th></tr></thead><tbody>'+
-    r.devices.map(x=>'<tr><td><b>'+esc(x.name)+'</b>'+(x.online?' <span class="badge ok">online</span>':'')+'</td><td>'+esc(x.user||'–')+'</td><td>'+esc(x.ip4)+'</td><td>'+st(x.status,!x.active)+
-      '</td><td style="text-align:right">'+btn('device',x.name,x.disabled)+'</td></tr>').join('')+'</tbody></table>';
+  $('#mgmtd').innerHTML='<table class="resp"><thead><tr><th>Gerät</th><th>Benutzer</th><th>Adresse</th><th>Status</th><th></th></tr></thead><tbody>'+
+    r.devices.map(x=>'<tr><td><b>'+esc(x.name)+'</b>'+(x.online?' <span class="badge ok">online</span>':'')+' '+st(x.status,!x.active).replace('<span','<span data-m')+'</td><td data-l="Benutzer">'+esc(x.user||'–')+'</td><td data-l="Adresse">'+esc(x.ip4)+'</td><td class="stc">'+st(x.status,!x.active)+
+      '</td><td class="act" style="text-align:right">'+btn('device',x.name,x.disabled)+'</td></tr>').join('')+'</tbody></table>';
   box.querySelectorAll('button[data-k]').forEach(b=>b.onclick=async()=>{
     const off=b.dataset.a==='sperren',what=(b.dataset.k==='user'?'Benutzer':'Gerät')+' „'+b.dataset.n+'“';
     if(off&&!confirm(what+' sperren?'+(b.dataset.k==='user'?' Alle seine Geräte':' Es')+' werden sofort getrennt.'))return;
@@ -259,6 +368,7 @@ function showSettings(r){
   if(!SET_DIRTY){$('#s_name').value=r.vpn_name;$('#s_max').value=r.max_devices;$('#s_max').max=r.max_possible||250;
     $('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo}
   setT($('#s_maxi'),r.devices+' angelegt, möglich bis '+(r.max_possible||250));
+  $('#s_gk').placeholder=r.google_geo_key?'Google: eingetragen ✓':'Google-Schlüssel';$('#s_wk').placeholder=r.wigle_api?'WiGLE: eingetragen ✓':'WiGLE Name:Token';
   setT($('#s_admi'),r.admin_vpn?(r.admin_url?'erreichbar unter '+r.admin_url+' (mit Passwort)':'an'):'aus – dann nur noch lokal auf dem Server');
   setT($('#s_pwi'),(r.admin_password_set?'festgelegt':'noch keins – wird beim ersten Aufruf im VPN festgelegt')+' · mindestens 8 Zeichen, leer lassen = bleibt');
   $('#setrs').hidden=!r.restart_needed;$('#s_rs').hidden=!r.can_restart;
@@ -270,13 +380,14 @@ async function saveSettings(){
   const name=$('#s_name').value.trim(),max=+$('#s_max').value,pw=$('#s_pw').value,pw2=$('#s_pw2').value;
   if(name!==SET.vpn_name)b.vpn_name=name;if(max!==SET.max_devices)b.max_devices=max;
   [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin'],['geo','#s_geo']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
+  const gk=$('#s_gk').value.trim(),wk=$('#s_wk').value.trim();if(gk)b.google_geo_key=gk;if(wk)b.wigle_api=wk;
   if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}b.admin_password=pw}
   if(!Object.keys(b).length){setT(m,'Nichts geändert');SET_DIRTY=false;return}
   if(b.admin_vpn===false&&viaVpn()&&!confirm('Admin-Seite im VPN ausschalten? Nach dem Neustart ist diese Seite nur noch lokal auf dem Server erreichbar.'))return;
   if(b.users===false&&!confirm('Benutzerverwaltung ausschalten? Aktive Geräte bleiben, gesperrte und abgelaufene Geräte bleiben gesperrt (nur in der Datenbank).'))return;
   const btn=$('#s_ok');btn.disabled=true;setT(m,'Speichert …');
   try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();
-    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
+    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value=$('#s_gk').value=$('#s_wk').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
     else setT(m,r.err||'Fehler')}
   catch(e){setT(m,'Fehler: '+e.message)}
   btn.disabled=false;
@@ -299,19 +410,47 @@ async function approveUpdate(){
 /* App-Version des Geraets: gruen = aktuell, gelb = aelter als die verteilte Version (auch getrennt: zuletzt gemeldet) */
 function verBadge(p,i){
   if(!i.ver)return '';
-  const old=APPV&&newer(APPV,i.ver);
-  return '<span class="badge'+(old?' warn':' ok')+'" title="'+(old?'Update auf '+esc(APPV)+' ausstehend – kommt beim nächsten Verbinden':'aktuelle Version')+'">'+
+  const cur=(APPVS||{})[i.os]||'', old=cur&&newer(cur,i.ver);
+  if(!cur)return '<span class="badge">'+(p.online?'':'zuletzt ')+esc(osName(i.os))+' · v'+esc(i.ver)+'</span>';
+  return '<span class="badge'+(old?' warn':' ok')+'" title="'+(old?'Update auf '+esc(cur)+' ausstehend – kommt beim nächsten Verbinden':'aktuelle Version')+'">'+
     (p.online?'':'zuletzt ')+esc(osName(i.os))+' · v'+esc(i.ver)+(old?' · Update ausstehend':' ✓')+'</span>';
 }
 /* ungefaehrer Standort aus der IP-Adresse (nur lokale/Admin-Seite) */
 function flag(cc){return /^[A-Za-z]{2}$/.test(cc||'')?String.fromCodePoint(...[...cc.toUpperCase()].map(c=>0x1F1A5+c.charCodeAt(0))):'📍'}
+/* vom Handy selbst gemeldet ("Standort teilen" in der App): WLAN-Name und Standort laut Android */
+function devLine(p,now){
+  const v=p.dev;if(!v)return '';
+  const parts=[];
+  if(v.ssid)parts.push('📶 WLAN „'+esc(v.ssid)+'“'+(v.bssid?' <span class="mute">('+esc(v.bssid)+')</span>':''));
+  if(v.lat!==undefined&&v.lon!==undefined){
+    const age=v.t?' · '+(now-v.t<90?'gerade eben':ago(v.t,now)):'';
+    parts.push('📍 Standort vom Handy'+(v.acc!==undefined?' ±'+Math.round(v.acc)+' m':'')+'<span class="mute">'+esc(age)+'</span> · '+
+      '<a href="https://www.openstreetmap.org/?mlat='+v.lat+'&amp;mlon='+v.lon+'#map=17/'+v.lat+'/'+v.lon+'" target="_blank" rel="noopener noreferrer">Karte</a>');
+  }
+  const w=p.wlan;
+  if(w&&w.lat!==undefined){
+    parts.push('📡 WLAN-Ortung '+accTxt(w.acc)+' <span class="mute">über '+esc(w.via)+' · '+esc(ago(w.t,now))+'</span>'+
+      (w.bssid?' · <a href="https://wigle.net/search?netid='+encodeURIComponent(w.bssid)+'" target="_blank" rel="noopener noreferrer">WiGLE-Karte</a>':''));
+  }
+  if(!parts.length)return '';
+  return '<div title="Vom Gerät selbst gemeldet – dort unter „Standort teilen“ eingeschaltet (zuletzt empfangen '+esc(ago(v.got,now))+')">'+parts.join(' · ')+'</div>';
+}
+function accTxt(m){return m>=1000?'±'+(m/1000).toFixed(m>=10000?0:1).replace('.',',')+' km':'±'+Math.round(m)+' m'}
+function posLine(p,now){
+  const b=p.pos;if(!b)return '';
+  const age=b.t?(now-b.t<90?'gerade eben':ago(b.t,now)):'';
+  const z=b.acc>5000?11:b.acc>500?14:17;
+  const icon=b.src==='gps'?'🛰️':b.src==='wlan'?'📶':'🌐';
+  return '<div class="pos" title="Bester bekannter Standort aus allen Quellen (GPS des Handys, WLAN-Datenbanken, IP-Adresse)">'+icon+' <b>Standort '+accTxt(b.acc)+'</b> <span class="mute">· '+esc(b.label)+(age?' · '+esc(age):'')+'</span> · '+
+    '<a href="https://www.openstreetmap.org/?mlat='+b.lat+'&amp;mlon='+b.lon+'#map='+z+'/'+b.lat+'/'+b.lon+'" target="_blank" rel="noopener noreferrer">Karte</a></div>';
+}
 function geoLine(p){
   const g=p.geo;if(!g)return '';
   const pre=p.online?'':'zuletzt: ';
   if(g.local)return '<span class="mute">📍 '+pre+'lokales Netz (gleiches Netz wie der Server)</span>';
   const place=[g.city,g.region&&g.region!==g.city?g.region:'',g.country].filter(Boolean).join(', ');
   const map=(g.lat||g.lon)?' · <a href="https://www.openstreetmap.org/?mlat='+g.lat+'&amp;mlon='+g.lon+'#map=10/'+g.lat+'/'+g.lon+'" target="_blank" rel="noopener noreferrer">Karte</a>':'';
-  return '<span title="Ungefährer Ort aus der IP-Adresse '+esc((p.info||{}).remote||'')+' – kein GPS: im Mobilfunk oder Firmennetz ist es der Ort des Netzanschlusses">'+
+  return (p.dev&&p.dev.lat!==undefined?'<span class="mute">Internet-Anschluss: </span>':'')+'<span title="Ungefährer Ort aus der IP-Adresse '+esc((p.info||{}).remote||'')+' – kein GPS: im Mobilfunk oder Firmennetz ist es der Ort des Netzanschlusses">'+
     flag(g.cc)+' '+esc(pre+place)+(g.isp?' <span class="mute">· '+esc(g.isp)+'</span>':'')+'</span>'+map;
 }
 function peers(list,now){
@@ -328,8 +467,9 @@ function peers(list,now){
       '<div class="kv"><div><span>Download</span><b data-f="down"></b></div><div><span>Upload</span><b data-f="up"></b></div><div><span>Ping</span><b data-f="ping"></b></div>'+
       '<div><span>Heute</span><b data-f="today"></b></div><div><span>Monat</span><b data-f="month"></b></div><div><span>Gesamt</span><b data-f="total"></b></div></div>'+
       '<svg class="spark" viewBox="0 0 100 34" preserveAspectRatio="none" role="img" aria-label="Datenrate der letzten 2 Minuten"><polyline data-f="spark" fill="none" stroke="var(--s1)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>'+
-      '<div class="mute" data-f="foot"></div><button type="button" class="btn2" data-f="codebtn" hidden>Verbindungscode anzeigen</button>';
-      c.querySelector('[data-f="codebtn"]').onclick=()=>showCode(p.name);}
+      '<div class="mute" data-f="foot"></div><div class="pbtns"><button type="button" class="btn2" data-f="pingbtn" hidden>📶 Anpingen</button><button type="button" class="btn2" data-f="ortbtn" hidden>📍 Jetzt orten</button><button type="button" class="btn2" data-f="mapbtn" hidden>🗺️ Bewegungen</button><button type="button" class="btn2" data-f="codebtn" hidden>Verbindungscode anzeigen</button></div>';
+      c.querySelector('[data-f="codebtn"]').onclick=()=>showCode(p.name);c.querySelector('[data-f="mapbtn"]').onclick=()=>showMap(p.name);
+      c.querySelector('[data-f="pingbtn"]').onclick=e=>pingDev(p.name,e.currentTarget);c.querySelector('[data-f="ortbtn"]').onclick=e=>ortDev(p.name,e.currentTarget);}
     if(box.children[idx]!==c)box.insertBefore(c,box.children[idx]||null);   // Reihenfolge nur bei Bedarf korrigieren
     const f=k=>c.querySelector('[data-f="'+k+'"]'), i=p.info||{};
     const dot=f('dot'),cls='dot '+(p.online?'on':'off');if(dot.getAttribute('class')!==cls)dot.setAttribute('class',cls);
@@ -339,13 +479,16 @@ function peers(list,now){
     if(i.tls_issuer){tls=i.tls_trusted?'<span class="badge ok" title="Normales, öffentlich vertrauenswürdiges Zertifikat">✓ TLS direkt</span>'
       :'<span class="badge warn" title="Eine Firewall bricht HTTPS auf (z. B. Sophos). Die VPN-Daten bleiben trotzdem verschlüsselt – Noise prüft den Server.">⚠ HTTPS-Inspektion: '+esc(i.tls_issuer)+'</span>';}
     setH(f('badges'),(p.user?'<span class="badge" title="Benutzer">👤 '+esc(p.user)+'</span>':'')+verBadge(p,i)+(p.online&&i.via_proxy?'<span class="badge">über Proxy</span>':'')+
-      (p.online&&i.cipher==='aes256gcm'?'<span class="badge ok" title="Daten mit AES-256-GCM verschlüsselt">AES-256</span>':'')+(p.online?tls:''));
-    setH(f('geo'),geoLine(p));
+      (p.online&&i.cipher?'<span class="badge ok" title="Daten verschlüsselt mit '+(i.cipher==='aes256gcm'?'AES-256-GCM':'ChaCha20-Poly1305')+(i.ver&&!/^1\.0\./.test(i.ver)?' + Tarn-Schicht (je Verbindung neu)':'')+'">'+(i.cipher==='aes256gcm'?'AES-256':'ChaCha20')+'</span>':'')+(p.online?tls:''));
+    setH(f('geo'),posLine(p,now)+devLine(p,now)+(p.geo?'<div>'+geoLine(p)+'</div>':''));
     setT(f('down'),p.online?rate(p.rate_tx):'–');setT(f('up'),p.online?rate(p.rate_rx):'–');setT(f('ping'),p.online&&p.rtt_ms?p.rtt_ms.toFixed(0)+' ms':'–');
     setT(f('today'),bytes(p.today[0]+p.today[1]));setT(f('month'),bytes(p.month[0]+p.month[1]));setT(f('total'),bytes(p.total[0]+p.total[1]));
     const a=p.spark||[],n=a.length,m=Math.max(1,...a);
     f('spark').setAttribute('points',n<2?'':a.map((v,k)=>(k/(n-1)*100).toFixed(2)+','+(32-v/m*30).toFixed(2)).join(' '));
     f('codebtn').hidden=!LOCAL;
+    f('mapbtn').hidden=!(LOCAL&&(p.geo||p.pos||p.dev));
+    f('pingbtn').hidden=!(LOCAL&&p.online);
+    f('ortbtn').hidden=!(LOCAL&&p.online&&(p.info||{}).os==='android'&&(p.geo||p.pos||p.dev));
     setT(f('foot'),'Verbindungen: '+p.handshakes+(p.spoofed?' · '+p.spoofed+' gefälschte Pakete verworfen':''));
   });
 }

@@ -12,7 +12,15 @@ final class Native {
     static native void stop(long handle);
     static native void reconnect(long handle);
     static native String status(long handle);
+    /** Angaben fuer den Server (WLAN-Name, Standort) als JSON – nur wenn in der App freigegeben */
+    static native void report(long handle, String json);
     static native String version();
-    /** QR-Code: erste Zeile Breite, dann Zeilen aus '1'/'0' */
-    static native String qr(String text);
+    /** Verschluesselung waehlen: "auto", "aes" oder "chacha" (gilt ab dem naechsten Verbindungsaufbau) */
+    static native void cipher(String choice);
+    /** Prozessor hat AES-Befehle (dann nimmt "auto" AES-256-GCM) */
+    static native boolean aesHw();
+    /** Ordner fuer Absturz-Protokolle des Rust-Kerns (einmal beim Start) */
+    static native void crashDir(String dir);
+    /** Absturz-Protokoll an den Server schicken (Status "crash_ok" meldet, was angekommen ist) */
+    static native void crash(long handle, String name, String text);
 }

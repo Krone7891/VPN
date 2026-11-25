@@ -14,7 +14,7 @@ KEYSTORE=${KEYSTORE:-$HOME/.kronevpn/release.jks}
 KSPASS=${KSPASS:-kronevpn}
 VERSION=$(grep -m1 '^version' "$ROOT/Cargo.toml" | cut -d'"' -f2)
 VCODE=${VCODE:-$(echo "$VERSION" | awk -F. '{print $1*10000+$2*100+$3}')}
-OUT=$ROOT/dist
+OUT=${OUT:-$ROOT/dist}
 B=$(mktemp -d)
 trap 'rm -rf "$B"' EXIT
 

@@ -7,8 +7,25 @@ Innen Ende-zu-Ende verschlüsselt wie WireGuard. Standardmäßig bis zu **8 Ger�
 
 ```
 Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server ──► Internet
-         sieht aus wie eine normale Webseite         Noise IK (X25519, ChaCha20-Poly1305, BLAKE2s)
+         sieht aus wie eine normale Webseite         Noise IK (X25519, BLAKE2s) · Daten AES-256-GCM/ChaCha20 + Tarn-Schicht
 ```
+
+
+## Neu in 1.1.0
+
+- **Verschlüsselung wählbar:** Auto (AES-256-GCM, wenn der Prozessor AES-Befehle hat, sonst ChaCha20-Poly1305) oder
+  fest – Windows „Sicherheit“, Android „🔒 Verschlüsselung“, Linux `--verschluesselung auto|aes|chacha`. Nur geprüfte
+  Standard-Verfahren; Senden/Empfangen/TLS laufen als Fließband auf mehreren Kernen.
+- **Tarn-Schicht:** Der Server würfelt bei jeder Verbindung ein neues Profil aus (Paketgrößen, Füllbytes, Takt der
+  Lebenszeichen, Länge des Handshakes). Es bleibt normales TLS 1.3 + WebSocket auf 443 – nur ohne erkennbare Muster.
+- **Ortung (nur eigene Geräte, nur Admin-Seite):** bester Standort aus GPS des Handys, WLAN-Ortung (Google Geolocation
+  API / WiGLE, Schlüssel per `kvpn-server set google_geo_key …` / `wigle_api NAME:TOKEN`) und IP-Adresse;
+  **Bewegungs-Karte** je Gerät mit GPX-Export (`kvpn-server orte <gerät>`), **still anpingen** und **„Jetzt orten“**.
+- **Absturz-Protokolle** der Apps kommen durch den Tunnel in `<state_dir>/absturz-logs/` (`kvpn-server abstuerze`).
+- **Apps:** Power-Knopf jetzt auch auf Android, mehr Animationen, Fehlermeldungen in Klartext mit Tipp, Einrichtung
+  beim ersten Start, Benachrichtigung solange das VPN läuft (zeigt auch, ob der Standort geteilt wird), Neustart nach
+  Updates von selbst. **Windows** fragt nur noch einmal (beim Einrichten) nach Administratorrechten.
+- Die Apps zeigen den Verbindungscode nicht mehr an (nur noch der Server: `kvpn-server add` / `code`).
 
 ## Installieren – ein Befehl
 
@@ -55,7 +72,7 @@ Fertig gebaut in [`dist/`](dist) – oder von deinem Server unter `/download/` m
 
 **Einstellungen** (bei jedem Lauf von `install.sh` abgefragt – das Skript darf jederzeit erneut laufen – oder
 `kvpn-server einstellungen`): Benutzerverwaltung mit SQLite (Standard **an**: Benutzer, sperren, Ablaufdatum, Verlauf –
-`kvpn-server benutzer`), AES-256-GCM statt ChaCha20 (Standard aus), Leistungsmodus mit allen CPU-Kernen (Standard aus),
+`kvpn-server benutzer`), AES-256-GCM für ältere Apps bis 1.0.13 (ab 1.1.0 wählt jede App selbst), Leistungsmodus mit allen CPU-Kernen (Standard aus),
 Höchstzahl Geräte. Details: [SELBST-HOSTEN.md](SELBST-HOSTEN.md#einstellungen-benutzerverwaltung-aes-256-leistungsmodus).
 
 **Admin-Seite im VPN:** verbunden `http://10.77.0.1:8180` öffnen – beim ersten Mal Passwort festlegen, dann von jedem

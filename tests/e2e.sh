@@ -8,6 +8,8 @@
 # Aufruf als root:  bash tests/e2e.sh [pfad/zu/target/release]
 set -u
 unset HTTPS_PROXY https_proxy HTTP_PROXY http_proxy ALL_PROXY all_proxy
+# WLAN-Ortung: Google Geolocation API und WiGLE werden im Server-Netz nachgebildet (Port 8997)
+export KVPN_GOOGLE_URL=http://127.0.0.1:8997/geolocate KVPN_WIGLE_URL=http://127.0.0.1:8997/wigle
 # Standard: die ausgelieferten statischen Builds (musl), sonst target/release
 R=$(cd "$(dirname "$0")/.." && pwd)
 if [ -z "${1:-}" ] && [ -x "$R/target/x86_64-unknown-linux-musl/release/kronevpn" ] && [ -x "$R/target/x86_64-unknown-linux-musl/release/kvpn-server" ]; then
@@ -133,6 +135,8 @@ ns kv-cli1 curl -sk -m 3 https://vpn.test/ | grep -q "normale Webseite" && ok "H
 
 echo "== Test 2: Verbindungstest (--test) und voller Tunnel"
 ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --test > "$W/test1.txt" 2>&1 && ok "Handshake ueber TLS/443: $(grep -o 'Handshake in [0-9]* ms' "$W/test1.txt")" || { bad "Verbindungstest"; cat "$W/test1.txt"; }
+# ein Absturz-Protokoll von "frueher" liegt bereit -> geht beim Verbinden an den Server
+mkdir -p "$W/absturz"; printf 'KroneVPN PC – Absturz (Rust)\npanicked at Test-Panik\n' > "$W/absturz/1764000001-rust.txt"
 bg ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --kein-update
 sleep 6   # Test-DNS beantwortet IPv6-Abfragen nicht -> Client wartet je Abfrage 1,5 s und nimmt dann nur IPv4
 ns kv-cli1 ping -c 3 -W 2 10.201.0.2 > "$W/ping1.txt" 2>&1 && ok "ping durch den Tunnel: $(tail -1 "$W/ping1.txt" | cut -d= -f2)" || { bad "ping durch den Tunnel"; cat "$W/ping1.txt"; tail -20 "$W"/log.*; }
@@ -155,6 +159,52 @@ ns kv-px "$BIN/kronevpn" --config "$W/code2" --proxy 10.200.20.1:3128 --test > "
 echo "== Test 7: TLS-Aufbruch (mitmproxy = Sophos HTTPS-Inspektion)"
 ns kv-mitm "$BIN/kronevpn" --config "$W/code3" --proxy 10.200.21.1:8080 --test > "$W/testmitm.txt" 2>&1 && ok "durch TLS-Inspektion: $(grep -o 'TLS-Zertifikat: [^–]*' "$W/testmitm.txt")" || { bad "durch TLS-Inspektion"; cat "$W/testmitm.txt"; tail "$W"/log.kv-srv-env 2>/dev/null; }
 
+echo "== Test 7c: Verschluesselung waehlbar (Auto/AES-256/ChaCha20) + Tarn-Schicht je Verbindung"
+CPU_AES=$(grep -qw aes /proc/cpuinfo && echo "AES-256-GCM" || echo "ChaCha20-Poly1305")
+# durch den TLS-Aufbruch (Sophos-Inspektion) mit fest gewaehltem ChaCha20
+ns kv-mitm "$BIN/kronevpn" --config "$W/code3" --verschluesselung chacha --proxy 10.200.21.1:8080 --test > "$W/testmitm-c.txt" 2>&1 \
+  && grep -q "ChaCha20-Poly1305" "$W/testmitm-c.txt" && ok "ChaCha20 + Tarnung durch TLS-Inspektion" || { bad "ChaCha20 durch TLS-Inspektion"; cat "$W/testmitm-c.txt"; }
+for wahl in chacha aes auto; do
+  case $wahl in chacha) want="ChaCha20-Poly1305";; aes) want="AES-256-GCM";; auto) want=$CPU_AES;; esac
+  ns kv-cli1 "$BIN/kronevpn" --config "$W/code1" --verschluesselung $wahl --test > "$W/test-$wahl.txt" 2>&1
+  grep -q "Verschluesselung: $want" "$W/test-$wahl.txt" && grep -q "Tarn-Schicht aktiv" "$W/test-$wahl.txt" \
+    && ok "Wahl '$wahl' -> $want, Tarn-Schicht aktiv" || { bad "Wahl '$wahl' (erwartet $want)"; cat "$W/test-$wahl.txt"; }
+done
+[ "$(cat "$W/verschluesselung.txt" 2>/dev/null)" = auto ] && ok "Wahl wird gemerkt (verschluesselung.txt)" || bad "Wahl nicht gespeichert"
+# aeltere App (z. B. 1.0.13 ohne Wunschliste/Tarn) muss weiter verbinden koennen, bis sie ihr Update hat
+if [ -n "${OLD_CLIENT:-}" ] && [ -x "$OLD_CLIENT" ]; then
+  ns kv-cli1 "$OLD_CLIENT" --config "$W/code1" --test > "$W/test-alt.txt" 2>&1 && ok "alte App $("$OLD_CLIENT" --version 2>/dev/null) verbindet weiterhin" || { bad "alte App verbindet nicht mehr"; cat "$W/test-alt.txt"; }
+fi
+
+# Nachbildung von Google Geolocation API + WiGLE (protokolliert, was ankommt)
+cat > "$W/wlanmock.py" <<'PY'
+import http.server, json, sys, base64, urllib.parse
+LOG = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def out(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def do_POST(self):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        aps = body.get("wifiAccessPoints", [])
+        open(LOG, "a").write("google key=%s aps=%d\n" % (q.get("key", [""])[0], len(aps)))
+        if q.get("key", [""])[0] != "TESTKEY" or len(aps) < 2: return self.out(403, {"error": {"code": 403}})
+        self.out(200, {"location": {"lat": 52.5163, "lng": 13.3777}, "accuracy": 500})
+    def do_GET(self):
+        u = urllib.parse.urlparse(self.path); q = urllib.parse.parse_qs(u.query)
+        auth = base64.b64decode(self.headers.get("Authorization", "Basic ").split(" ", 1)[1] or b"").decode()
+        open(LOG, "a").write("wigle auth=%s netid=%s\n" % (auth, q.get("netid", [""])[0]))
+        if auth != "testname:testtoken": return self.out(401, {"success": False})
+        self.out(200, {"success": True, "totalResults": 1, "results": [{"trilat": 52.5200, "trilong": 13.4050, "ssid": "Test-WLAN"}]})
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", 8997), H).serve_forever()
+PY
+bg ns kv-srv python3 "$W/wlanmock.py" "$W/wlanmock.log"
+"$BIN/kvpn-server" set google_geo_key TESTKEY | grep -q "(eingetragen)" && ! "$BIN/kvpn-server" set wigle_api testname:testtoken | grep -q testtoken \
+  && ok "WLAN-Ortung: Zugangsdaten eingetragen (Werte werden nicht ausgegeben)" || bad "Zugangsdaten eintragen"
+sleep 2
+
 echo "== Test 7b: Android-Kern (JNI-Bibliothek der APK, Host-Build) mit uebergebenem TUN-fd wie VpnService"
 ROOTD=$(cd "$(dirname "$0")/.." && pwd)
 # aktuellen Stand des Android-Kerns bauen (sonst wuerde ein alter Build getestet)
@@ -165,11 +215,50 @@ if [ -f "$ROOTD/target/release/libkronevpn.so" ] && [ -d "$ROOTD/target/jni" ]; 
     java -Djava.library.path="$ROOTD/target/release" -cp "$ROOTD/target/jni" de.krone.vpn.JniTest {fd} "$W/code4" 6 > "$W/jni.txt" 2>&1 &
   for i in $(seq 1 60); do grep -q READY "$W/jni.txt" 2>/dev/null && break; sleep 0.5; done
   grep -q '"state":"connected"' "$W/jni.txt" && ok "JNI: parse/start/status ok, Tunnel verbunden" || { bad "JNI-Start"; cat "$W/jni.txt"; }
+  # Admin-Seite: Handy still anpingen und orten (waehrend es verbunden ist)
+  R1=$(ns kv-srv curl -s -m 8 -X POST http://127.0.0.1:8180/ping/geraet4)
+  echo "$R1" | grep -q '"ok":true' && ok "Handy still angepingt: $R1 (Kern antwortet, keine Anzeige)" || bad "Anpingen: $R1"
+  R2=$(ns kv-srv curl -s -m 8 -X POST http://127.0.0.1:8180/orten/geraet4)
+  echo "$R2" | grep -q '"ok":true' && ok "Ortung angefordert" || bad "Orten: $R2"
+  R3=$(ns kv-srv curl -s -m 8 -X POST http://127.0.0.1:8180/ping/gibtsnicht)
+  echo "$R3" | grep -q 'nicht verbunden' && ok "Anpingen eines nicht verbundenen Geraets: klare Meldung" || bad "Anpingen offline: $R3"
+  [ "$(ns kv-srv curl -s -m 3 -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8101/ping/geraet4)" = 403 ] && ok "Anpingen/Orten von aussen gesperrt (403)" || bad "Anpingen von aussen moeglich!"
   grep -q 'nach reconnect=.*"connects":2' "$W/jni.txt" && ok "JNI: Netzwechsel -> sofort neu verbunden" || bad "JNI reconnect: $(grep 'nach reconnect' "$W/jni.txt")"
+  grep -q '^status=.*"cipher":"ChaCha20-Poly1305"' "$W/jni.txt" && grep -q 'nach reconnect=.*"cipher":"AES-256-GCM"' "$W/jni.txt" \
+    && ok "JNI: Verschluesselung in der App umschaltbar (ChaCha20 -> AES-256 beim Neuverbinden)" || bad "JNI Verschluesselung: $(grep -o '"cipher":"[^"]*"' "$W/jni.txt" | tr '\n' ' ')"
   ns kv-cli9 ping -c 3 -W 2 10.201.0.2 > "$W/jniping.txt" 2>&1 && ok "ping durch den Android-Kern: $(tail -1 "$W/jniping.txt" | cut -d= -f2)" || bad "ping durch den Android-Kern"
   for i in $(seq 1 30); do grep -q STOPPED "$W/jni.txt" && break; sleep 0.5; done
   grep -q STOPPED "$W/jni.txt" && ! ns kv-cli9 ip link show kvpn-c0 >/dev/null 2>&1 && ok "JNI: stop schliesst das TUN sauber" || bad "JNI stop: $(tail -3 "$W/jni.txt")"
   grep -q 'parse(falsch)={"error"' "$W/jni.txt" && ok "JNI: ungueltiger Code wird erkannt" || bad "JNI parse"
+  grep -q 'vor stop=.*"crash_ok":\["1764000000-java.txt"\]' "$W/jni.txt" && "$BIN/kvpn-server" abstuerze geraet4 | grep -q "Test-Absturz" \
+    && ok "Android-Absturz-Protokoll durch den Tunnel im Server-Ordner, App bekam die Bestaetigung" || bad "Absturz-Protokoll (Android): $("$BIN/kvpn-server" abstuerze 2>&1 | tail -3)"
+  grep -q 'vor stop=.*"locate":1' "$W/jni.txt" && ok "JNI: Orten-Anfrage kommt in der App an (locate=1 -> frischer GPS-Standort)" || bad "Orten kam nicht an: $(grep -o '"locate":[0-9]*' "$W/jni.txt" | tail -1)"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/data.json | python3 -c 'import json,sys;d=json.load(sys.stdin);p=[x for x in d["peers"] if x["name"]=="geraet4"][0];v=p.get("dev") or {};print(v);sys.exit(0 if v.get("ssid")=="Test-WLAN" and abs(v.get("lat",0)-48.1351)<1e-6 and v.get("acc")==18 else 1)' >/dev/null \
+    && ok "App meldet WLAN-Name und Standort (freigegeben) -> Admin-Seite zeigt sie" || bad "Standort-Meldung der App fehlt auf der Admin-Seite"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8101/stats/data.json | grep -q 'Test-WLAN' && bad "WLAN/Standort auf der oeffentlichen Statistik!" || ok "oeffentliche Statistik ohne WLAN/Standort"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/data.json | python3 -c 'import json,sys;d=json.load(sys.stdin);p=[x for x in d["peers"] if x["name"]=="geraet4"][0];b=p.get("pos") or {};v=p.get("dev") or {};print(b);sys.exit(0 if b.get("src")=="gps" and b.get("acc")==18 and len(v.get("aps",[]))==2 else 1)' > "$W/pos.txt" 2>&1 \
+    && ok "bester Standort: GPS des Handys ±18 m (vor IP-Ortung), WLAN-Liste angekommen" || bad "bester Standort: $(cat "$W/pos.txt")"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8101/stats/data.json | grep -q '"pos"' && bad "Standort auf der oeffentlichen Statistik!" || ok "oeffentliche Statistik ohne besten Standort"
+  for i in $(seq 1 20); do grep -q "^wigle" "$W/wlanmock.log" 2>/dev/null && break; sleep 0.5; done; sleep 1
+  grep -q "^google key=TESTKEY aps=2" "$W/wlanmock.log" && ok "Google Geolocation: Schluessel + 2 WLAN-Netze gesendet" || bad "Google-Abfrage: $(cat "$W/wlanmock.log" 2>/dev/null)"
+  grep -q "^wigle auth=testname:testtoken netid=aa:bb:cc:dd:ee:ff" "$W/wlanmock.log" && ok "WiGLE: BSSID mit Zugangsdaten abgefragt (Google war ungenauer)" || bad "WiGLE-Abfrage: $(cat "$W/wlanmock.log" 2>/dev/null)"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/data.json | python3 -c 'import json,sys;d=json.load(sys.stdin);p=[x for x in d["peers"] if x["name"]=="geraet4"][0];w=p.get("wlan") or {};print(w);sys.exit(0 if w.get("via")=="WiGLE" and w.get("acc")==120 and abs(w.get("lat",0)-52.52)<1e-6 else 1)' > "$W/wlan.txt" 2>&1 \
+    && ok "Admin-Seite: WLAN-Ortung über WiGLE ±120 m" || bad "WLAN-Ortung: $(cat "$W/wlan.txt")"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/data.json http://127.0.0.1:8180/settings.json | grep -q -e TESTKEY -e testtoken && bad "Zugangsdaten auf der Webseite sichtbar!" || ok "Zugangsdaten nicht auf der Webseite"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/settings.json | grep -q '"google_geo_key":true' && ok "Einstellungen zeigen: Google eingetragen" || bad "settings.json ohne google_geo_key"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8101/stats/data.json | grep -q '"wlan"' && bad "WLAN-Ortung auf der oeffentlichen Statistik!" || ok "oeffentliche Statistik ohne WLAN-Ortung"
+  # Bewegungs-Karte: GPS-Meldung + WLAN-Ortung landen im Verlauf
+  ns kv-srv curl -s -m 3 "http://127.0.0.1:8180/verlauf.json?geraet=geraet4&tage=1" | python3 -c 'import json,sys;d=json.load(sys.stdin);s=sorted(p["src"] for p in d["punkte"]);print(s);sys.exit(0 if d["ok"] and "gps" in s and "wlan" in s else 1)' > "$W/verlauf.txt" 2>&1 \
+    && ok "Standort-Verlauf: $(cat "$W/verlauf.txt") (GPS + WLAN-Ortung)" || bad "Standort-Verlauf: $(cat "$W/verlauf.txt")"
+  ns kv-srv curl -s -m 3 "http://127.0.0.1:8180/verlauf.gpx?geraet=geraet4&tage=0" | python3 -c 'import sys,xml.dom.minidom as m;d=m.parseString(sys.stdin.read());sys.exit(0 if len(d.getElementsByTagName("trkpt"))>=2 else 1)' \
+    && ok "Verlauf als GPX (gueltiges XML mit Wegpunkten)" || bad "GPX-Export"
+  [ "$(ns kv-srv curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8101/verlauf.json?geraet=geraet4")" = 403 ] && ok "Verlauf von aussen gesperrt (403)" || bad "Verlauf von aussen abrufbar!"
+  ns kv-srv curl -s -m 3 http://127.0.0.1:8180/leaflet.js | grep -q 't.version="1.9.4"' && ok "Karten-Bibliothek kommt vom Server selbst (keine fremden Skripte)" || bad "leaflet.js fehlt"
+  "$BIN/kvpn-server" orte geraet4 1 | grep -q "Punkte" && ok "kvpn-server orte: $("$BIN/kvpn-server" orte geraet4 1 | tail -1)" || bad "kvpn-server orte"
+  if [ -n "${SHOT_DIR:-}" ] && command -v node >/dev/null; then
+    mkdir -p "$SHOT_DIR"; cp "$R/tests/shot.js" "$W/shot.js" 2>/dev/null
+    ns kv-srv node "$W/shot.js" http://127.0.0.1:8180/ "$SHOT_DIR" geraet4 > "$W/shot.txt" 2>&1 && ok "Bildschirmfotos der Admin-Seite: $SHOT_DIR" || echo "  [--]     Bildschirmfotos: $(tail -2 "$W/shot.txt")"
+  fi
 else echo "  [--]     JNI-Test uebersprungen (cargo build --release -p kvpn-android und javac fehlen)"; fi
 
 echo "== Test 4: alle 8 Geraete gleichzeitig"
@@ -178,6 +267,10 @@ sleep 4
 n=0; for i in $(seq 1 8); do ns "kv-cli$i" ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && n=$((n+1)); done
 [ $n -eq 8 ] && ok "8 von 8 Geraeten gleichzeitig online" || bad "nur $n von 8 Geraeten online"
 ns kv-cli2 ping -c 1 -W 2 10.77.0.3 >/dev/null 2>&1 && ok "Geraete erreichen sich untereinander (10.77.0.x)" || bad "Geraete untereinander"
+"$BIN/kvpn-server" abstuerze geraet1 | grep -q "Test-Panik" && [ ! -e "$W/absturz/1764000001-rust.txt" ] \
+  && ok "PC/Linux-Absturz-Protokoll uebertragen und danach auf dem Geraet geloescht" || bad "Absturz-Protokoll (Linux): $(ls "$W/absturz" 2>&1) / $("$BIN/kvpn-server" abstuerze 2>&1 | tail -2)"
+R1=$(ns kv-srv curl -s -m 8 -X POST http://127.0.0.1:8180/ping/geraet2)
+echo "$R1" | grep -q '"ok":true' && ok "Linux-App still angepingt: $R1" || bad "Anpingen Linux: $R1"
 
 echo "== Test 5: fremdes Geraet (Schluessel nicht eingetragen) wird abgelehnt"
 python3 - "$W/code1" > "$W/code-fremd" <<'PY'
@@ -194,6 +287,8 @@ j["s"]=base64.b64encode(os.urandom(32)).decode()
 print("kronevpn://v1/"+base64.urlsafe_b64encode(json.dumps(j).encode()).decode().rstrip("="))
 PY
 ns kv-cli9 "$BIN/kronevpn" --config "$W/code-falsch" --test > "$W/test9b.txt" 2>&1 && bad "falscher Server-Schluessel angenommen (MITM moeglich!)" || ok "falscher Server-Schluessel (MITM) abgelehnt"
+grep -q "kennt dieses Gerät nicht" "$W/test9.txt" && ok "Klartext: $(grep -o 'Der Server kennt[^.]*' "$W/test9.txt" | head -1)" || bad "Klartext fuer abgelehntes Geraet fehlt: $(cat "$W/test9.txt")"
+grep -qE "passt nicht zu diesem Server|Schlüssel passen nicht" "$W/test9b.txt" && ok "Klartext bei falschem Server-Schluessel: $(grep -o '\-> .*' "$W/test9b.txt" | head -1 | cut -c1-80)" || bad "Klartext MITM fehlt: $(cat "$W/test9b.txt")"
 
 echo "== Test 8: Statistik"
 J=$(ns kv-srv curl -s -m 3 http://127.0.0.1:8101/stats/data.json)
@@ -218,8 +313,9 @@ sleep 14
 n=0; for i in $(seq 1 8); do ns "kv-cli$i" ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && n=$((n+1)); done
 [ $n -eq 8 ] && ok "nach Neustart wieder 8 von 8 online" || bad "nach Neustart nur $n von 8"
 tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -q "Leistungsmodus an" && ok "Server: $(tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -o '[0-9]* TUN-Queues, [0-9]* Kerne, Leistungsmodus an' | head -1)" || bad "Leistungsmodus nicht aktiv"
-A=$(tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -c "verbunden von.*AES-256")
-[ "$A" -ge 8 ] && ok "alle Geraete mit AES-256-GCM verbunden ($A Verbindungen)" || bad "AES-256: nur $A Verbindungen"
+# Apps ab 1.1.0 waehlen selbst (Auto = nach Prozessor); hier haben alle denselben Prozessor
+A=$(tail -n +"$SL" "$W/log.kv-srv-kvpn-server" | grep -c "verbunden von.*${CPU_AES%%-GCM*}")
+[ "$A" -ge 8 ] && ok "alle Geraete mit $CPU_AES verbunden (Auto, $A Verbindungen)" || bad "$CPU_AES: nur $A Verbindungen"
 D=$(ns kv-cli1 iperf3 -c 10.201.0.2 -t 4 -R -P 4 -J 2>/dev/null | python3 -c 'import json,sys;print(round(json.load(sys.stdin)["end"]["sum_received"]["bits_per_second"]/1e6))' 2>/dev/null)
 [ -n "$D" ] && ok "Durchsatz mit AES-256 + Leistungsmodus: $D Mbit/s (4 Streams)" || bad "iperf3 mit AES-256"
 
@@ -340,7 +436,9 @@ ns kv-srv curl -s -m 3 -X POST http://127.0.0.1:8180/max/9 | grep -q '"ok":true'
 "$BIN/kvpn-server" max 300 >/dev/null 2>&1 && bad "max 300 angenommen" || ok "max ueber der Grenze abgelehnt"
 "$BIN/kvpn-server" remove neun >/dev/null; "$BIN/kvpn-server" remove zehn >/dev/null
 "$BIN/kvpn-server" max 8 | grep -q "hoechstens 8" && ok "zurueck auf max 8" || bad "max 8"
-[ "$("$BIN/kronevpn" --config "$W/code3" --code < /dev/null | grep '^kronevpn://')" = "$(cat "$W/code3")" ] && ok "PC-App: --code zeigt den gespeicherten Code" || bad "kronevpn --code"
+# ab 1.1.0 zeigen die Apps den Code nicht mehr an (nur noch der Server bei "add"/"code")
+"$BIN/kronevpn" --config "$W/code3" --code < /dev/null > "$W/code-app.txt" 2>&1; rc=$?
+[ $rc -ne 0 ] && ! grep -q '^kronevpn://' "$W/code-app.txt" && ok "PC-App zeigt keinen Code mehr an (--code unbekannt)" || bad "PC-App zeigt den Code noch an"
 
 echo "== Test 12: App-Update nur von GitHub und erst nach Freigabe auf dem Server"
 KEY=${KVPN_UPDATE_KEY:-$HOME/.kronevpn/update-ed25519.pk8}

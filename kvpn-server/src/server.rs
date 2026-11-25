@@ -49,6 +49,11 @@ pub struct Shared {
     pub tun_drops: AtomicU64,
     handshake_slots: Semaphore,
     login_fail: Mutex<(u64, u32)>,
+    /// Steuer-Kanal je verbundenem Geraet (Name -> (Sitzung, Sender)) fuer Anpingen und Orten von der Admin-Seite
+    ctrl: Mutex<HashMap<String, (u64, mpsc::Sender<Vec<u8>>)>>,
+    /// offene stille Pings: id -> Antwort
+    pings: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
+    next_ping: std::sync::atomic::AtomicU32,
 }
 
 impl Shared {
@@ -71,6 +76,9 @@ impl Shared {
             tun_drops: AtomicU64::new(0),
             handshake_slots: Semaphore::new(32),
             login_fail: Mutex::new((0, 0)),
+            ctrl: Mutex::new(HashMap::new()),
+            pings: Mutex::new(HashMap::new()),
+            next_ping: std::sync::atomic::AtomicU32::new(1),
         });
         sh.apply_peers(&cfg);
         sh
@@ -83,7 +91,7 @@ impl Shared {
         let mut n = 0;
         for (k, p) in peers.iter() {
             let i = p.stats.info.lock().unwrap().clone();
-            if i.upd && m.files.contains_key(&i.os) && kvpn::update::newer(&m.version, &i.ver) {
+            if i.upd && m.version_for(&i.os).map(|v| kvpn::update::newer(v, &i.ver)).unwrap_or(false) {
                 if let Some((_, kick)) = sessions.get(k) {
                     kick.notify_one();
                     n += 1;
@@ -91,6 +99,35 @@ impl Shared {
             }
         }
         n
+    }
+
+    /// Geraet still anpingen (Admin-Seite): Antwortzeit in Millisekunden. Der VPN-Kern im Geraet antwortet selbst –
+    /// auf dem Geraet erscheint nichts.
+    pub async fn ping_device(&self, name: &str) -> Result<f64, String> {
+        let tx = self.ctrl.lock().unwrap().get(name).map(|x| x.1.clone()).ok_or("nicht verbunden")?;
+        let id = self.next_ping.fetch_add(1, Relaxed);
+        let (otx, orx) = tokio::sync::oneshot::channel();
+        self.pings.lock().unwrap().insert(id, otx);
+        let mut b = Vec::with_capacity(16);
+        push_record(&mut b, REC_SPING, &id.to_be_bytes());
+        let t = Instant::now();
+        let r = match tx.send(b).await {
+            Err(_) => Err("Verbindung wurde gerade beendet".to_string()),
+            Ok(()) => match tokio::time::timeout(Duration::from_secs(6), orx).await {
+                Ok(Ok(())) => Ok(t.elapsed().as_secs_f64() * 1000.0),
+                _ => Err("keine Antwort in 6 s (App älter als 1.1.0 oder Verbindung hängt)".to_string()),
+            },
+        };
+        self.pings.lock().unwrap().remove(&id);
+        r
+    }
+
+    /// "Jetzt orten": Geraet soll einen frischen Standort holen und melden
+    pub fn locate_device(&self, name: &str) -> Result<(), String> {
+        let tx = self.ctrl.lock().unwrap().get(name).map(|x| x.1.clone()).ok_or("nicht verbunden")?;
+        let mut b = Vec::with_capacity(16);
+        push_record(&mut b, REC_LOCATE, &self.next_ping.fetch_add(1, Relaxed).to_be_bytes());
+        tx.try_send(b).map_err(|_| "Verbindung ausgelastet – gleich nochmal".to_string())
     }
 
     pub fn cfg(&self) -> Arc<Config> {
@@ -259,7 +296,8 @@ where
             return;
         }
     }
-    crate::web::handle(&sh, &mut s, &method, &path, &headers, remote, tunnel_ok && peer.ip().is_loopback(), !tunnel_ok && !vpn_admin, vpn_admin).await;
+    let query = target.split_once('?').map(|x| x.1).unwrap_or("");
+    crate::web::handle(&sh, &mut s, &method, &path, query, &headers, remote, tunnel_ok && peer.ip().is_loopback(), !tunnel_ok && !vpn_admin, vpn_admin).await;
 }
 
 // ------------------------------------------------------------------------------------------------ Tunnel
@@ -299,9 +337,13 @@ where
     let mut welcome = cfg.welcome(&prt.peer);
     let upd = if hello.upd { update_offer(&cfg, &hello.os, &hello.ver) } else { None };
     welcome.upd = upd.as_ref().map(|u| u.offer.clone());
-    // AES-256 nur, wenn eingeschaltet und die App es kann (aeltere Apps bleiben bei ChaCha20)
-    if cfg.aes256 && hello.ciphers.iter().any(|c| c == kvpn::proto::CIPHER_AES256) {
-        welcome.cipher = kvpn::proto::CIPHER_AES256.into();
+    // Verschluesselung: Apps ab 1.1.0 waehlen selbst (Auto = nach Prozessor), aeltere nach Einstellung `aes256`
+    welcome.cipher = crypto::choose_cipher(&hello, cfg.aes256);
+    // Tarn-Profil fuer genau diese Verbindung (bei jeder neu ausgewuerfelt) – nur Apps, die es verstehen
+    let tarn = if hello.pick { kvpn::proto::Tarn::random(cfg.performance) } else { kvpn::proto::Tarn::alt() };
+    if hello.pick {
+        welcome.tarn = Some(tarn);
+        welcome.pad = kvpn::tarn::fuellzeichen(160);
     }
     let (m2, mut sealer, mut opener) = match crypto::server_reply(hs, &welcome) {
         Ok(v) => v,
@@ -346,7 +388,7 @@ where
         tls_trusted: hello.tls_trusted,
         via_proxy: hello.via_proxy,
         upd: hello.upd,
-        cipher: if welcome.cipher.is_empty() { "chacha20".into() } else { welcome.cipher.clone() },
+        cipher: if welcome.cipher.is_empty() { kvpn::proto::CIPHER_CHACHA.into() } else { welcome.cipher.clone() },
         upd_sent,
     };
     let inspect = if !hello.tls_issuer.is_empty() && !hello.tls_trusted {
@@ -360,16 +402,24 @@ where
         hello.os,
         hello.ver,
         if hello.via_proxy { " ueber Proxy" } else { "" },
-        if welcome.cipher.is_empty() { "" } else { ", AES-256" },
+        if hello.pick { format!(", {}", crypto::cipher_label(&welcome.cipher)) } else if welcome.cipher.is_empty() { String::new() } else { ", AES-256".into() },
         inspect
     );
+    // Ort der IP-Adresse in den Standort-Verlauf (Bewegungs-Karte)
+    if cfg.geo {
+        crate::geo::verlauf_ip(&cfg.state_dir, &prt.peer.name, &remote.to_string());
+    }
     if cfg.users {
         let (p, n, ev) = (sh.cfg_path.clone(), prt.peer.name.clone(), format!("verbunden von {remote} ({} {}){}", hello.os, hello.ver, if hello.via_proxy { " ueber Proxy" } else { "" }));
         tokio::task::spawn_blocking(move || crate::users::log_event(&p, &n, &ev));
     }
 
-    let (mut sink, mut stream) = ws.split();
+    // Fliessband: TLS/WebSocket senden und empfangen laufen in eigenen Tasks (weitere Kerne)
+    let (sink, stream) = ws.split();
+    let (out, _, _w) = kvpn::pipe::writer(sink, 64);
+    let (mut inc, _r) = kvpn::pipe::reader(stream, 64);
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Vec<u8>>(16);
+    sh.ctrl.lock().unwrap().insert(prt.peer.name.clone(), (sid, ctrl_tx.clone()));
 
     let st_tx = st.clone();
     let mut sender = tokio::spawn(async move {
@@ -394,10 +444,11 @@ where
                     st_tx.tx_bytes.fetch_add(bytes, Relaxed);
                 }
             }
+            tarn.fuellen(&mut buf);
             if sealer.seal(&mut buf).is_err() {
                 return;
             }
-            if sink.send(Message::Binary(buf.into())).await.is_err() {
+            if out.send(buf).await.is_err() {
                 return;
             }
         }
@@ -411,16 +462,12 @@ where
     let upd_sending = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let peer_name = prt.peer.name.clone();
     let st_upd = st.clone();
+    let sh_rx = sh.clone();
     let mut receiver = tokio::spawn(async move {
         loop {
-            let msg = match tokio::time::timeout(Duration::from_secs(60), stream.next()).await {
-                Ok(Some(Ok(m))) => m,
+            let mut buf = match tokio::time::timeout(Duration::from_secs(60), inc.recv()).await {
+                Ok(Some(kvpn::pipe::Rein::Daten(b))) => b,
                 _ => return,
-            };
-            let mut buf: Vec<u8> = match msg {
-                Message::Binary(b) => b.into(),
-                Message::Close(_) => return,
-                _ => continue,
             };
             if opener.open(&mut buf).is_err() {
                 return;
@@ -439,6 +486,21 @@ where
                         st_rx.spoofed.fetch_add(1, Relaxed);
                     }
                 }
+                // Absturz-Protokoll der App -> Ordner auf dem Server, dann bestaetigen
+                REC_CRASH => {
+                    let c = sh_rx.cfg();
+                    if let Some(n) = crate::absturz::speichern(&c.state_dir, &peer_name, data) {
+                        let mut b = Vec::with_capacity(n.len() + 3);
+                        push_record(&mut b, REC_CRASH_OK, n.as_bytes());
+                        let _ = ctrl_tx.try_send(b);
+                    }
+                }
+                REC_SPONG if data.len() >= 4 => {
+                    let id = u32::from_be_bytes(data[..4].try_into().unwrap());
+                    if let Some(t) = sh_rx.pings.lock().unwrap().remove(&id) {
+                        let _ = t.send(());
+                    }
+                }
                 REC_PING if data.len() >= 8 => {
                     if data.len() >= 12 {
                         let rtt = u32::from_be_bytes(data[8..12].try_into().unwrap());
@@ -447,6 +509,14 @@ where
                     let mut b = Vec::with_capacity(64);
                     push_record(&mut b, REC_PONG, &data[..8]);
                     let _ = ctrl_tx.try_send(b);
+                }
+                // vom Geraet freigegebene Angaben (WLAN-Name, Standort) – nur fuer die Admin-Seite
+                REC_INFO if data.len() <= kvpn::proto::MAX_INFO => {
+                    // WLAN-Ortung (Google/WiGLE) nur mit eingeschaltetem Standort; Zugangsdaten gelten sofort
+                    let c = sh_rx.cfg();
+                    let keys = if c.geo { crate::geo::WlanKeys::from_cfg(&c) } else { Default::default() };
+                    // (Default: keine WLAN-Ortung, kein Verlauf)
+                    crate::geo::device_report(&c.state_dir, &peer_name, data, &keys)
                 }
                 REC_UPD_GET if data.len() >= 4 => {
                     if let Some(u) = &upd {
@@ -482,6 +552,12 @@ where
             }
         }
     }
+    {
+        let mut c = sh.ctrl.lock().unwrap();
+        if c.get(&prt.peer.name).map(|x| x.0 == sid).unwrap_or(false) {
+            c.remove(&prt.peer.name);
+        }
+    }
     let mut s = sh.sessions.lock().unwrap();
     if s.get(&cpub).map(|x| x.0 == sid).unwrap_or(false) {
         s.remove(&cpub);
@@ -515,7 +591,9 @@ fn update_offer(cfg: &Config, os: &str, ver: &str) -> Option<UpdFile> {
             return None;
         }
     };
-    if !kvpn::update::newer(&m.version, ver) {
+    // nur wenn sich die App DIESES Geraets geaendert hat (jede App hat ihre eigene Version)
+    let fver = m.version_for(os)?.to_string();
+    if !kvpn::update::newer(&fver, ver) {
         return None;
     }
     let f = m.files.get(os)?;
@@ -526,11 +604,11 @@ fn update_offer(cfg: &Config, os: &str, ver: &str) -> Option<UpdFile> {
     match std::fs::metadata(&path) {
         Ok(md) if md.len() == f.size => {}
         _ => {
-            log!("Update {}: {} fehlt oder hat die falsche Groesse", m.version, path.display());
+            log!("Update {fver}: {} fehlt oder hat die falsche Groesse", path.display());
             return None;
         }
     }
-    Some(UpdFile { offer: kvpn::proto::UpdateOffer { manifest, sig }, path, version: m.version })
+    Some(UpdFile { offer: kvpn::proto::UpdateOffer { manifest, sig }, path, version: fver })
 }
 
 /// Update-Datei stueckweise ueber die Verbindung senden (Gegendruck ueber den Steuer-Kanal; endet mit der Verbindung)

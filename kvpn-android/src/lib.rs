@@ -118,6 +118,7 @@ pub extern "system" fn Java_de_krone_vpn_Native_start<'l>(
         reconnect: Some(kick.clone()),
         on_connected: None,
         update: Some(updater.clone()),
+        cipher: Some(Arc::new(|| CIPHER.lock().unwrap().clone())),
     };
     let task = rt.spawn(client::run(cfg, opts, rx, tun, status.clone(), stop_rx));
     Box::into_raw(Box::new(Handle { stop, status, kick, updater, update_file, task, reader })) as jlong
@@ -153,6 +154,17 @@ pub extern "system" fn Java_de_krone_vpn_Native_reconnect<'l>(_env: JNIEnv<'l>, 
     h.kick.notify_one();
 }
 
+/// Angaben des Geraets fuer den Server (JSON: WLAN-Name, Standort) – nur wenn der Nutzer es in der App freigibt
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_report<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, json: JString<'l>) {
+    if h == 0 {
+        return;
+    }
+    let h = unsafe { &*(h as *const Handle) };
+    let j = jstr(&mut env, &json);
+    h.status.set_report(j.as_bytes());
+}
+
 /// Zustand als JSON (Zustand, Bytes, Ping, TLS-Infos, letzter Fehler)
 #[no_mangle]
 pub extern "system" fn Java_de_krone_vpn_Native_status<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong) -> jstring {
@@ -170,25 +182,41 @@ pub extern "system" fn Java_de_krone_vpn_Native_status<'l>(mut env: JNIEnv<'l>, 
     out(&mut env, &j.to_string())
 }
 
-/// QR-Code als Text: erste Zeile Breite, dann je Zeile '1' (schwarz) / '0' (weiss)
+/// Ordner fuer Absturz-Protokolle setzen (einmal beim Start): Abstuerze im Rust-Kern landen dort als Textdatei
 #[no_mangle]
-pub extern "system" fn Java_de_krone_vpn_Native_qr<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, text: JString<'l>) -> jstring {
-    let t = jstr(&mut env, &text);
-    let s = match qrcode::QrCode::with_error_correction_level(t.as_bytes(), qrcode::EcLevel::L) {
-        Ok(c) => {
-            let w = c.width();
-            let mut s = format!("{w}\n");
-            for (i, m) in c.to_colors().iter().enumerate() {
-                s.push(if *m == qrcode::Color::Dark { '1' } else { '0' });
-                if (i + 1) % w == 0 {
-                    s.push('\n');
-                }
-            }
-            s
-        }
-        Err(_) => String::new(),
-    };
-    out(&mut env, &s)
+pub extern "system" fn Java_de_krone_vpn_Native_crashDir<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, dir: JString<'l>) {
+    static GESETZT: OnceLock<()> = OnceLock::new();
+    let d = jstr(&mut env, &dir);
+    if d.is_empty() {
+        return;
+    }
+    GESETZT.get_or_init(|| kvpn::fehler::absturz_haken(std::path::PathBuf::from(d), "Android", String::new));
+}
+
+/// Absturz-Protokoll zum Senden an den Server vormerken (geht beim Verbinden durch den Tunnel)
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_crash<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, name: JString<'l>, text: JString<'l>) {
+    if h == 0 {
+        return;
+    }
+    let h = unsafe { &*(h as *const Handle) };
+    let (n, t) = (jstr(&mut env, &name), jstr(&mut env, &text));
+    h.status.add_crash(&n, t.as_bytes());
+}
+
+/// gewaehlte Verschluesselung ("auto", "aes", "chacha") – gilt ab dem naechsten Verbindungsaufbau
+static CIPHER: Mutex<String> = Mutex::new(String::new());
+
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_cipher<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, choice: JString<'l>) {
+    let c = jstr(&mut env, &choice);
+    *CIPHER.lock().unwrap() = kvpn::crypto::normalize_choice(&c).to_string();
+}
+
+/// hat der Prozessor AES-Befehle? (fuer die Anzeige "Auto nimmt …")
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_aesHw<'l>(_env: JNIEnv<'l>, _c: JClass<'l>) -> jni::sys::jboolean {
+    kvpn::crypto::aes_hw() as jni::sys::jboolean
 }
 
 #[no_mangle]

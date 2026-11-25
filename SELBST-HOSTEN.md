@@ -134,19 +134,19 @@ kvpn-server remove "Laptop"       # sofort gesperrt
 
 **Alte Codes wieder anzeigen:** `kvpn-server code "Name"` oder auf der lokalen Seite `http://localhost:8180` beim Gerät
 „Verbindungscode anzeigen“ (mit QR-Code, nur lokal). Geht für alle Geräte, die ab Version 1.0.1 angelegt wurden.
-Ältere Geräte: Code auf dem Gerät anzeigen (Android-App „Code anzeigen“, Windows `KroneVPN.exe --code`) und auf dem
-Server merken: `kvpn-server import '<code>'`.
+Ältere Geräte (vor 1.0.1 angelegt): neu anlegen (`kvpn-server remove` + `add`) – die Apps zeigen den Code ab 1.1.0
+nicht mehr an. Einen vorhandenen Code merken: `kvpn-server import '<code>'`.
 
 Die Apps gibt es auf `https://<adresse>/download/` mit deinem Namen (oder in `dist/`). Sie zeigen den Namen deines VPN
 an, sobald der Verbindungscode eingefügt ist.
 
 - **Android:** `dist/KroneVPN.apk` installieren, QR-Code mit der Kamera scannen (oder Code einfügen), Verbinden.
   Die App darf danach geschlossen (auch weggewischt) werden – das VPN läuft weiter.
-- **Windows:** `dist/KroneVPN.exe` starten (Adminrechte), Code einfügen. Es öffnet sich ein Programmfenster mit großem
-  Ein/Aus-Knopf, Live-Werten, Verlauf, „Code“ (QR-Code fürs Handy), „Protokoll“ und „Profile“. Das VPN läuft als
+- **Windows:** `dist/KroneVPN.exe` starten, Code einfügen (Windows fragt nur beim ersten Einrichten einmal nach Adminrechten). Es öffnet sich ein Programmfenster mit großem
+  Ein/Aus-Knopf, Live-Werten, Verlauf, „Sicherheit“ (Verschlüsselung), „Protokoll“ und „Profile“. Das VPN läuft als
   **Windows-Dienst im Hintergrund** und startet mit Windows – **das Fenster darf geschlossen werden**; wieder öffnen
   über das Startmenü. Lieber die alte Text-Ansicht? Unten „Klassische Ansicht“. Dort per Buchstabe + Enter:
-  `f` neues Fenster, `p` Profil wechseln, `c` Code/QR, `t` ausschalten (die Wahl wird gemerkt, auch `--klassisch` / `--fenster`). Per Befehl: `--trennen`, ganz entfernen: `--entfernen`, Textanzeige wie früher: `--vordergrund`,
+  `f` neues Fenster, `p` Profil wechseln, `v` Verschlüsselung, `t` ausschalten (die Wahl wird gemerkt, auch `--klassisch` / `--fenster`). Per Befehl: `--trennen`, ganz entfernen: `--entfernen`, Textanzeige wie früher: `--vordergrund`,
   Test ohne Netzwerkänderung: `--test`. (Programm: `C:\Program Files\KroneVPN`, Code/Protokoll: `C:\ProgramData\KroneVPN`.)
 - **Linux:** `sudo dist/kronevpn-linux 'kronevpn://v1/…'` – im Hintergrund als systemd-Dienst: zusätzlich `--hintergrund`
   (danach darf das Terminal zu; `--trennen` / `--entfernen`).
@@ -158,6 +158,33 @@ Die Dateien dürfen beliebig umbenannt werden (z. B. „Potzplitz VPN.exe").
 
 Statistik-Passwort ändern: `kvpn-server password '…'`. Aus privaten Netzen (192.168.x.x, 10.x.x.x – also auch
 übers VPN) geht die Statistik ohne Passwort.
+
+## Neu in 1.1.0: Verschlüsselung, Tarnung, Ortung, Abstürze
+
+**Verschlüsselung:** Jede App wählt selbst – „Auto“ nimmt AES-256-GCM, wenn der Prozessor AES-Befehle hat, sonst
+ChaCha20-Poly1305 (beide 256 Bit, beide geprüfte Standards). Fest einstellen: Windows „Sicherheit“, Android
+„🔒 Verschlüsselung“, Linux `kronevpn --verschluesselung auto|aes|chacha`. Die Server-Einstellung `aes256` gilt nur
+noch für Apps bis 1.0.13. Dazu kommt die **Tarn-Schicht**: Bei jeder Verbindung andere Paketgrößen, Füllbytes und
+Abstände der Lebenszeichen – es bleibt gewöhnliches HTTPS (TLS 1.3 + WebSocket) und geht weiter durch Sophos.
+
+**Ortung (nur eigene Geräte, nur auf der Admin-Seite):** Am Handy „Standort teilen“ (Standard an, abschaltbar; solange
+es an ist, steht es in der VPN-Benachrichtigung). Der Server nimmt die genaueste aktuelle Quelle:
+GPS des Handys → WLAN-Ortung → IP-Adresse. Für die WLAN-Ortung einen oder beide Zugänge eintragen (oder auf der
+Admin-Seite unter Einstellungen):
+
+```bash
+kvpn-server set google_geo_key <Schlüssel>      # Google Cloud Console, API „Geolocation API“ aktivieren
+kvpn-server set wigle_api <API-Name>:<Token>    # wigle.net → Account → API-Token
+kvpn-server set wigle_api aus                   # wieder entfernen
+```
+
+Jeder neue Standort landet im Verlauf (`<state_dir>/standort-verlauf/`). Auf der Admin-Seite je Gerät:
+**🗺️ Bewegungen** (Karte, Zeitraum, Strecke, GPX-Download), **📶 Anpingen** (still, am Gerät erscheint nichts) und bei
+Handys **📍 Jetzt orten** (frischer GPS-Standort, z. B. wenn das Handy weg ist). Auf dem Server: `kvpn-server orte
+<gerät> [tage] [--gpx datei.gpx]`.
+
+**Absturz-Protokolle:** Stürzt eine App ab, schickt sie das Protokoll beim nächsten Verbinden durch den Tunnel; es
+liegt dann in `<state_dir>/absturz-logs/<gerät>/`. Anzeigen: `kvpn-server abstuerze [gerät]`.
 
 ## Einstellungen (Benutzerverwaltung, AES-256, Leistungsmodus)
 

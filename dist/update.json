@@ -1,20 +1,23 @@
 {
-  "version": "1.0.12",
+  "version": "1.1.0",
   "files": {
     "android": {
       "name": "KroneVPN.apk",
-      "size": 2118316,
-      "sha256": "d3ba426e6b9ce5db870f8c00e1a45c685e655ac253dc9bc7757b4bd1d00ef7ca"
+      "size": 2179756,
+      "sha256": "0319e0ca31208f774ead2d751f3dc4a29a6cda3f64354b033dd0786d6b3cfc70",
+      "version": "1.1.0"
     },
     "linux": {
       "name": "kronevpn-linux",
-      "size": 2927536,
-      "sha256": "eb59aae41f1768236827a7b4d72b3c56df158152db01bfb5750c991e3555474e"
+      "size": 2980784,
+      "sha256": "5f586e21dd53dd6f3575ce9d2647b1e963b28d8d114ed8d2c56d0a6d2cbd69a1",
+      "version": "1.1.0"
     },
     "windows": {
       "name": "KroneVPN.exe",
-      "size": 6671360,
-      "sha256": "01ebfdcd4677b53f4d1cfabbc11adce4cdcc887a1716853e7d30e8cd70fb13d5"
+      "size": 6748672,
+      "sha256": "316687d2338f4f506afed076bf5ec28f334a0c8868948e4d4248ffb50a3d0d19",
+      "version": "1.1.0"
     }
   }
 }

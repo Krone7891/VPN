@@ -19,6 +19,22 @@ pub const REC_PAD: u8 = 4;
 pub const REC_UPD_GET: u8 = 5;
 /// Server -> Client: Stueck der Update-Datei ([position u32 BE][daten])
 pub const REC_UPD_DATA: u8 = 6;
+/// Client -> Server: Angaben des Geraets als JSON (WLAN-Name, Standort) – nur, wenn auf dem Geraet freigegeben
+pub const REC_INFO: u8 = 7;
+/// hoechste Groesse von REC_INFO
+pub const MAX_INFO: usize = 2048;
+/// Server -> Client: stilles Anpingen von der Admin-Seite ([id u32 BE]); der VPN-Kern antwortet selbst mit
+/// REC_SPONG (gleiche Daten) – ohne App, ohne Benachrichtigung (ab 1.1.0, aeltere Apps ignorieren es)
+pub const REC_SPING: u8 = 8;
+pub const REC_SPONG: u8 = 9;
+/// Server -> Client: "jetzt orten" ([id u32 BE]) – die App holt einen frischen Standort und meldet ihn per REC_INFO
+pub const REC_LOCATE: u8 = 10;
+/// Client -> Server: Absturz-Protokoll ([Namenslaenge u8][Name][Text]); der Server legt es in einen Ordner ab
+pub const REC_CRASH: u8 = 11;
+/// Server -> Client: Absturz-Protokoll gespeichert ([Name]) – erst dann loescht die App ihre Kopie
+pub const REC_CRASH_OK: u8 = 12;
+/// hoechste Groesse eines Absturz-Protokolls (Rest wird abgeschnitten)
+pub const MAX_CRASH: usize = 48 * 1024;
 
 /// maximale Groesse eines Klartext-Buendels
 pub const MAX_BUNDLE: usize = 60 * 1024;
@@ -43,13 +59,43 @@ pub struct Hello {
     /// Client kann sich selbst aktualisieren (ab 1.0.1)
     #[serde(default)]
     pub upd: bool,
-    /// zusaetzlich unterstuetzte Verschluesselungen fuer die Daten (ab 1.0.6: "aes256gcm"); ChaCha20 geht immer
+    /// unterstuetzte Verschluesselungen fuer die Daten. Bis 1.0.13: nur ["aes256gcm"] (ChaCha20 geht immer).
+    /// Ab 1.1.0 mit `pick`: Wunschliste in Reihenfolge, der Server nimmt die erste, die er kann.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ciphers: Vec<String>,
+    /// `ciphers` ist eine Wunschliste (ab 1.1.0)
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pick: bool,
+    /// Fuellzeichen zufaelliger Laenge: der Handshake hat bei jeder Verbindung eine andere Groesse (Tarnung)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pad: String,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// AES-256-GCM statt ChaCha20-Poly1305 fuer die Daten (Name im Handshake)
 pub const CIPHER_AES256: &str = "aes256gcm";
+/// ChaCha20-Poly1305 (Standard, im Handshake leer oder "chacha20")
+pub const CIPHER_CHACHA: &str = "chacha20";
+
+/// Tarn-Profil einer Verbindung: wird vom Server bei jeder Verbindung neu ausgewuerfelt und verschluesselt im
+/// Welcome mitgeschickt. Beide Seiten formen damit ihre Datenpakete (Groessen, Fuellbytes, Takt der Lebenszeichen),
+/// damit keine zwei Verbindungen gleich aussehen. Aendert nichts an der Verschluesselung und bleibt normales
+/// TLS 1.3 + WebSocket – genau das, was Firewalls wie Sophos als HTTPS durchlassen.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Tarn {
+    /// Buendel werden auf ein Vielfaches davon aufgefuellt (Bytes, 0 = aus)
+    pub block: u16,
+    /// zusaetzliche zufaellige Fuellbytes bis zu dieser Zahl ...
+    pub extra: u16,
+    /// ... bei so vielen von 256 Buendeln
+    pub chance: u8,
+    /// Lebenszeichen zufaellig alle ka_min..ka_max Millisekunden
+    pub ka_min: u32,
+    pub ka_max: u32,
+}
 
 /// Nutzdaten der zweiten Handshake-Nachricht (Server -> Client)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +114,12 @@ pub struct Welcome {
     /// gewaehlte Verschluesselung fuer die Daten (leer = ChaCha20-Poly1305, "aes256gcm" = AES-256-GCM)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cipher: String,
+    /// Tarn-Profil dieser Verbindung (ab 1.1.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tarn: Option<Tarn>,
+    /// Fuellzeichen zufaelliger Laenge (siehe Hello::pad)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pad: String,
 }
 
 /// Update-Angebot: Inhalt von update.json und dessen Ed25519-Signatur (Base64)
