@@ -26,6 +26,8 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 wintun = "0.5"
 windows-service = "0.8"
+# Routen direkt ueber die IP-Hilfs-API (statt PowerShell: Millisekunden statt 20-60 s)
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
 
 [build-dependencies]

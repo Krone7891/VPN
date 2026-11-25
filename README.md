@@ -11,6 +11,12 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Neu in 1.1.1
+
+- **Windows verbindet viel schneller:** Die Route zum Server (am Tunnel vorbei) setzt die App jetzt direkt über die
+  Windows-IP-API statt über PowerShell – das hat auf manchen Rechnern pro Verbindungsversuch 20–60 s gedauert.
+  Im Protokoll steht jetzt, über welches Gateway die Route läuft und wie lange es gedauert hat.
+
 ## Neu in 1.1.0
 
 - **Verschlüsselung wählbar:** Auto (AES-256-GCM, wenn der Prozessor AES-Befehle hat, sonst ChaCha20-Poly1305) oder

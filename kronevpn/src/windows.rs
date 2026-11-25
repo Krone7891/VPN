@@ -100,7 +100,8 @@ pub struct Platform {
     _adapter: Arc<wintun::Adapter>,
     reader: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
     idx: u32,
-    bypass: Arc<Mutex<Vec<IpAddr>>>,
+    /// gesetzte Umgehungsrouten: (Server, Gateway, Schnittstelle)
+    bypass: Arc<Mutex<Vec<(IpAddr, IpAddr, u32)>>>,
     full: bool,
 }
 
@@ -220,37 +221,145 @@ impl Platform {
         let idx = self.idx;
         let bypass = self.bypass.clone();
         Some(Arc::new(move |addr: IpAddr| {
-            let fam = if addr.is_ipv4() { "IPv4" } else { "IPv6" };
-            let dflt = if addr.is_ipv4() { "0.0.0.0/0" } else { "::/0" };
-            let ps = format!(
-                "$r = Get-NetRoute -AddressFamily {fam} -DestinationPrefix '{dflt}' -ErrorAction SilentlyContinue | Where-Object {{ $_.InterfaceIndex -ne {idx} }} | \
-                 Sort-Object {{ $_.RouteMetric + (Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily {fam}).InterfaceMetric }} | Select-Object -First 1; \
-                 if ($r) {{ \"$($r.NextHop) $($r.InterfaceIndex)\" }}"
-            );
-            let Ok(out) = cmd("powershell", &["-NoProfile", "-NonInteractive", "-Command", &ps]) else { return };
-            let mut it = out.split_whitespace();
-            let (Some(nh), Some(ifi)) = (it.next(), it.next()) else { return };
-            let host = if addr.is_ipv4() { format!("{addr}/32") } else { format!("{addr}/128") };
-            let fam_l = if addr.is_ipv4() { "ipv4" } else { "ipv6" };
-            let _ = netsh(&["interface", fam_l, "delete", "route", &host, ifi]);
-            if netsh(&["interface", fam_l, "add", "route", &host, ifi, nh, "metric=1", "store=active"]).is_ok() {
-                let mut b = bypass.lock().unwrap();
-                if !b.contains(&addr) {
-                    b.push(addr);
+            let t = std::time::Instant::now();
+            match route::bypass(addr, idx) {
+                Ok((nh, ifi)) => {
+                    let mut b = bypass.lock().unwrap();
+                    let neu = (addr, nh, ifi);
+                    if !b.contains(&neu) {
+                        b.retain(|x| x.0 != addr);
+                        b.push(neu);
+                        crate::say(&format!("Umgehungsroute zum Server {addr} ueber {nh} (Schnittstelle {ifi}, {} ms)", t.elapsed().as_millis()));
+                    }
                 }
+                Err(e) => crate::say(&format!("Umgehungsroute zum Server {addr}: {e}")),
             }
         }))
     }
 
     pub fn cleanup(&self) {
-        for a in self.bypass.lock().unwrap().iter() {
-            let (fam, host) = if a.is_ipv4() { ("ipv4", format!("{a}/32")) } else { ("ipv6", format!("{a}/128")) };
-            // Route auf allen Schnittstellen entfernen (der Weg kann sich geaendert haben)
-            let _ = cmd("powershell", &["-NoProfile", "-NonInteractive", "-Command", &format!("Remove-NetRoute -DestinationPrefix '{host}' -Confirm:$false -ErrorAction SilentlyContinue")]);
-            let _ = fam;
+        for (a, _, _) in self.bypass.lock().unwrap().drain(..) {
+            route::remove_host(a);
         }
         let _ = self.session.shutdown();
         let _ = cmd("ipconfig", &["/flushdns"]);
+    }
+}
+
+/// Routen ueber die IP-Hilfs-API von Windows (iphlpapi) – frueher PowerShell (Get-NetRoute), das auf manchen
+/// Rechnern 20-60 s pro Aufruf brauchte und den Verbindungsaufbau entsprechend verzoegerte.
+mod route {
+    use std::net::IpAddr;
+    use windows_sys::Win32::Foundation::{ERROR_OBJECT_ALREADY_EXISTS, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        CreateIpForwardEntry2, DeleteIpForwardEntry2, FreeMibTable, GetIpForwardTable2, GetIpInterfaceEntry, InitializeIpForwardEntry, InitializeIpInterfaceEntry,
+        MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2, MIB_IPINTERFACE_ROW,
+    };
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_INET};
+
+    fn family(a: IpAddr) -> u16 {
+        if a.is_ipv4() { AF_INET } else { AF_INET6 }
+    }
+
+    fn to_sockaddr(a: IpAddr) -> SOCKADDR_INET {
+        let mut s: SOCKADDR_INET = unsafe { std::mem::zeroed() };
+        match a {
+            IpAddr::V4(v) => {
+                s.Ipv4.sin_family = AF_INET;
+                s.Ipv4.sin_addr.S_un.S_addr = u32::from_ne_bytes(v.octets());
+            }
+            IpAddr::V6(v) => {
+                s.Ipv6.sin6_family = AF_INET6;
+                s.Ipv6.sin6_addr.u.Byte = v.octets();
+            }
+        }
+        s
+    }
+
+    fn from_sockaddr(s: &SOCKADDR_INET) -> Option<IpAddr> {
+        unsafe {
+            match s.si_family {
+                AF_INET => Some(IpAddr::from(s.Ipv4.sin_addr.S_un.S_addr.to_ne_bytes())),
+                AF_INET6 => Some(IpAddr::from(s.Ipv6.sin6_addr.u.Byte)),
+                _ => None,
+            }
+        }
+    }
+
+    /// alle Routen einer Adressfamilie (Kopie der Tabelle)
+    fn table(fam: u16) -> Result<Vec<MIB_IPFORWARD_ROW2>, String> {
+        let mut t: *mut MIB_IPFORWARD_TABLE2 = std::ptr::null_mut();
+        let rc = unsafe { GetIpForwardTable2(fam, &mut t) };
+        if rc != NO_ERROR || t.is_null() {
+            return Err(format!("Routentabelle nicht lesbar (Fehler {rc})"));
+        }
+        let rows = unsafe {
+            let n = (*t).NumEntries as usize;
+            let first = std::ptr::addr_of!((*t).Table) as *const MIB_IPFORWARD_ROW2;
+            (0..n).map(|i| std::ptr::read(first.add(i))).collect()
+        };
+        unsafe { FreeMibTable(t as *const _) };
+        Ok(rows)
+    }
+
+    /// Metrik der Schnittstelle; None = Schnittstelle nicht verbunden
+    fn if_metric(fam: u16, idx: u32) -> Option<u32> {
+        let mut r: MIB_IPINTERFACE_ROW = unsafe { std::mem::zeroed() };
+        unsafe { InitializeIpInterfaceEntry(&mut r) };
+        r.Family = fam;
+        r.InterfaceIndex = idx;
+        if unsafe { GetIpInterfaceEntry(&mut r) } != NO_ERROR {
+            return Some(0);
+        }
+        (r.Connected != 0).then_some(r.Metric)
+    }
+
+    fn is_host(r: &MIB_IPFORWARD_ROW2, a: IpAddr) -> bool {
+        let len = if a.is_ipv4() { 32 } else { 128 };
+        r.DestinationPrefix.PrefixLength == len && from_sockaddr(&r.DestinationPrefix.Prefix) == Some(a)
+    }
+
+    /// Host-Route zu `a` ueber das beste normale Standard-Gateway (nicht den Tunnel `tun`) setzen.
+    /// Ergebnis: (Gateway, Schnittstellen-Index)
+    pub fn bypass(a: IpAddr, tun: u32) -> Result<(IpAddr, u32), String> {
+        let fam = family(a);
+        let rows = table(fam)?;
+        let best = rows
+            .iter()
+            .filter(|r| r.DestinationPrefix.PrefixLength == 0 && r.InterfaceIndex != tun)
+            .filter_map(|r| if_metric(fam, r.InterfaceIndex).map(|m| (r.Metric.saturating_add(m), r)))
+            .min_by_key(|(m, _)| *m)
+            .map(|(_, r)| r)
+            .ok_or_else(|| format!("kein normales Standard-Gateway fuer {} gefunden", if a.is_ipv4() { "IPv4" } else { "IPv6" }))?;
+        let nh = from_sockaddr(&best.NextHop).unwrap_or(IpAddr::from([0u8, 0, 0, 0]));
+        // alte Host-Routen zum Server (z. B. ueber ein frueheres WLAN) entfernen
+        for r in rows.iter().filter(|r| is_host(r, a)) {
+            if r.InterfaceIndex == best.InterfaceIndex && from_sockaddr(&r.NextHop) == Some(nh) {
+                return Ok((nh, best.InterfaceIndex));
+            }
+            unsafe { DeleteIpForwardEntry2(r) };
+        }
+        let mut row: MIB_IPFORWARD_ROW2 = unsafe { std::mem::zeroed() };
+        unsafe { InitializeIpForwardEntry(&mut row) };
+        row.InterfaceLuid = best.InterfaceLuid;
+        row.InterfaceIndex = best.InterfaceIndex;
+        row.DestinationPrefix.Prefix = to_sockaddr(a);
+        row.DestinationPrefix.PrefixLength = if a.is_ipv4() { 32 } else { 128 };
+        row.NextHop = best.NextHop;
+        row.Metric = 1;
+        match unsafe { CreateIpForwardEntry2(&row) } {
+            NO_ERROR | ERROR_OBJECT_ALREADY_EXISTS => Ok((nh, best.InterfaceIndex)),
+            rc => Err(format!("Route setzen fehlgeschlagen (Fehler {rc})")),
+        }
+    }
+
+    /// Host-Routen zu `a` auf allen Schnittstellen entfernen
+    pub fn remove_host(a: IpAddr) {
+        if let Ok(rows) = table(family(a)) {
+            for r in rows.iter().filter(|r| is_host(r, a)) {
+                unsafe { DeleteIpForwardEntry2(r) };
+            }
+        }
     }
 }
 
