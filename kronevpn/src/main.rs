@@ -505,7 +505,10 @@ fn main() {
     let cfg = load_config(&a);
     if let Some(c) = &a.cipher {
         match set_cipher_choice(&a, c) {
-            Ok(()) => say(&format!("Verschluesselung: {} (gilt ab der naechsten Verbindung)", cipher_text(c))),
+            Ok(()) => say(&format!(
+                "Verschluesselung: {} (gilt ab der naechsten Verbindung)\n  Verschluesselt ist immer – hier wird nur das Verfahren gewaehlt, alle sind gleich sicher. Auto nimmt das schnellste fuer dieses Geraet.\n  Immer aktiv: HTTPS-Huelle (TLS 1.3, sieht aus wie eine Webseite), Geraete-Schluessel (Noise, nur Server und Geraete koennen lesen), Tarnung (keine VPN-Muster).",
+                cipher_text(c)
+            )),
             Err(e) => say(&format!("Verschluesselung konnte nicht gespeichert werden: {e}")),
         }
     }

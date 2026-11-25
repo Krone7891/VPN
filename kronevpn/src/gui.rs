@@ -122,6 +122,15 @@ struct App {
 }
 
 /// weiches Ein-/Ausblenden (0..1 -> 0..1)
+
+/// Sicherheit-Dialog: was man waehlen kann und was immer an ist (gleiche Texte wie in der Android-App)
+const SICHER_INTRO: &str = "Deine Daten sind immer verschlüsselt – ausschalten kann man das nicht. Hier wählst du nur das Verfahren. Alle drei Möglichkeiten sind gleich sicher (geprüfte Standards, 256-Bit-Schlüssel); sie unterscheiden sich nur in Tempo und Akku.";
+const IMMER_AKTIV: [(&str, &str); 3] = [
+    ("HTTPS-Hülle (TLS 1.3, Port 443)", "Für Firewalls wie Sophos sieht das VPN aus wie eine normale Webseite. Deshalb kommt es durch."),
+    ("Geräte-Schlüssel (Noise)", "Nur dein Server und deine Geräte können die Daten lesen – auch wenn eine Firmen-Firewall HTTPS aufbricht und hineinschaut."),
+    ("Tarnung", "Paketgrößen und Takt ändern sich bei jeder Verbindung, damit keine typischen VPN-Muster entstehen. Das ist keine Verschlüsselung, nur eine Verkleidung – die Sicherheit kommt von den beiden Punkten oben."),
+];
+
 fn sanft(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
     1.0 - (1.0 - x).powi(3)
@@ -770,8 +779,17 @@ impl App {
         };
         egui::Grid::new("details").num_columns(2).spacing(vec2(16.0, 6.0)).min_row_height(20.0).show(ui, |ui| {
             for (k, v, c) in zeilen {
-                ui.label(RichText::new(k).color(MUTE).size(13.5));
-                ui.add(egui::Label::new(RichText::new(v).color(c).size(13.5)).wrap());
+                let tipp = match k {
+                    "Schutz" => "HTTPS-Hülle (TLS 1.3) + Geräte-Schlüssel (Noise): nur dein Server und deine Geräte können die Daten lesen.",
+                    "Daten" => "Verfahren, mit dem deine Daten verschlüsselt werden (änderbar unter „Sicherheit“). Tarnung = Paketgrößen und Takt wechseln, damit Firewalls kein VPN-Muster erkennen.",
+                    _ => "",
+                };
+                let a = ui.label(RichText::new(k).color(MUTE).size(13.5));
+                let b = ui.add(egui::Label::new(RichText::new(v).color(c).size(13.5)).wrap());
+                if !tipp.is_empty() {
+                    a.on_hover_text(tipp);
+                    b.on_hover_text(tipp);
+                }
                 ui.end_row();
             }
         });
@@ -780,7 +798,7 @@ impl App {
     fn fuss(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().button_padding.x = 6.0;
         ui.columns(3, |c| {
-            if c[0].add_sized([c[0].available_width(), 36.0], knopf("Sicherheit", false)).on_hover_text("Verschlüsselung wählen (Auto, AES-256, ChaCha20)").clicked() {
+            if c[0].add_sized([c[0].available_width(), 36.0], knopf("Sicherheit", false)).on_hover_text("Was deine Daten schützt – und Verschlüsselung wählen (Auto, AES-256, ChaCha20)").clicked() {
                 self.wahl = self.st.verschluesselung();
                 self.zeige_sicherheit = true;
             }
@@ -859,16 +877,21 @@ impl App {
             let mut neu = None;
             let aes_hw = self.z.as_ref().map(|z| z.aes_hw).unwrap_or_else(kvpn::crypto::aes_hw);
             let laeuft = self.z.as_ref().filter(|z| z.state == "connected").map(|z| z.cipher.clone()).filter(|c| !c.is_empty());
+            let hoehe = (ctx.screen_rect().height() - 110.0).max(240.0);
             let r = egui::Modal::new(egui::Id::new("sicherheit")).show(ctx, |ui| {
-                ui.set_width(breite.min(420.0));
-                ui.label(fett("Verschlüsselung", 19.0));
-                ui.label(RichText::new("Alle drei sind geprüfte Standard-Verfahren mit 256-Bit-Schlüsseln. Unterschied ist nur die Geschwindigkeit auf diesem Gerät.").color(MUTE).size(13.0));
-                ui.add_space(6.0);
-                let auto_txt = if aes_hw { "nimmt AES-256-GCM – dieser Prozessor hat AES-Befehle" } else { "nimmt ChaCha20 – ohne AES-Befehle schneller" };
+                ui.set_width(breite.min(440.0));
+                egui::ScrollArea::vertical().max_height(hoehe).min_scrolled_height(hoehe).show(ui, |ui| {
+                ui.label(fett("Sicherheit", 19.0));
+                ui.label(RichText::new(SICHER_INTRO).color(MUTE).size(13.0));
+                ui.add_space(8.0);
+                ui.label(fett("Verschlüsselung wählen", 14.5));
+                ui.add_space(2.0);
+                let auto_txt = if aes_hw { "Die App nimmt automatisch das schnellste Verfahren für dieses Gerät – hier AES-256-GCM, weil der Prozessor AES-Befehle hat. Passt fast immer." } else { "Die App nimmt automatisch das schnellste Verfahren für dieses Gerät – hier ChaCha20, weil der Prozessor keine AES-Befehle hat. Passt fast immer." };
+                let aes_txt = if aes_hw { "Weltweiter Standard (Banken, Behörden, HTTPS). Auf diesem PC sehr schnell, weil der Prozessor AES direkt beherrscht." } else { "Weltweiter Standard (Banken, Behörden, HTTPS). Auf diesem PC langsamer, weil dem Prozessor die AES-Befehle fehlen." };
                 for (w, titel, unter) in [
                     ("auto", "Auto (empfohlen)", auto_txt),
-                    ("aes", "AES-256-GCM", if aes_hw { "sehr schnell auf diesem PC (Hardware)" } else { "langsamer auf diesem PC (keine AES-Befehle)" }),
-                    ("chacha", "ChaCha20-Poly1305", "schnell auf jedem Gerät, auch ohne AES-Befehle"),
+                    ("aes", "AES-256-GCM", aes_txt),
+                    ("chacha", "ChaCha20-Poly1305", "Moderner Standard (auch in WireGuard). Auf jedem Gerät schnell, auch auf älteren ohne AES-Befehle."),
                 ] {
                     let an = self.wahl == w;
                     let resp = egui::Frame::new()
@@ -887,7 +910,7 @@ impl App {
                                 ui.vertical(|ui| {
                                     ui.spacing_mut().item_spacing.y = 1.0;
                                     ui.label(fett(titel, 15.0));
-                                    ui.label(RichText::new(unter).color(MUTE).size(12.5));
+                                    ui.add(egui::Label::new(RichText::new(unter).color(MUTE).size(12.5)).wrap());
                                 });
                             });
                         })
@@ -897,19 +920,34 @@ impl App {
                     }
                     ui.add_space(2.0);
                 }
-                ui.add_space(4.0);
                 let info = if self.wahl_arbeit.is_some() {
-                    "Wird übernommen – VPN verbindet kurz neu …".to_string()
+                    "Wird übernommen – das VPN verbindet sich kurz neu …".to_string()
                 } else if let Some(c) = &laeuft {
-                    format!("Jetzt aktiv: {c}. Dazu kommt eine Tarn-Schicht, die sich bei jeder Verbindung ändert (Paketgrößen, Takt) – sieht für Firewalls wie normales HTTPS aus.")
+                    format!("Jetzt aktiv: {c}. Ein Wechsel verbindet das VPN kurz neu (1–2 s).")
                 } else {
                     "Gilt ab der nächsten Verbindung.".to_string()
                 };
-                ui.label(RichText::new(info).color(MUTE).size(12.5));
-                ui.add_space(4.0);
+                ui.label(RichText::new(info).color(if laeuft.is_some() { OK } else { MUTE }).size(12.5));
+                ui.label(RichText::new("Wann umstellen? Eigentlich nie – nur zum Ausprobieren, falls die Verbindung langsam ist.").color(MUTE).size(12.5));
+                ui.add_space(10.0);
+                ui.label(fett("Immer aktiv (nicht abschaltbar)", 14.5));
+                ui.add_space(2.0);
+                for (titel, text) in IMMER_AKTIV {
+                    ui.horizontal_top(|ui| {
+                        ui.label(RichText::new("✔").color(OK).size(13.0));
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 1.0;
+                            ui.label(RichText::new(titel).color(INK).size(13.0).strong());
+                            ui.add(egui::Label::new(RichText::new(text).color(MUTE).size(12.5)).wrap());
+                        });
+                    });
+                    ui.add_space(3.0);
+                }
+                ui.add_space(6.0);
                 if ui.add(knopf("Schließen", false).min_size(vec2(ui.available_width(), 38.0))).clicked() {
                     zu = true;
                 }
+                });
             });
             if let Some(w) = neu {
                 self.wahl_setzen(w);

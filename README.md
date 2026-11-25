@@ -11,6 +11,12 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Neu in 1.1.2
+
+- **„Sicherheit“ verständlich erklärt** (PC und Android): Verschlüsselt ist immer – man wählt nur das Verfahren
+  (Auto / AES-256 / ChaCha20, alle gleich sicher, Unterschied nur Tempo und Akku). Dazu steht, was immer aktiv und nicht
+  abschaltbar ist: HTTPS-Hülle (TLS 1.3), Geräte-Schlüssel (Noise) und Tarnung (keine Verschlüsselung, nur Verkleidung).
+
 ## Neu in 1.1.1
 
 - **Windows verbindet viel schneller:** Die Route zum Server (am Tunnel vorbei) setzt die App jetzt direkt über die

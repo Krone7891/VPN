@@ -523,7 +523,7 @@ fn menu() {
     println!("Befehle (Buchstabe eintippen, dann Enter):");
     println!("  f  neue Ansicht (Programmfenster)");
     println!("  p  Profil wechseln");
-    println!("  v  Verschluesselung wechseln (Auto / AES-256 / ChaCha20)");
+    println!("  v  Verschluesselungs-Verfahren wechseln (Auto / AES-256 / ChaCha20) – verschluesselt ist immer, alle gleich sicher");
     println!("  t  VPN ausschalten");
     println!("  h  diese Hilfe\n");
 }

@@ -640,30 +640,98 @@ public class MainActivity extends Activity {
     }
 
     private void showCipher() {
-        if (bCipher != null) bCipher.setText("🔒 Verschlüsselung: " + cipherName(cipherPref(this)));
+        if (bCipher != null) bCipher.setText("🔒 Sicherheit · " + cipherName(cipherPref(this)));
     }
 
+    /** Sicherheit: was man waehlen kann (Verfahren) und was immer an ist – gleiche Texte wie in der PC-App */
     private void chooseCipher() {
         boolean hw = Native.aesHw();
-        String[] items = {
-                "Auto (empfohlen) – " + (hw ? "nimmt AES-256-GCM, dieses Handy hat AES-Befehle" : "nimmt ChaCha20, ohne AES-Befehle schneller"),
-                "AES-256-GCM – " + (hw ? "sehr schnell auf diesem Handy" : "langsamer auf diesem Handy"),
-                "ChaCha20-Poly1305 – schnell auf jedem Gerät"};
-        int cur = java.util.Arrays.asList(CIPHERS).indexOf(cipherPref(this));
-        new AlertDialog.Builder(this)
-                .setTitle("Verschlüsselung")
-                .setSingleChoiceItems(items, Math.max(cur, 0), (d, w) -> {
-                    String c = CIPHERS[w];
-                    d.dismiss();
-                    if (c.equals(cipherPref(this))) return;
-                    KroneVpnService.prefs(this).edit().putString("cipher", c).apply();
-                    Native.cipher(c);
-                    showCipher();
-                    if (KroneVpnService.handle != 0) {
-                        Native.reconnect(KroneVpnService.handle);
-                        Toast.makeText(this, cipherName(c) + " – verbinde neu …", Toast.LENGTH_SHORT).show();
-                    }
-                })
+        String cur = cipherPref(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(8), dp(22), dp(4));
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+
+        box.addView(text("Deine Daten sind immer verschlüsselt – ausschalten kann man das nicht. Hier wählst du nur das Verfahren. "
+                + "Alle drei Möglichkeiten sind gleich sicher (geprüfte Standards, 256-Bit-Schlüssel); sie unterscheiden sich nur in Tempo und Akku.", 14, cMute, false));
+        TextView h1 = text("Verschlüsselung wählen", 15.5f, cInk, true);
+        h1.setPadding(0, dp(14), 0, dp(6));
+        box.addView(h1);
+
+        String[][] opt = {
+                {"auto", "Auto (empfohlen)", hw
+                        ? "Die App nimmt automatisch das schnellste Verfahren für dieses Gerät – hier AES-256-GCM, weil der Prozessor AES-Befehle hat. Passt fast immer."
+                        : "Die App nimmt automatisch das schnellste Verfahren für dieses Gerät – hier ChaCha20, weil der Prozessor keine AES-Befehle hat. Passt fast immer."},
+                {"aes", "AES-256-GCM", hw
+                        ? "Weltweiter Standard (Banken, Behörden, HTTPS). Auf diesem Handy sehr schnell, weil der Prozessor AES direkt beherrscht."
+                        : "Weltweiter Standard (Banken, Behörden, HTTPS). Auf diesem Handy langsamer und braucht mehr Akku, weil dem Prozessor die AES-Befehle fehlen."},
+                {"chacha", "ChaCha20-Poly1305", "Moderner Standard (auch in WireGuard). Auf jedem Gerät schnell, auch auf älteren ohne AES-Befehle."},
+        };
+        final AlertDialog[] dlg = new AlertDialog[1];
+        for (String[] o : opt) {
+            boolean an = o[0].equals(cur);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            GradientDrawable bg = round(an ? (cAcc & 0x00FFFFFF) | 0x26000000 : cSoft, 14);
+            if (an) bg.setStroke(dp(1.5f), cAcc);
+            row.setBackground(bg);
+            row.setPadding(dp(14), dp(10), dp(14), dp(11));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.bottomMargin = dp(8);
+            row.setLayoutParams(lp);
+            row.addView(text((an ? "◉  " : "○  ") + o[1], 15.5f, an ? cAcc : cInk, true));
+            TextView d = text(o[2], 13, cMute, false);
+            d.setPadding(0, dp(2), 0, 0);
+            row.addView(d);
+            row.setClickable(true);
+            row.setFocusable(true);
+            String c = o[0];
+            row.setOnClickListener(v -> {
+                if (dlg[0] != null) dlg[0].dismiss();
+                if (c.equals(cipherPref(this))) return;
+                KroneVpnService.prefs(this).edit().putString("cipher", c).apply();
+                Native.cipher(c);
+                showCipher();
+                if (KroneVpnService.handle != 0) {
+                    Native.reconnect(KroneVpnService.handle);
+                    Toast.makeText(this, cipherName(c) + " – verbinde kurz neu …", Toast.LENGTH_SHORT).show();
+                }
+            });
+            box.addView(row);
+        }
+        String aktiv = "";
+        try {
+            if (KroneVpnService.handle != 0) aktiv = new JSONObject(Native.status(KroneVpnService.handle)).optString("cipher", "");
+        } catch (Exception ignored) {
+        }
+        TextView st = text(aktiv.isEmpty() ? "Gilt ab der nächsten Verbindung." : "Jetzt aktiv: " + aktiv + ". Ein Wechsel verbindet das VPN kurz neu (1–2 s).",
+                13, aktiv.isEmpty() ? cMute : cOk, false);
+        st.setPadding(0, dp(2), 0, dp(2));
+        box.addView(st);
+        box.addView(text("Wann umstellen? Eigentlich nie – nur zum Ausprobieren, falls die Verbindung langsam ist oder der Akku schnell leer wird.", 13, cMute, false));
+
+        TextView h2 = text("Immer aktiv (nicht abschaltbar)", 15.5f, cInk, true);
+        h2.setPadding(0, dp(16), 0, dp(4));
+        box.addView(h2);
+        String[][] immer = {
+                {"HTTPS-Hülle (TLS 1.3, Port 443)", "Für Firewalls wie Sophos sieht das VPN aus wie eine normale Webseite. Deshalb kommt es durch."},
+                {"Geräte-Schlüssel (Noise)", "Nur dein Server und deine Geräte können die Daten lesen – auch wenn eine Firmen-Firewall HTTPS aufbricht und hineinschaut."},
+                {"Tarnung", "Paketgrößen und Takt ändern sich bei jeder Verbindung, damit keine typischen VPN-Muster entstehen. "
+                        + "Das ist keine Verschlüsselung, nur eine Verkleidung – die Sicherheit kommt von den beiden Punkten oben."},
+        };
+        for (String[] i : immer) {
+            TextView t = text("✔  " + i[0], 14, cOk, true);
+            t.setPadding(0, dp(6), 0, 0);
+            box.addView(t);
+            TextView d = text(i[1], 13, cMute, false);
+            d.setPadding(dp(22), dp(1), 0, 0);
+            box.addView(d);
+        }
+
+        dlg[0] = new AlertDialog.Builder(this)
+                .setTitle("Sicherheit")
+                .setView(sc)
                 .setNegativeButton("Schließen", null)
                 .show();
     }
