@@ -86,6 +86,10 @@ pub trait Steuerung: Send + Sync + 'static {
     fn netz(&self) -> kvpn::regeln::Netz {
         kvpn::regeln::Netz::default()
     }
+    /// Geschwindigkeitstest im laufenden VPN anstossen (Ergebnis kommt ueber `zustand().speed`)
+    fn geschwindigkeit(&self) -> Result<(), String> {
+        crate::speedtest_anstossen()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -682,6 +686,34 @@ impl App {
         karte().inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             self.details(ui, z.as_ref());
+            if let Some(z) = z.as_ref().filter(|z| z.state == "connected") {
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    let sp = &z.speed;
+                    let txt = crate::speed_text(sp);
+                    let farbe = match sp.state.as_str() {
+                        "fehler" => WARN,
+                        "fertig" => INK,
+                        _ => MUTE,
+                    };
+                    ui.label(RichText::new("Tempo").color(MUTE).size(13.5));
+                    ui.add_space(10.0);
+                    if sp.laeuft() {
+                        ui.add(egui::Spinner::new().size(13.0).color(ACC));
+                    }
+                    if !txt.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(txt).color(farbe).size(13.5)).wrap());
+                    }
+                    if !sp.laeuft() {
+                        let l = ui.add(egui::Label::new(RichText::new(if sp.state.is_empty() { "Geschwindigkeit testen" } else { "nochmal" }).color(ACC).size(13.5)).sense(Sense::click()));
+                        if l.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Misst Ping, Download und Upload durch das VPN zu deinem Server (je 5 Sekunden)").clicked() {
+                            if let Err(e) = self.st.geschwindigkeit() {
+                                self.fehler = e;
+                            }
+                        }
+                    }
+                });
+            }
         });
     }
 
@@ -1277,8 +1309,13 @@ pub fn vorschau(modus: &str) {
         profile: Mutex<Vec<ClientConfig>>,
         wahl: Mutex<String>,
         regeln: Mutex<kvpn::regeln::Regeln>,
+        tempo: Mutex<Option<Instant>>,
     }
     impl Steuerung for Demo {
+        fn geschwindigkeit(&self) -> Result<(), String> {
+            *self.tempo.lock().unwrap() = Some(Instant::now());
+            Ok(())
+        }
         fn regeln(&self) -> kvpn::regeln::Regeln {
             self.regeln.lock().unwrap().clone()
         }
@@ -1340,6 +1377,17 @@ pub fn vorschau(modus: &str) {
                 cipher: "AES-256-GCM".into(),
                 cipher_choice: "auto".into(),
                 aes_hw: true,
+                speed: match *self.tempo.lock().unwrap() {
+                    None if self.modus == "tempo" => kvpn::client::Speed { state: "fertig".into(), ping_ms: 21.0, down_mbps: 94.6, up_mbps: 38.2, at: 1, ..Default::default() },
+                    None => Default::default(),
+                    Some(t) => {
+                        let e = t.elapsed().as_secs_f64();
+                        let mut s = kvpn::client::Speed { state: "laeuft".into(), phase: "down".into(), ping_ms: 21.0, ..Default::default() };
+                        if e > 3.0 { s.phase = "up".into(); s.down_mbps = 94.6; }
+                        if e > 6.0 { s.state = "fertig".into(); s.phase.clear(); s.up_mbps = 38.2; s.at = 1; }
+                        s
+                    }
+                },
             })
         }
         fn gewollt(&self) -> bool {
@@ -1412,7 +1460,7 @@ pub fn vorschau(modus: &str) {
         profile.push(demo("Büro-VPN", "Laptop", "wss://buero.example.com/api/v1/stream"));
         profile.push(demo("Eltern", "Mein PC", "wss://eltern.example.net/api/v1/stream"));
     }
-    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile), wahl: Mutex::new("auto".into()),
+    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile), wahl: Mutex::new("auto".into()), tempo: Mutex::new(None),
         regeln: Mutex::new(kvpn::regeln::Regeln { notbremse: true, auto: true, vertraut: vec!["FRITZ!Box 7590".into()], ziele: vec!["bank.de".into()], ..Default::default() }) });
     if let Err(e) = run(st, cfg, false) {
         eprintln!("{e}");

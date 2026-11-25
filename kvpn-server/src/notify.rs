@@ -7,6 +7,8 @@
 //!   * "start":    der VPN-Server ist (neu) gestartet, z. B. nach Stromausfall oder Update
 //!   * "update":   neue App-Version auf GitHub, wartet auf Freigabe
 //!   * "bericht":  am Monatsanfang der Bericht fuer den letzten Monat
+//!   * "ausfall":  ein ueberwachtes Geraet ist zu lange offline, der Server ist von aussen nicht erreichbar,
+//!                 eine Sicherung ging schief (ab 1.4.0) – und jeweils Entwarnung
 //! Gesendet wird im Hintergrund mit curl; Zugangsdaten stehen nur in server.toml (nur root lesbar).
 
 use crate::config::Config;
@@ -17,12 +19,13 @@ use std::sync::Mutex;
 pub enum Ereignis {
     NeuesGeraet { name: String, os: String, von: String },
     FalschesPasswort,
-    Start { version: String },
+    Start { version: String, pause: Option<String> },
     Update { version: String },
     Bericht { text: String },
+    Ausfall { titel: String, text: String },
 }
 
-pub const ALLE: &[&str] = &["geraet", "passwort", "start", "update", "bericht"];
+pub const ALLE: &[&str] = &["geraet", "passwort", "start", "update", "bericht", "ausfall"];
 
 impl Ereignis {
     fn art(&self) -> &'static str {
@@ -32,6 +35,7 @@ impl Ereignis {
             Ereignis::Start { .. } => "start",
             Ereignis::Update { .. } => "update",
             Ereignis::Bericht { .. } => "bericht",
+            Ereignis::Ausfall { .. } => "ausfall",
         }
     }
 
@@ -47,8 +51,16 @@ impl Ereignis {
                 "Auf der Admin-Seite wurde ein falsches Passwort oder ein falscher Code eingegeben. Warst du das nicht, Admin-Passwort ändern.".into(),
                 "warning",
             ),
-            Ereignis::Start { version } => (format!("{vpn}: Server gestartet"), format!("Der VPN-Server läuft wieder (Version {version})."), "rocket"),
+            Ereignis::Start { version, pause } => (
+                format!("{vpn}: Server gestartet"),
+                match pause {
+                    Some(p) => format!("Der VPN-Server läuft wieder (Version {version}) – er war {p} nicht erreichbar (Stromausfall, Neustart oder Update?)."),
+                    None => format!("Der VPN-Server läuft wieder (Version {version})."),
+                },
+                "rocket",
+            ),
             Ereignis::Bericht { text } => (format!("{vpn}: Monatsbericht"), text.clone(), "bar_chart"),
+            Ereignis::Ausfall { titel, text } => (format!("{vpn}: {titel}"), text.clone(), "rotating_light"),
             Ereignis::Update { version } => (
                 format!("{vpn}: neue App-Version {version}"),
                 format!("Version {version} liegt auf GitHub bereit. Verteilen an die Geräte: kvpn-server update (oder auf der Admin-Seite)."),

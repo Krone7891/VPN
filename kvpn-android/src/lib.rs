@@ -159,6 +159,19 @@ pub extern "system" fn Java_de_krone_vpn_Native_reconnect<'l>(_env: JNIEnv<'l>, 
     h.kick.notify_one();
 }
 
+/// Geschwindigkeitstest im laufenden Tunnel starten; Rueckgabe: "" = gestartet, sonst Fehlertext.
+/// Das Ergebnis steht danach in status() unter "speed".
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_speedtest<'l>(env: JNIEnv<'l>, _c: JClass<'l>, h: jlong) -> JString<'l> {
+    let r = if h == 0 {
+        "Nicht verbunden – erst verbinden, dann testen".to_string()
+    } else {
+        let h = unsafe { &*(h as *const Handle) };
+        h.status.speedtest().err().unwrap_or_default()
+    };
+    env.new_string(r).unwrap_or_default()
+}
+
 /// Angaben des Geraets fuer den Server (JSON: WLAN-Name, Standort) – nur wenn der Nutzer es in der App freigibt
 #[no_mangle]
 pub extern "system" fn Java_de_krone_vpn_Native_report<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, h: jlong, json: JString<'l>) {

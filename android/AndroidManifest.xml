@@ -70,6 +70,20 @@
             <meta-data android:name="android.net.VpnService.SUPPORTS_ALWAYS_ON" android:value="true" />
         </service>
 
+        <!-- Schnelleinstellungs-Kachel: VPN an/aus aus der Statusleiste -->
+        <service
+            android:name=".Kachel"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:icon="@drawable/ic_kachel"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.ACTIVE_TILE" android:value="true" />
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
+
         <receiver android:name=".Updater$Result" android:exported="false" />
         <receiver android:name=".Updater$Replaced" android:exported="true">
             <intent-filter>

@@ -488,6 +488,9 @@ where
     let peer_name = prt.peer.name.clone();
     let st_upd = st.clone();
     let sh_rx = sh.clone();
+    // Geschwindigkeitstest: hoechstens einer je Verbindung gleichzeitig; Upload-Messung (Bytes, erstes/letztes Stueck)
+    let speed_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut up_meas: (u64, Option<Instant>, Option<Instant>) = (0, None, None);
     let mut receiver = tokio::spawn(async move {
         loop {
             let mut buf = match tokio::time::timeout(Duration::from_secs(60), inc.recv()).await {
@@ -560,6 +563,30 @@ where
                             log!("{name}: Logo uebertragen ({} KB)", png.len() / 1024);
                         });
                     }
+                }
+                kvpn::proto::REC_SPEED_GET if data.len() >= 2 => {
+                    if !speed_busy.swap(true, Relaxed) {
+                        let ms = u16::from_be_bytes([data[0], data[1]]).clamp(500, kvpn::proto::SPEED_MAX_MS);
+                        up_meas = (0, None, None);
+                        tokio::spawn(speed_down(ms, ctrl_tx.clone(), speed_busy.clone(), peer_name.clone()));
+                    }
+                }
+                kvpn::proto::REC_SPEED_DATA => {
+                    let now = Instant::now();
+                    up_meas.0 += data.len() as u64;
+                    up_meas.1.get_or_insert(now);
+                    up_meas.2 = Some(now);
+                }
+                kvpn::proto::REC_SPEED_UP_END => {
+                    let us = match up_meas {
+                        (_, Some(a), Some(b)) => b.duration_since(a).as_micros() as u64,
+                        _ => 0,
+                    };
+                    let mut b = Vec::with_capacity(24);
+                    push_record(&mut b, kvpn::proto::REC_SPEED_RES, &kvpn::proto::speed_res(2, up_meas.0, us));
+                    let _ = ctrl_tx.try_send(b);
+                    log!("{peer_name}: Geschwindigkeitstest Upload {:.1} Mbit/s", kvpn::proto::mbit(up_meas.0, us));
+                    up_meas = (0, None, None);
                 }
                 REC_UPD_GET if data.len() >= 4 => {
                     if let Some(u) = &upd {
@@ -674,6 +701,32 @@ async fn send_update(path: std::path::PathBuf, version: String, from: usize, ctr
     st.info.lock().unwrap().upd_sent = version;
 }
 
+/// Geschwindigkeitstest Download: Fuelldaten ueber den Steuer-Kanal (Gegendruck = so schnell wie die Verbindung)
+async fn speed_down(ms: u16, ctrl: mpsc::Sender<Vec<u8>>, busy: Arc<std::sync::atomic::AtomicBool>, name: String) {
+    let filler = vec![0u8; kvpn::proto::SPEED_CHUNK];
+    let t0 = Instant::now();
+    let end = t0 + Duration::from_millis(ms as u64);
+    let mut bytes = 0u64;
+    while Instant::now() < end {
+        let mut b = Vec::with_capacity(2 * filler.len() + 16);
+        push_record(&mut b, kvpn::proto::REC_SPEED_DATA, &filler);
+        push_record(&mut b, kvpn::proto::REC_SPEED_DATA, &filler);
+        if ctrl.send(b).await.is_err() {
+            busy.store(false, Relaxed);
+            return;
+        }
+        bytes += 2 * filler.len() as u64;
+    }
+    let us = t0.elapsed().as_micros() as u64;
+    let mut b = Vec::with_capacity(24);
+    push_record(&mut b, kvpn::proto::REC_SPEED_RES, &kvpn::proto::speed_res(1, bytes, us));
+    let _ = ctrl.send(b).await;
+    log!("{name}: Geschwindigkeitstest Download {:.1} Mbit/s (gesendet)", kvpn::proto::mbit(bytes, us));
+    // naechster Test fruehestens nach dem Upload
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    busy.store(false, Relaxed);
+}
+
 // ------------------------------------------------------------------------------------------------ Hintergrund
 
 /// jede Sekunde: Raten und Verlauf; jede Minute speichern; alle 3 s Konfiguration auf Aenderungen pruefen
@@ -775,6 +828,80 @@ pub fn spawn_background(sh: &Arc<Shared>) {
                     }
                 }
             }
+        }
+    });
+}
+
+/// jede Minute: "lebt" merken, ueberwachte Geraete pruefen; alle 10 Minuten Erreichbarkeit und taegliche Sicherung
+pub fn spawn_waechter(sh: &Arc<Shared>) {
+    let s = sh.clone();
+    tokio::spawn(async move {
+        let mut w = crate::ausfall::Waechter::default();
+        w.extern_passte = crate::ausfall::passte_laden(&s.cfg());
+        let mut n = 0u64;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        loop {
+            let c = s.cfg();
+            let now = now_secs();
+            crate::ausfall::lebt(&c, now);
+            // ueberwachte Geraete
+            if !c.ausfall_geraete.is_empty() {
+                let mut letzte: HashMap<String, (bool, u64)> = HashMap::new();
+                for p in s.peers.read().unwrap().values() {
+                    letzte.insert(p.peer.name.clone(), (p.stats.connected_since.load(Relaxed) > 0, p.stats.last_seen.load(Relaxed)));
+                }
+                for (t, x) in w.geraete(&c, &letzte, s.started, now) {
+                    log!("Ausfall-Alarm: {t}");
+                    crate::notify::event_cfg(&c, crate::notify::Ereignis::Ausfall { titel: t, text: x });
+                }
+            }
+            if n % 10 == 0 {
+                // von aussen erreichbar? (DynDNS zeigt auf den eigenen Anschluss)
+                if c.ausfall_extern {
+                    let c2 = c.clone();
+                    if let Ok(r) = tokio::task::spawn_blocking(move || crate::ausfall::extern_pruefen(&c2)).await {
+                        let vorher = w.extern_passte;
+                        if let Some((ok, t)) = &r {
+                            if !ok {
+                                log!("Erreichbarkeit: {t}");
+                            }
+                        }
+                        if let Some((t, x)) = w.extern_ergebnis(r) {
+                            log!("Ausfall-Alarm: {t}");
+                            crate::notify::event_cfg(&c, crate::notify::Ereignis::Ausfall { titel: t, text: x });
+                        }
+                        if w.extern_passte && !vorher {
+                            crate::ausfall::passte_merken(&c);
+                        }
+                    }
+                }
+                // abgelaufene Gaeste entfernen
+                if c.users {
+                    let p = s.cfg_path.clone();
+                    if let Ok(weg) = tokio::task::spawn_blocking(move || crate::gast::aufraeumen(&p)).await {
+                        for d in &weg {
+                            log!("{d}: Gast-Zugang abgelaufen – entfernt");
+                        }
+                        if !weg.is_empty() {
+                            s.reload();
+                        }
+                    }
+                }
+                // taegliche Sicherung
+                if crate::sicherung::due(&c) {
+                    let (c2, p) = (c.clone(), s.cfg_path.clone());
+                    match tokio::task::spawn_blocking(move || crate::sicherung::create(&p, &c2, "").map(|f| (f, crate::sicherung::prune(&c2)))).await {
+                        Ok(Ok((f, alt))) => log!("Sicherung angelegt: {}{}", f.display(), if alt > 0 { format!(" ({alt} alte entfernt)") } else { String::new() }),
+                        Ok(Err(e)) => {
+                            log!("Sicherung fehlgeschlagen: {e}");
+                            crate::notify::event_cfg(&c, crate::notify::Ereignis::Ausfall { titel: "Sicherung fehlgeschlagen".into(), text: format!("Die tägliche Sicherung ging schief: {e}") });
+                        }
+                        Err(_) => {}
+                    }
+                }
+            }
+            n += 1;
+            tokio::time::sleep(Duration::from_secs(std::env::var("KVPN_WAECHTER_S").ok().and_then(|x| x.parse().ok()).unwrap_or(60))).await;
         }
     });
 }

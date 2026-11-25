@@ -15,6 +15,8 @@ use tokio::sync::mpsc;
 pub mod dienst;
 #[path = "notbremse_windows.rs"]
 mod notbremse;
+#[path = "tray_windows.rs"]
+pub mod tray;
 
 /// Notbremse (Kill-Switch) des Dienstes: bleibt ueber Neuverbindungen bestehen, bis sie ausgeschaltet wird oder das
 /// VPN pausiert (vertrautes Netz). (Adapter, Einstellung, Filter)

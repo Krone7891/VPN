@@ -94,6 +94,10 @@ printf 'nameserver 10.201.0.2\nsearch heim.test\n' > /etc/netns/kv-srv/resolv.co
 # Sperrliste fuer den Werbe-Blocker (Hosts-Format), liegt auf dem Web-Server im "Internet"
 { echo "# Test-Sperrliste"; echo "0.0.0.0 werbung.test"; echo "0.0.0.0 tracker.test"; for i in $(seq 1 20); do echo "0.0.0.0 ads$i.example.com"; done; } > "$W/www/hosts.txt"
 export KVPN_ALLOW_HTTP=1
+# Ausfall-Alarm: Erreichbarkeit ueber einen Test-DNS (statt OpenDNS), Waechter alle 2 s, Geraete-Grenze 25 s
+echo '{"myip.opendns.com": "198.51.100.7", "vpn.test": "198.51.100.7"}' > "$W/extdns.json"
+bg ns kv-net python3 "$(dirname "$0")/dns_stub.py" 10.201.0.2 5353 "$W/extdns.json"
+export KVPN_EXTERN_DNS=10.201.0.2:5353 KVPN_WAECHTER_S=2 KVPN_AUSFALL_S=25
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=vpn.test" -addext "subjectAltName=DNS:vpn.test" \
   -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
 cat > "$W/nginx.conf" <<EOF
@@ -632,6 +636,84 @@ ns kv-cli9 iptables -S KVPN-NB >/dev/null 2>&1 && bad "--notbremse aus hat die S
 bg ns kv-cli9 "$BIN/kronevpn" --config "$W/nb/code" --kein-update; sleep 6; pkill -f "nb/code --kein-update"; sleep 2
 ns kv-cli9 iptables -S KVPN-NB >/dev/null 2>&1 && bad "Notbremse aus, aber Kette vorhanden" || ok "ohne Notbremse: keine Sperre, nach dem Trennen alles sauber"
 "$BIN/kvpn-server" remove nb-geraet >/dev/null
+
+echo "== Test 17: Geschwindigkeitstest, Sicherung, Gaeste-Einladung, Ausfall-Alarm (Server 1.4.0)"
+"$BIN/kvpn-server" max 12 >/dev/null   # Platz fuer Test-, Gast- und Waechter-Geraet
+mkdir -p "$W/t17/run"; "$BIN/kvpn-server" add "tempo-geraet" | grep '^kronevpn://' > "$W/t17/code"; sleep 4
+bg ns kv-cli9 env KVPN_RUN_DIR="$W/t17/run" "$BIN/kronevpn" --config "$W/t17/code" --kein-update; sleep 7
+ns kv-cli9 env KVPN_RUN_DIR="$W/t17/run" "$BIN/kronevpn" --geschwindigkeit > "$W/t17/speed.txt" 2>&1
+SP=$(tail -1 "$W/t17/speed.txt")
+echo "$SP" | python3 -c 'import re,sys;t=sys.stdin.read();m=re.search(r"Ping (\d+) ms · Download ([\d.]+) Mbit/s · Upload ([\d.]+) Mbit/s",t);sys.exit(0 if m and float(m[2])>5 and float(m[3])>5 else 1)' \
+  && ok "Geschwindigkeitstest durch den Tunnel: $SP" || bad "Geschwindigkeitstest: $(cat "$W/t17/speed.txt")"
+grep -q "tempo-geraet: Geschwindigkeitstest Upload" "$W/log.kv-srv-kvpn-server" && ok "Server misst den Upload selbst" || bad "Upload-Messung fehlt im Server-Protokoll"
+python3 -c 'import json,sys;s=json.load(open(sys.argv[1]))["speed"];sys.exit(0 if s["state"]=="fertig" and s["down_mbps"]>0 else 1)' "$W/t17/run/status.json" && ok "Ergebnis steht im Status fuer die Apps (status.json)" || bad "status.json ohne Ergebnis"
+pkill -f "t17/code --kein-update"; sleep 1
+# Sicherung: taeglich automatisch (direkt nach dem Start), von Hand, herunterladen, wiederherstellen
+ls "$W/state/sicherungen/"kronevpn-sicherung-*.tar.gz >/dev/null 2>&1 && ok "automatische Sicherung nach dem Start: $(ls "$W/state/sicherungen" | head -1)" || bad "keine automatische Sicherung"
+sleep 1; "$BIN/kvpn-server" sicherung jetzt > "$W/t17/bak.txt" 2>&1; B=$(grep -o '/[^ ]*kronevpn-sicherung-[^ ]*\.tar\.gz' "$W/t17/bak.txt" | head -1)
+tar -tzf "$B" > "$W/t17/bak-list.txt" 2>&1 && grep -qx "config/server.toml" "$W/t17/bak-list.txt" && grep -qx "config/benutzer.db" "$W/t17/bak-list.txt" && grep -qx "state/stats.json" "$W/t17/bak-list.txt" && ! grep -q "^state/update/\|^state/sicherungen/" "$W/t17/bak-list.txt" \
+  && ok "Sicherung von Hand ($(wc -l < "$W/t17/bak-list.txt") Dateien: Schluessel, Geraete-DB, Statistik; ohne Updates)" || bad "Sicherung: $(cat "$W/t17/bak.txt") $(head -5 "$W/t17/bak-list.txt")"
+[ "$(stat -c %a "$B")" = 600 ] && ok "Sicherung nur fuer root lesbar (600)" || bad "Rechte der Sicherung: $(stat -c %a "$B")"
+BN=$(basename "$B")
+[ "$(ns kv-srv curl -s -m 5 -o "$W/t17/dl.tar.gz" -w '%{http_code}' "http://127.0.0.1:8180/sicherung/$BN")" = 200 ] && tar -tzf "$W/t17/dl.tar.gz" >/dev/null && ok "Admin-Seite: Sicherung herunterladen" || bad "Download der Sicherung"
+[ "$(ns kv-srv curl -sk -m 5 -o /dev/null -w '%{http_code}' "https://vpn.test/stats/sicherung/$BN")" != 200 ] && [ "$(ns kv-srv curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:8101/stats/sicherung/$BN")" = 403 ] && ok "von aussen keine Sicherung (403)" || bad "Sicherung von aussen abrufbar"
+"$BIN/kvpn-server" add "nach-der-sicherung" >/dev/null; "$BIN/kvpn-server" remove "tempo-geraet" >/dev/null
+"$BIN/kvpn-server" sicherung zurueck "$BN" --ja > "$W/t17/restore.txt" 2>&1; sleep 4
+"$BIN/kvpn-server" list > "$W/t17/list.txt" 2>&1
+grep -q "tempo-geraet" "$W/t17/list.txt" && ! grep -q "nach-der-sicherung" "$W/t17/list.txt" && grep -q "geraet1" "$W/t17/list.txt" \
+  && ok "wiederhergestellt: $(grep -o '[0-9]* Dateien wiederhergestellt' "$W/t17/restore.txt")" || bad "Wiederherstellung: $(cat "$W/t17/restore.txt")"
+ls "$W/state/sicherungen/" | grep -q "vor-wiederherstellung" && ok "vorheriger Stand vorher gesichert" || bad "keine Sicherung vor der Wiederherstellung"
+ns kv-cli1 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "nach der Wiederherstellung: Geraete weiter verbunden" || bad "nach Wiederherstellung kein Tunnel"
+# Gaeste: Link mit Ablauf, Zugang nur einmal abholbar
+mkdir -p "$W/t17/dl"; cp "$ROOTD/dist/KroneVPN.apk" "$W/t17/dl/" 2>/dev/null || echo apk > "$W/t17/dl/KroneVPN.apk"
+"$BIN/kvpn-server" set downloads_dir "$W/t17/dl" >/dev/null
+"$BIN/kvpn-server" gast Oma --tage 2 > "$W/t17/gast.txt" 2>&1; LINK=$(grep -o 'https://vpn.test/einladung/[A-Za-z0-9_-]*' "$W/t17/gast.txt" | head -1); TOK=${LINK##*/}
+[ ${#TOK} = 24 ] && ok "Gast eingeladen: ${LINK%/*}/…" || bad "Gast: $(cat "$W/t17/gast.txt")"
+sleep 4
+G1=$(ns kv-srv curl -sk -m 5 "https://vpn.test/einladung/$TOK")
+echo "$G1" | grep -q "Zugang anzeigen" && ! echo "$G1" | grep -q "kronevpn://" && ok "Link (ohne Anmeldung): Apps + Knopf, Code noch NICHT sichtbar (Messenger-Vorschau verbraucht nichts)" || bad "Einladungsseite: $(echo "$G1" | head -c 300)"
+[ "$(ns kv-srv curl -sk -m 5 -o /dev/null -w '%{http_code}' "https://vpn.test/einladung/$TOK/app/KroneVPN.apk")" = 200 ] && ok "App ueber den Einladungs-Link herunterladbar" || bad "App-Download ueber Einladung"
+G2=$(ns kv-srv curl -sk -m 5 -X POST "https://vpn.test/einladung/$TOK")
+GC=$(echo "$G2" | grep -o 'kronevpn://[^"<]*' | head -1)
+[ -n "$GC" ] && ok "Zugang abgeholt (QR + Code)" || bad "Abholen: $(echo "$G2" | head -c 300)"
+G3=$(ns kv-srv curl -sk -m 5 -X POST "https://vpn.test/einladung/$TOK")
+echo "$G3" | grep -q "schon am" && ! echo "$G3" | grep -q "kronevpn://" && ok "zweites Abholen: nur noch „schon abgeholt“" || bad "Code zweimal abholbar"
+[ "$(ns kv-srv curl -sk -m 5 -o /dev/null -w '%{http_code}' "https://vpn.test/einladung/AAAAAAAAAAAAAAAAAAAAAAAA")" = 404 ] && ok "falscher Link: 404" || bad "falscher Link nicht 404"
+echo "$GC" > "$W/t17/gcode"; bg ns kv-cli9 "$BIN/kronevpn" --config "$W/t17/gcode" --kein-update; sleep 7
+ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "Gast verbindet sich mit dem abgeholten Code" || bad "Gast-Code verbindet nicht"
+python3 - "$W/benutzer.db" <<'PY'
+import sqlite3, sys, time
+d = sqlite3.connect(sys.argv[1]); t = int(time.time()) - 2 * 86400
+d.execute("UPDATE gaeste SET expires=? WHERE device='Gast Oma'", (t,)); d.execute("UPDATE devices SET expires=? WHERE name='Gast Oma'", (t,)); d.commit()
+PY
+sleep 6; ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "abgelaufener Gast noch verbunden" || ok "Ablauf: Gast sofort getrennt"
+for i in $(seq 1 15); do "$BIN/kvpn-server" list 2>/dev/null | grep -q "Gast Oma" || break; sleep 2; done
+! "$BIN/kvpn-server" list | grep -q "Gast Oma" && ok "abgelaufener Gast entfernt (Platz wieder frei)" || bad "abgelaufener Gast nicht entfernt"
+[ "$(ns kv-srv curl -sk -m 5 -o /dev/null -w '%{http_code}' "https://vpn.test/einladung/$TOK/app/KroneVPN.apk")" = 404 ] && ok "nach Ablauf: Link zeigt nichts mehr" || bad "Link nach Ablauf noch gueltig"
+pkill -f "t17/gcode --kein-update"; "$BIN/kvpn-server" set downloads_dir "" >/dev/null
+# Ausfall-Alarm: ueberwachtes Geraet offline, Erreichbarkeit (DynDNS), Dauer eines Server-Ausfalls
+bg ns kv-srv python3 "$ROOTD/tests/notify_stub.py" 8995 "$W/notify17.txt"; sleep 1
+ns kv-srv "$BIN/kvpn-server" benachrichtigung ntfy http://127.0.0.1:8995/vpn >/dev/null
+"$BIN/kvpn-server" add "waechter-geraet" | grep '^kronevpn://' > "$W/t17/wcode"; "$BIN/kvpn-server" set ausfall_geraete "waechter-geraet" >/dev/null
+for i in $(seq 1 20); do grep -q "waechter-geraet“ seit" "$W/notify17.txt" 2>/dev/null && break; sleep 2; done
+grep -q "Ausfall\|offline" "$W/notify17.txt" && grep -q "„waechter-geraet“ seit" "$W/notify17.txt" && ok "Alarm: ueberwachtes Geraet zu lange offline" || bad "kein Offline-Alarm: $(cat "$W/notify17.txt" 2>/dev/null)"
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/t17/wcode" --kein-update
+for i in $(seq 1 15); do grep -q "ist wieder da" "$W/notify17.txt" 2>/dev/null && break; sleep 2; done
+grep -q "„waechter-geraet“ ist wieder da" "$W/notify17.txt" && ok "Entwarnung, wenn es wieder verbunden ist" || bad "keine Entwarnung"
+pkill -f "t17/wcode --kein-update"
+[ -f "$W/state/erreichbar.txt" ] && ok "Erreichbarkeit geprueft: Name zeigt auf den eigenen Anschluss" || bad "Erreichbarkeit nie geprueft"
+echo '{"myip.opendns.com": "198.51.100.7", "vpn.test": "198.51.100.99"}' > "$W/extdns.json"
+for i in $(seq 1 40); do grep -q "nicht erreichbar" "$W/notify17.txt" 2>/dev/null && break; sleep 2; done
+grep -q "von außen nicht erreichbar.*198.51.100.99.*198.51.100.7" "$W/notify17.txt" && ok "Alarm: DynDNS zeigt auf eine alte Adresse" || bad "kein Erreichbarkeits-Alarm: $(tail -2 "$W/notify17.txt")"
+echo '{"myip.opendns.com": "198.51.100.7", "vpn.test": "198.51.100.7"}' > "$W/extdns.json"
+for i in $(seq 1 20); do grep -q "wieder erreichbar" "$W/notify17.txt" 2>/dev/null && break; sleep 2; done
+grep -q "wieder erreichbar" "$W/notify17.txt" && ok "Entwarnung: wieder erreichbar" || bad "keine Entwarnung Erreichbarkeit"
+pkill -f "kvpn-server run"; for i in $(seq 1 20); do pgrep -f "kvpn-server run" >/dev/null || break; sleep 0.5; done
+echo $(( $(date +%s) - 3 * 3600 )) > "$W/state/lebt.txt"
+bg ns kv-srv "$BIN/kvpn-server" run
+for i in $(seq 1 15); do grep -q "Server gestartet" "$W/notify17.txt" 2>/dev/null && break; sleep 1; done
+grep -q "war 3 h nicht erreichbar" "$W/notify17.txt" && ok "Start-Meldung nennt die Dauer des Ausfalls (3 h)" || bad "Start-Meldung: $(grep 'gestartet' "$W/notify17.txt")"
+ns kv-srv "$BIN/kvpn-server" benachrichtigung aus >/dev/null; "$BIN/kvpn-server" set ausfall_geraete "" >/dev/null; "$BIN/kvpn-server" remove waechter-geraet >/dev/null; sleep 8
 
 echo
 grep -h "verbunden von\|abgelehnt\|Inspektion" "$W"/log.kv-srv-kvpn-server 2>/dev/null | tail -5

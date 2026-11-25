@@ -11,6 +11,36 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Neu in Apps 1.4.0 / Server 1.4.0
+
+**Server**
+- **Tägliche Sicherung**: Schlüssel, Geräte, Benutzer, Einstellungen und Statistik als `.tar.gz` (nur root lesbar,
+  die letzten 14 bleiben). Wiederherstellen – auch auf einem neuen Server nach der Installation – mit
+  `kvpn-server sicherung zurueck <datei>` (der aktuelle Stand wird vorher gesichert, der Dienst startet neu).
+  `kvpn-server sicherung [jetzt|an|aus|ordner <pfad>|behalten <n>]`; auf der Admin-Seite: an/aus, „Jetzt sichern“, herunterladen.
+- **Ausfall-Alarm** (Benachrichtigung „ausfall“): ausgewählte Geräte länger als N Stunden nicht im VPN (z. B. das
+  Kinder-Handy) → Meldung, und Entwarnung, wenn es wieder da ist. Der Server prüft alle 10 Minuten, ob sein Name
+  (DynDNS) noch auf den eigenen Anschluss zeigt (eine DNS-Frage an OpenDNS: `myip.opendns.com`) – gemeldet wird nur,
+  wenn es vorher schon einmal gepasst hat (kein Fehlalarm bei DS-Lite/Tunnel). Nach einem Ausfall des Servers
+  steht die Dauer in der Start-Meldung. Admin-Seite → Einstellungen → Ausfall-Alarm, oder
+  `kvpn-server set ausfall_geraete "Handy Lea, PC Büro"` · `set ausfall_stunden 24` · `set ausfall_extern an|aus`.
+- **Gäste einladen**: `kvpn-server gast "Oma" [--tage 7]` (oder Admin-Seite → Gäste einladen) zeigt einen Link und
+  QR-Code. Über `https://<server>/einladung/…` holt sich der Gast die App und – nur **einmal** – seinen Zugang
+  (Messenger-Vorschauen verbrauchen ihn nicht). Danach ist der Link wertlos; nach Ablauf ist der Zugang gesperrt und
+  einen Tag später ganz entfernt. `kvpn-server gaeste` zeigt alle. (Mit nginx davor: Bereich `/einladung/` aus
+  `deploy/nginx-selfhost.conf` übernehmen.)
+- **Geschwindigkeitstest** für die Apps (misst durch den Tunnel zum eigenen Server).
+
+**Apps**
+- **Geschwindigkeit testen**: Ping, Download und Upload durch das VPN bis zum eigenen Server (je 5 s).
+  Android: Knopf unter den Live-Werten · PC: „Geschwindigkeit testen“ unter den Details, im Symbol neben der Uhr
+  oder `kronevpn --geschwindigkeit` (Linux mit sudo).
+- **Android: Schnelleinstellungs-Kachel** – VPN an/aus direkt aus der Statusleiste (Kachel einmal über den Stift
+  hinzufügen). Fehlt noch der Code oder die VPN-Erlaubnis, öffnet sie die App.
+- **Windows: Symbol neben der Uhr** – Farbe zeigt den Zustand (grün verbunden, gelb verbindet, blau pausiert,
+  grau aus), Tooltip mit Datenrate und Ping. Klick öffnet das Fenster, Rechtsklick: Verbinden/Trennen, Geschwindigkeit
+  testen, beim Anmelden zeigen. Meldet, wenn die Verbindung länger abreißt.
+
 ## Neu in Apps 1.3.0 / Server 1.3.0
 
 **Server**

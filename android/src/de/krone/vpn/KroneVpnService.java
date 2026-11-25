@@ -35,6 +35,8 @@ public class KroneVpnService extends VpnService {
     /** nach einem App-Update aus dem Hintergrund gestartet (startForegroundService) */
     static final String EXTRA_AFTER_UPDATE = "nach_update";
     private static final int NOTIF_RESTART = 43;
+    /** von der Schnelleinstellungs-Kachel gestartet (startForegroundService: sofort eine Benachrichtigung zeigen) */
+    static final String EXTRA_FOREGROUND = "fg";
     private static final int NOTIF_VPN = 45;
     static volatile long handle = 0;
     static volatile String lastError = "";
@@ -61,12 +63,13 @@ public class KroneVpnService extends VpnService {
             stopSelf();
             return START_NOT_STICKY;
         }
-        boolean afterUpdate = intent != null && intent.getBooleanExtra(EXTRA_AFTER_UPDATE, false);
+        boolean afterUpdate = intent != null && (intent.getBooleanExtra(EXTRA_AFTER_UPDATE, false) || intent.getBooleanExtra(EXTRA_FOREGROUND, false));
         if (afterUpdate) {
             // Android verlangt bei startForegroundService sofort eine Benachrichtigung; sobald der Tunnel steht,
             // haelt das System den VPN-Dienst selbst am Leben und die Benachrichtigung verschwindet wieder
             try {
-                startForeground(NOTIF_RESTART, Updater.notice(this, "KroneVPN wurde aktualisiert", "Verbinde neu …", false));
+                boolean kachel = intent.getBooleanExtra(EXTRA_FOREGROUND, false);
+                startForeground(NOTIF_RESTART, Updater.notice(this, kachel ? title(this) : "KroneVPN wurde aktualisiert", kachel ? "Verbinde …" : "Verbinde neu …", false));
             } catch (Exception ignored) {
             }
         }
@@ -152,6 +155,7 @@ public class KroneVpnService extends VpnService {
             Native.logoDir(Logo.dir(this).getAbsolutePath());
             logoId = Logo.id(this);
             handle = Native.start(fd, code, systemProxy(), upd.getAbsolutePath());
+            Kachel.aktualisieren(this);
             if (handle == 0) {
                 lastError = "Der VPN-Kern konnte nicht starten. Bitte den Verbindungscode prüfen oder die App neu öffnen.";
                 stopSelf();
@@ -275,8 +279,12 @@ public class KroneVpnService extends VpnService {
     /** Benachrichtigung "KroneVPN verbunden" (mit Hinweis auf Standort-Teilen und Knopf zum Trennen) */
     /** Name des VPN aus dem Verbindungscode */
     String vpnTitle() {
+        return title(this);
+    }
+
+    static String title(Context c) {
         try {
-            return new JSONObject(Native.parse(prefs(this).getString("code", ""))).optString("title", "KroneVPN");
+            return new JSONObject(Native.parse(prefs(c).getString("code", ""))).optString("title", "KroneVPN");
         } catch (Exception e) {
             return "KroneVPN";
         }
@@ -331,6 +339,7 @@ public class KroneVpnService extends VpnService {
         }
         long h = handle;
         handle = 0;
+        Kachel.aktualisieren(this);
         if (h != 0) Native.stop(h);
     }
 
@@ -378,6 +387,7 @@ public class KroneVpnService extends VpnService {
     private void pause() {
         String w = Schutz.wlan(this);
         paused = w.isEmpty() ? "vertrautes Netz" : "WLAN „" + w + "“";
+        Kachel.aktualisieren(this);
         prefs(this).edit().putBoolean("on", true).apply();
         watchNetwork();
         try {

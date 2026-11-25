@@ -125,6 +125,26 @@ pub struct Config {
     /// was gemeldet wird: geraet, passwort, start, update, bericht
     #[serde(default = "d_notify_on")]
     pub notify_on: Vec<String>,
+    /// Ereignisse, die es beim letzten Speichern schon gab – neue (z. B. "ausfall" ab 1.4.0) sind dann von selbst an
+    #[serde(default)]
+    pub notify_known: Vec<String>,
+    /// Sicherung (Server 1.4.0): jeden Tag automatisch sichern (Schluessel, Geraete, Benutzer, Einstellungen, Statistik)
+    #[serde(default = "d_true")]
+    pub backup: bool,
+    /// Ordner fuer die Sicherungen (leer = <state_dir>/sicherungen), z. B. eine eingehaengte Festplatte/NAS
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub backup_dir: String,
+    /// so viele taegliche Sicherungen aufheben
+    #[serde(default = "d_keep")]
+    pub backup_keep: u32,
+    /// Ausfall-Alarm (Server 1.4.0): diese Geraete melden, wenn sie laenger als `ausfall_stunden` nicht verbunden waren
+    #[serde(default)]
+    pub ausfall_geraete: Vec<String>,
+    #[serde(default = "d_ausfall_h")]
+    pub ausfall_stunden: u32,
+    /// pruefen, ob der Server von aussen erreichbar ist (Name zeigt auf die eigene oeffentliche Adresse?)
+    #[serde(default = "d_true")]
+    pub ausfall_extern: bool,
     /// gesperrte/abgelaufene Geraete (nur Benutzerverwaltung; belegen Plaetze und Adressen)
     #[serde(skip)]
     pub inactive: Vec<Peer>,
@@ -172,6 +192,12 @@ fn d_notify_on() -> Vec<String> {
 }
 fn d_lists() -> Vec<String> {
     vec![crate::dns::DEFAULT_LIST.into()]
+}
+fn d_keep() -> u32 {
+    14
+}
+fn d_ausfall_h() -> u32 {
+    24
 }
 fn d_true() -> bool {
     true
@@ -233,6 +259,7 @@ impl Config {
     pub fn load(path: &str) -> Result<Self, String> {
         let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e} (zuerst 'kvpn-server init' ausfuehren)"))?;
         let mut c: Config = toml::from_str(&s).map_err(|e| format!("{path}: {e}"))?;
+        c.notify_neue_ereignisse();
         if c.users {
             // Geraete aus der Datenbank; noch in server.toml stehende (z. B. nach dem Einschalten) werden uebernommen
             let db = crate::users::open(path)?;
@@ -314,6 +341,17 @@ impl Config {
             return Err("mtu muss zwischen 1280 und 9000 liegen".into());
         }
         Ok(())
+    }
+
+    /// neue Ereignisse (gab es beim letzten Speichern noch nicht) einschalten – alte Abwahl bleibt
+    pub fn notify_neue_ereignisse(&mut self) {
+        let bekannt: Vec<String> = if self.notify_known.is_empty() { ["geraet", "passwort", "start", "update", "bericht"].iter().map(|s| s.to_string()).collect() } else { self.notify_known.clone() };
+        for e in crate::notify::ALLE {
+            if !bekannt.iter().any(|b| b == e) && !self.notify_on.iter().any(|x| x == e) {
+                self.notify_on.push(e.to_string());
+            }
+        }
+        self.notify_known = crate::notify::ALLE.iter().map(|s| s.to_string()).collect();
     }
 
     pub fn display_name(&self) -> &str {
@@ -414,7 +452,7 @@ impl Config {
             "notify_on" | "melden" => {
                 let v: Vec<String> = val.split([',', ' ']).map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect();
                 if let Some(x) = v.iter().find(|x| !crate::notify::ALLE.contains(&x.as_str()) && x.as_str() != "nichts") {
-                    return Err(format!("melden: '{x}' unbekannt (geraet, passwort, start, update, bericht oder nichts)"));
+                    return Err(format!("melden: '{x}' unbekannt ({} oder nichts)", crate::notify::ALLE.join(", ")));
                 }
                 self.notify_on = v.into_iter().filter(|x| x != "nichts").collect();
             }
@@ -430,8 +468,24 @@ impl Config {
             }
             "dns_block" | "sperren" => self.dns_block = name_list(val)?,
             "dns_allow" | "ausnahmen" => self.dns_allow = name_list(val)?,
+            "backup" | "sicherung" => self.backup = on_off(val)?,
+            "backup_dir" | "sicherung_ordner" => {
+                let v = val.trim();
+                if !v.is_empty() && !v.starts_with('/') {
+                    return Err("backup_dir: absoluter Pfad, z. B. /mnt/nas/vpn-sicherung (leer = Standard)".into());
+                }
+                self.backup_dir = v.into()
+            }
+            "backup_keep" | "sicherung_behalten" => {
+                self.backup_keep = val.trim().parse().ok().filter(|n| (1..=365).contains(n)).ok_or("backup_keep: Zahl 1 bis 365")?
+            }
+            "ausfall_geraete" | "ausfall" | "waechter" => {
+                self.ausfall_geraete = val.split([',', '\n']).map(|x| x.trim().to_string()).filter(|x| !x.is_empty() && !matches!(x.as_str(), "aus" | "-" | "keine")).collect()
+            }
+            "ausfall_stunden" => self.ausfall_stunden = val.trim().parse().ok().filter(|n| (1..=24 * 60).contains(n)).ok_or("ausfall_stunden: Zahl 1 bis 1440")?,
+            "ausfall_extern" | "erreichbarkeit" => self.ausfall_extern = on_off(val)?,
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api, dns_proxy, adblock, adblock_lists, dns_block, dns_allow, lan_access, notify_ntfy, notify_ntfy_token, notify_telegram_token, notify_telegram_chat, notify_on)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api, dns_proxy, adblock, adblock_lists, dns_block, dns_allow, lan_access, notify_ntfy, notify_ntfy_token, notify_telegram_token, notify_telegram_chat, notify_on, backup, backup_dir, backup_keep, ausfall_geraete, ausfall_stunden, ausfall_extern)")),
         }
         self.check()
     }

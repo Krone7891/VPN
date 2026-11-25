@@ -55,6 +55,10 @@ pub async fn handle<S>(
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let p = path.trim_end_matches('/');
+    // Gast-Einladung (oeffentlich, ohne Anmeldung – der Link selbst ist das Geheimnis)
+    if !vpn_admin && p.starts_with("/einladung/") {
+        return einladung(sh, s, method, &p["/einladung/".len()..], headers).await;
+    }
     // Admin-Seite im VPN: erst nach Anmeldung (Passwort wird beim ersten Aufruf festgelegt), dann wie die lokale Seite
     let local = if vpn_admin {
         let cfg = sh.cfg();
@@ -159,6 +163,21 @@ pub async fn handle<S>(
         }
         let b = json!({"ok": true, "geraet": geraet, "tage": tage, "punkte": punkte}).to_string();
         return respond(s, "200 OK", "application/json; charset=utf-8", "", b.as_bytes()).await;
+    }
+    // Sicherung herunterladen (enthaelt den Server-Schluessel) – nur lokal bzw. Admin im VPN
+    if method == "GET" && p.contains("/sicherung/") {
+        if !local {
+            return respond(s, "403 Forbidden", "text/plain", "", b"Nur auf der Admin-Seite").await;
+        }
+        let name = pct_decode(p.rsplit('/').next().unwrap_or(""));
+        let cfg = sh.cfg();
+        let Some(f) = crate::sicherung::path_of(&cfg, &name) else {
+            return respond(s, "404 Not Found", "text/plain", "", b"nicht gefunden").await;
+        };
+        let data = tokio::fs::read(&f).await.unwrap_or_default();
+        crate::log!("Webseite: Sicherung {name} heruntergeladen");
+        let extra = format!("Content-Disposition: attachment; filename=\"{name}\"\r\n");
+        return respond(s, "200 OK", "application/gzip", &extra, &data).await;
     }
     // Einstellungen auf der Webseite (wie kvpn-server einstellungen) – nur lokal bzw. Admin im VPN
     if p.ends_with("/settings.json") || (method == "POST" && (p.ends_with("/settings") || p.ends_with("/restart"))) {
@@ -317,6 +336,37 @@ fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde
     use crate::users;
     let db = users::open(cfg_path)?;
     let mut done = String::new();
+    // Gast einladen: Geraet mit Ablauf + einmaliger Link
+    if let Some(g) = body.get("gast").filter(|g| g.is_object()) {
+        let name = g["name"].as_str().unwrap_or("");
+        let tage = g["tage"].as_u64().or_else(|| g["tage"].as_str().and_then(|t| t.trim().parse().ok())).unwrap_or(7) as u32;
+        drop(db);
+        let n = crate::gast::anlegen(cfg_path, name, tage)?;
+        sh.reload();
+        crate::log!("Webseite: Gast '{}' eingeladen (bis {})", n.device, users::date(n.expires));
+        let svg = qrcode::QrCode::new(n.link.as_bytes()).map(|q| q.render::<qrcode::render::svg::Color>().min_dimensions(200, 200).quiet_zone(true).build()).unwrap_or_default();
+        return manage(sh, cfg_path, &serde_json::Value::Null).map(|mut v| {
+            v["msg"] = json!(format!("„{}“ eingeladen – Link gilt bis {} und lässt sich einmal abholen", n.device, users::date(n.expires)));
+            v["neu"] = json!({"device": n.device, "link": n.link, "svg": svg, "bis": n.expires});
+            v
+        });
+    }
+    if let Some(name) = body["gast_entfernen"].as_str() {
+        let gaeste = users::gaeste(&db)?;
+        let Some(g) = gaeste.iter().find(|g| g.device.eq_ignore_ascii_case(name.trim())) else { return Err(format!("kein Gast „{name}“")) };
+        if let Some(p) = users::remove_device(&db, &g.device)? {
+            crate::config::remove_key(cfg_path, &p);
+        }
+        users::gast_remove(&db, &g.device)?;
+        let dev = g.device.clone();
+        drop(db);
+        sh.reload();
+        crate::log!("Webseite: Gast '{dev}' entfernt");
+        return manage(sh, cfg_path, &serde_json::Value::Null).map(|mut v| {
+            v["msg"] = json!(format!("„{dev}“ entfernt – Link und Zugang gelten nicht mehr"));
+            v
+        });
+    }
     if let Some(kind) = body["kind"].as_str() {
         let name = body["name"].as_str().unwrap_or("").trim().to_string();
         let off = match body["action"].as_str() {
@@ -356,7 +406,15 @@ fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde
         .into_iter()
         .map(|u| json!({"name": u.name, "note": u.note, "disabled": u.disabled, "devices": u.devices, "max": u.max_devices}))
         .collect();
-    Ok(json!({"ok": true, "enabled": true, "users": users, "devices": devices, "msg": done}))
+    let now = now_secs() as i64;
+    let gaeste: Vec<_> = users::gaeste(&db)?
+        .into_iter()
+        .map(|g| {
+            let status = if g.expires <= now { "abgelaufen" } else if g.used > 0 { "abgeholt" } else { "Link offen" };
+            json!({"device": g.device, "created": g.created, "bis": g.expires, "bis_text": users::date(g.expires), "used": g.used, "status": status, "online": online.contains(&g.device)})
+        })
+        .collect();
+    Ok(json!({"ok": true, "enabled": true, "users": users, "devices": devices, "gaeste": gaeste, "msg": done}))
 }
 
 // ------------------------------------------------------------------ Einstellungen (Webseite)
@@ -370,7 +428,7 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
     let c = sh.cfg();
     let (t, ok) = crate::autostart_state();
     let autostart = json!({"text": t, "ok": ok});
-    json!({
+    let mut v = json!({
         "ok": true,
         "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn, "geo": c.geo,
         "admin_url": c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_default(),
@@ -391,7 +449,19 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
         "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot || c.dns_proxy != sh.dns_boot,
         "can_restart": can_restart(),
         "msg": "",
-    })
+    });
+    let backups: Vec<serde_json::Value> = crate::sicherung::list(&c).into_iter().take(30).map(|(n, size, t)| json!({"name": n, "size": size, "t": t})).collect();
+    let names: Vec<String> = c.peers.iter().chain(&c.inactive).map(|p| p.name.clone()).collect();
+    v["backup"] = json!(c.backup);
+    v["backup_keep"] = json!(c.backup_keep);
+    v["backup_dir"] = json!(crate::sicherung::dir(&c).to_string_lossy());
+    v["backups"] = json!(backups);
+    v["ausfall_geraete"] = json!(c.ausfall_geraete);
+    v["ausfall_stunden"] = json!(c.ausfall_stunden);
+    v["ausfall_extern"] = json!(c.ausfall_extern);
+    v["ausfall_pruefbar"] = json!(crate::ausfall::pruef_host(&c).is_some());
+    v["device_names"] = json!(names);
+    v
 }
 
 /// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?
@@ -476,9 +546,34 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
         });
         return Ok((v, false));
     }
+    if flag("backup_now") == Some(true) {
+        let c = sh.cfg();
+        let f = crate::sicherung::create(path, &c, "")?;
+        let alt = crate::sicherung::prune(&c);
+        crate::log!("Webseite: Sicherung angelegt {}", f.display());
+        let mut v = settings_json(sh);
+        v["msg"] = json!(format!("Gesichert ✓ {}{}", f.file_name().unwrap_or_default().to_string_lossy(), if alt > 0 { format!(" ({alt} alte entfernt)") } else { String::new() }));
+        return Ok((v, false));
+    }
     let mut c = crate::config::Config::load(path)?;
     let before = c.clone();
     let mut pw_changed = false;
+    if let Some(v) = flag("backup") {
+        c.set("backup", if v { "an" } else { "aus" })?;
+    }
+    if let Some(v) = flag("ausfall_extern") {
+        c.set("ausfall_extern", if v { "an" } else { "aus" })?;
+    }
+    if let Some(n) = body.get("backup_keep").and_then(|n| n.as_u64().map(|n| n.to_string()).or_else(|| n.as_str().map(|s| s.trim().to_string()))) {
+        c.set("backup_keep", &n)?;
+    }
+    if let Some(n) = body.get("ausfall_stunden").and_then(|n| n.as_u64().map(|n| n.to_string()).or_else(|| n.as_str().map(|s| s.trim().to_string()))) {
+        c.set("ausfall_stunden", &n)?;
+    }
+    if let Some(list) = body.get("ausfall_geraete").and_then(|v| v.as_array()) {
+        let l: Vec<&str> = list.iter().filter_map(|x| x.as_str()).filter(|x| !x.contains([',', '\n'])).collect();
+        c.set("ausfall_geraete", &l.join(","))?;
+    }
     for (k, v) in [
         ("aes256", flag("aes256")),
         ("performance", flag("performance")),
@@ -581,6 +676,12 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
             Err(e) => crate::log!("Werbe-Blocker: Sperrliste nicht geladen ({e})"),
         });
     }
+    if c.backup != before.backup || c.backup_keep != before.backup_keep {
+        msgs.push(format!("tägliche Sicherung {}", if c.backup { format!("an (die letzten {})", c.backup_keep) } else { "aus".into() }));
+    }
+    if c.ausfall_geraete != before.ausfall_geraete || c.ausfall_stunden != before.ausfall_stunden || c.ausfall_extern != before.ausfall_extern {
+        msgs.push(format!("Ausfall-Alarm: {} Gerät(e) nach {} h{}", c.ausfall_geraete.len(), c.ausfall_stunden, if c.ausfall_extern { ", Erreichbarkeit" } else { "" }));
+    }
     if c.max_devices != before.max_devices {
         msgs.push(format!("höchstens {} Geräte", c.max_devices));
     }
@@ -598,6 +699,46 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     let mut v = settings_json(sh);
     v["msg"] = json!(if msgs.is_empty() { "Nichts geändert".to_string() } else { format!("Gespeichert: {}", msgs.join(" · ")) });
     Ok((v, pw_changed))
+}
+
+// ------------------------------------------------------------------ Gast-Einladung (oeffentlich)
+
+async fn einladung<S: AsyncRead + AsyncWrite + Unpin>(sh: &Arc<Shared>, s: &mut S, method: &str, rest: &str, _headers: &HashMap<String, String>) {
+    let mut parts = rest.splitn(3, '/');
+    let token = parts.next().unwrap_or("").to_string();
+    let sub = parts.next().unwrap_or("");
+    let file = pct_decode(parts.next().unwrap_or(""));
+    let cfg_path = sh.cfg_path.clone();
+    let t2 = token.clone();
+    let st = tokio::task::spawn_blocking(move || crate::gast::stand(&cfg_path, &t2)).await.unwrap_or(crate::gast::Stand::Unbekannt);
+    let gueltig = matches!(st, crate::gast::Stand::Offen(..) | crate::gast::Stand::Abgeholt(_));
+    match (sub, method) {
+        ("logo", "GET" | "HEAD") if gueltig => return logo(sh, s, "GET", &HashMap::new(), false).await,
+        ("app", "GET" | "HEAD") if gueltig && !file.is_empty() => return downloads(sh, s, &format!("/{file}"), method == "HEAD").await,
+        ("", _) => {}
+        _ => return respond(s, "404 Not Found", "text/plain", "", b"nicht gefunden").await,
+    }
+    let cfg = sh.cfg();
+    let apps = if cfg.downloads_dir.is_empty() { Vec::new() } else { download_files(&cfg.downloads_dir) };
+    let lv = logo_version(sh);
+    if method == "POST" {
+        let (cfg_path, t2) = (sh.cfg_path.clone(), token.clone());
+        let r = tokio::task::spawn_blocking(move || crate::gast::abholen(&cfg_path, &t2)).await.unwrap_or_else(|e| Err(e.to_string()));
+        let body = match r {
+            Ok((code, bis)) => crate::gast::html(&cfg, &token, &st, Some((&code, bis)), &apps, lv),
+            Err(_) => {
+                let (cfg_path, t2) = (sh.cfg_path.clone(), token.clone());
+                let st = tokio::task::spawn_blocking(move || crate::gast::stand(&cfg_path, &t2)).await.unwrap_or(crate::gast::Stand::Unbekannt);
+                crate::gast::html(&cfg, &token, &st, None, &apps, lv)
+            }
+        };
+        return respond(s, "200 OK", "text/html; charset=utf-8", "", body.as_bytes()).await;
+    }
+    if method != "GET" && method != "HEAD" {
+        return respond(s, "405 Method Not Allowed", "text/plain", "", b"").await;
+    }
+    let body = crate::gast::html(&cfg, &token, &st, None, &apps, lv);
+    respond(s, if gueltig { "200 OK" } else { "404 Not Found" }, "text/html; charset=utf-8", "", body.as_bytes()).await
 }
 
 // ------------------------------------------------------------------ Admin-Seite im VPN (noch nicht angemeldet)
@@ -836,7 +977,7 @@ fn pct_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn pct_encode(s: &str) -> String {
+pub fn pct_encode(s: &str) -> String {
     s.bytes().map(|c| if c.is_ascii_alphanumeric() || b"-._~".contains(&c) { (c as char).to_string() } else { format!("%{c:02X}") }).collect()
 }
 

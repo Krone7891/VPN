@@ -27,6 +27,9 @@ final class Native {
     /** Absturz-Protokoll an den Server schicken (Status "crash_ok" meldet, was angekommen ist) */
     static native void crash(long handle, String name, String text);
 
+    /** Geschwindigkeitstest durch den Tunnel starten ("" = laeuft, sonst Fehlertext); Ergebnis in status() unter "speed" */
+    static native String speedtest(long handle);
+
     /** Schutz-Regeln (JSON wie am PC): soll das VPN in diesem Netz laufen? (kvpn::regeln) */
     static native boolean schuetzen(String regeln, String wlan, boolean online);
 }

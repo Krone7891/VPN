@@ -37,6 +37,43 @@ pub const REC_CRASH_OK: u8 = 12;
 pub const REC_LOGO_GET: u8 = 13;
 /// Server -> Client: Stueck des Logos ([Gesamtgroesse u32 BE][Position u32 BE][Daten], siehe logo.rs)
 pub const REC_LOGO: u8 = 14;
+/// Geschwindigkeitstest (ab Apps/Server 1.4.0) – misst genau die Strecke Geraet <-> eigener Server durch den Tunnel:
+/// Client -> Server: Download fuer so viele Millisekunden schicken ([ms u16 BE], hoechstens SPEED_MAX_MS)
+pub const REC_SPEED_GET: u8 = 15;
+/// beide Richtungen: Fuelldaten des Tests (werden verworfen)
+pub const REC_SPEED_DATA: u8 = 16;
+/// Client -> Server: Upload fertig (leer) – der Server antwortet mit REC_SPEED_RES Art 2
+pub const REC_SPEED_UP_END: u8 = 17;
+/// Server -> Client: [Art u8 (1 = Download fertig, 2 = Upload-Ergebnis)][Bytes u64 BE][Mikrosekunden u64 BE]
+pub const REC_SPEED_RES: u8 = 18;
+/// Laenge des Tests je Richtung (Millisekunden) und Obergrenze
+pub const SPEED_MS: u16 = 5000;
+pub const SPEED_MAX_MS: u16 = 10000;
+/// Groesse eines Fuell-Datensatzes (zwei passen in ein Buendel)
+pub const SPEED_CHUNK: usize = 15 * 1024;
+
+/// Ergebnis eines Geschwindigkeitstests als Datensatz-Inhalt
+pub fn speed_res(kind: u8, bytes: u64, us: u64) -> Vec<u8> {
+    let mut d = Vec::with_capacity(17);
+    d.push(kind);
+    d.extend_from_slice(&bytes.to_be_bytes());
+    d.extend_from_slice(&us.to_be_bytes());
+    d
+}
+
+/// Datensatz-Inhalt von REC_SPEED_RES lesen: (Art, Bytes, Mikrosekunden)
+pub fn speed_res_parse(d: &[u8]) -> Option<(u8, u64, u64)> {
+    (d.len() >= 17).then(|| (d[0], u64::from_be_bytes(d[1..9].try_into().unwrap()), u64::from_be_bytes(d[9..17].try_into().unwrap())))
+}
+
+/// Mbit/s aus Bytes und Mikrosekunden
+pub fn mbit(bytes: u64, us: u64) -> f64 {
+    if us == 0 {
+        return 0.0;
+    }
+    (bytes as f64 * 8.0) / us as f64
+}
+
 /// hoechste Groesse eines Absturz-Protokolls (Rest wird abgeschnitten)
 pub const MAX_CRASH: usize = 48 * 1024;
 
@@ -201,6 +238,18 @@ mod tests {
         for_each_record(&b, |k, d| seen.push((k, d.to_vec()))).unwrap();
         assert_eq!(seen, vec![(1, b"hallo".to_vec()), (2, vec![1, 2, 3]), (4, vec![])]);
         assert!(for_each_record(&b[..b.len() - 1 - 3], |_, _| {}).is_err());
+    }
+
+    #[test]
+    fn speed() {
+        let d = speed_res(2, 12_500_000, 1_000_000);
+        assert_eq!(speed_res_parse(&d), Some((2, 12_500_000, 1_000_000)));
+        assert_eq!(mbit(12_500_000, 1_000_000), 100.0);
+        assert!(speed_res_parse(&d[..16]).is_none());
+        let mut b = Vec::new();
+        push_record(&mut b, REC_SPEED_DATA, &[0u8; SPEED_CHUNK]);
+        push_record(&mut b, REC_SPEED_DATA, &[0u8; SPEED_CHUNK]);
+        assert!(b.len() < MAX_BUNDLE - 1024, "zwei Stuecke passen mit Tarn-Fuellung ins Buendel");
     }
 
     #[test]

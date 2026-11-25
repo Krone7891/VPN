@@ -18,13 +18,16 @@
 
 mod absturz;
 mod admin;
+mod ausfall;
 mod config;
 mod dns;
 mod notify;
 mod totp;
+mod gast;
 mod geo;
 mod netsetup;
 mod server;
+mod sicherung;
 mod stats;
 mod updates;
 mod users;
@@ -51,7 +54,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server bericht [JJJJ-MM]          Monatsbericht (Daten, Online-Zeit, Server-Laufzeit, Blocker)\n  kvpn-server zwei-faktor [an|aus]       zweiter Schritt fuer die Admin-Seite (Code aus Authenticator-App)\n  kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <geraet,passwort,start,update>|aus|test]\n  kvpn-server autostart [an]            pruefen, ob der VPN-Server beim Hochfahren mit startet (an = einschalten)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server bericht [JJJJ-MM]          Monatsbericht (Daten, Online-Zeit, Server-Laufzeit, Blocker)\n  kvpn-server zwei-faktor [an|aus]       zweiter Schritt fuer die Admin-Seite (Code aus Authenticator-App)\n  kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <geraet,passwort,start,update>|aus|test]\n  kvpn-server sicherung [jetzt|zurueck <datei> [--ja]|an|aus|ordner <pfad>|behalten <n>]   Sicherung (taeglich automatisch)\n  kvpn-server gast <name> [--tage 7]    Gast einladen: Link zum einmaligen Abholen, Zugang endet von selbst\n  kvpn-server gaeste                    eingeladene Gaeste\n  kvpn-server autostart [an]            pruefen, ob der VPN-Server beim Hochfahren mit startet (an = einschalten)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         VERSION
     );
     std::process::exit(2)
@@ -110,6 +113,9 @@ fn main() {
         "version" | "--version" => println!("{VERSION}"),
         "autostart" | "systemstart" => cmd_autostart(&args[1..]),
         "bericht" | "monatsbericht" | "report" => cmd_report(&cfg_path, &args[1..]),
+        "sicherung" | "sicherungen" | "backup" => cmd_backup(&cfg_path, &args[1..]),
+        "gast" | "guest" | "einladen" => cmd_gast(&cfg_path, &args[1..]),
+        "gaeste" | "gäste" | "guests" => cmd_gaeste(&cfg_path),
         "zwei-faktor" | "2fa" | "totp" => cmd_totp(&cfg_path, &args[1..]),
         "benachrichtigung" | "benachrichtigungen" | "notify" => cmd_notify(&cfg_path, &args[1..]),
         _ => usage(),
@@ -531,6 +537,110 @@ fn cmd_report(path: &str, args: &[String]) {
     println!("(Werte des laufenden Servers werden jede Minute gespeichert)");
 }
 
+fn cmd_backup(path: &str, args: &[String]) {
+    let mut c = Config::load(path).unwrap_or_else(|e| die(e));
+    let arg = args.first().map(|s| s.as_str());
+    match arg {
+        None | Some("liste") | Some("list") | Some("status") => {
+            println!(
+                "Sicherung: {} – Ordner {} (die letzten {} werden aufgehoben)",
+                if c.backup { "jeden Tag automatisch" } else { "AUS (einschalten: kvpn-server sicherung an)" },
+                sicherung::dir(&c).display(),
+                c.backup_keep
+            );
+            let l = sicherung::list(&c);
+            if l.is_empty() {
+                println!("Noch keine Sicherung. Jetzt eine anlegen: kvpn-server sicherung jetzt");
+            }
+            for (n, size, t) in l {
+                println!("  {}  {:>8} KB  {n}", users::datetime(t as i64), size.div_ceil(1024));
+            }
+            println!("\nWiederherstellen (z. B. auf einem neuen Server nach der Installation): kvpn-server sicherung zurueck <datei>");
+        }
+        Some("jetzt") | Some("now") | Some("neu") => {
+            let p = sicherung::create(path, &c, "").unwrap_or_else(|e| die(e));
+            let n = sicherung::prune(&c);
+            println!("Gesichert: {} ({} KB){}", p.display(), std::fs::metadata(&p).map(|m| m.len().div_ceil(1024)).unwrap_or(0), if n > 0 { format!(" – {n} alte entfernt") } else { String::new() });
+            println!("Enthaelt den geheimen Server-Schluessel – Kopie nur an sicheren Ort legen.");
+        }
+        Some("zurueck") | Some("zurück") | Some("wiederherstellen") | Some("restore") => {
+            let mut rest: Vec<String> = args[1..].to_vec();
+            let ja = rest.iter().any(|a| a == "--ja" || a == "-y");
+            rest.retain(|a| a != "--ja" && a != "-y");
+            let Some(f) = rest.first() else { die("Aufruf: kvpn-server sicherung zurueck <datei>") };
+            let file = sicherung::path_of(&c, f).unwrap_or_else(|| std::path::PathBuf::from(f));
+            let (name, t, ver, n) = sicherung::info(&file).unwrap_or_else(|e| die(format!("{}: {e}", file.display())));
+            println!("Sicherung von „{name}“ vom {} (Server {ver}, {n} Dateien).", users::datetime(t as i64));
+            println!("Damit werden Schluessel, Geraete, Benutzer und Einstellungen dieses Servers ersetzt (der jetzige Stand wird vorher gesichert).");
+            if !ja {
+                print!("Wiederherstellen? [j/N] ");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let mut a = String::new();
+                let _ = std::io::stdin().read_line(&mut a);
+                if !matches!(a.trim().to_lowercase().as_str(), "j" | "ja" | "y" | "yes") {
+                    println!("Abgebrochen.");
+                    return;
+                }
+            }
+            let (vorher, n) = sicherung::restore(path, &file).unwrap_or_else(|e| die(e));
+            if let Some(v) = vorher {
+                println!("Bisheriger Stand gesichert: {}", v.display());
+            }
+            println!("{n} Dateien wiederhergestellt.");
+            let active = std::process::Command::new("systemctl").args(["is-active", "--quiet", "krone-vpn"]).status().map(|s| s.success()).unwrap_or(false);
+            if active {
+                let ok = std::process::Command::new("systemctl").args(["restart", "krone-vpn"]).status().map(|s| s.success()).unwrap_or(false);
+                println!("{}", if ok { "VPN-Server neu gestartet – die Geraete verbinden sich gleich von selbst wieder." } else { "Bitte den VPN-Server neu starten: systemctl restart krone-vpn" });
+            } else {
+                println!("Laeuft der VPN-Server, bitte neu starten (systemctl restart krone-vpn).");
+            }
+        }
+        Some("an") | Some("aus") => {
+            c.set("backup", arg.unwrap()).unwrap_or_else(|e| die(e));
+            c.save(path).unwrap_or_else(|e| die(e));
+            println!("Taegliche Sicherung {}.", if c.backup { "an" } else { "aus" });
+        }
+        Some("ordner") | Some("dir") => {
+            c.set("backup_dir", args.get(1).map(|s| s.as_str()).unwrap_or("")).unwrap_or_else(|e| die(e));
+            c.save(path).unwrap_or_else(|e| die(e));
+            println!("Sicherungen kommen nach {}", sicherung::dir(&c).display());
+        }
+        Some("behalten") | Some("keep") => {
+            c.set("backup_keep", args.get(1).map(|s| s.as_str()).unwrap_or("")).unwrap_or_else(|e| die(e));
+            c.save(path).unwrap_or_else(|e| die(e));
+            println!("Die letzten {} Sicherungen werden aufgehoben.", c.backup_keep);
+        }
+        Some(x) => die(format!("unbekannt: {x} (jetzt, zurueck <datei>, an, aus, ordner <pfad>, behalten <n>)")),
+    }
+}
+
+fn cmd_gast(path: &str, args: &[String]) {
+    let mut args = args.to_vec();
+    let tage = take_opt(&mut args, &["--tage", "--days", "-t"]).map(|t| t.trim().parse::<u32>().unwrap_or_else(|_| die("--tage: Zahl 1 bis 90"))).unwrap_or(7);
+    let name = args.join(" ");
+    let n = gast::anlegen(path, &name, tage).unwrap_or_else(|e| die(e));
+    println!("{}", qr(&n.link));
+    println!("„{}“ eingeladen – gültig bis {} (UTC), danach gesperrt und einen Tag später entfernt.\n", n.device, users::datetime(n.expires));
+    println!("Einladungs-Link (per Messenger schicken oder QR-Code zeigen):\n\n  {}\n", n.link);
+    println!("Der Gast sieht dort die Apps und holt den Zugang EINMAL ab. Vorzeitig beenden: kvpn-server remove \"{}\"", n.device);
+    if !n.link.starts_with("https://") {
+        println!("Hinweis: die Server-Adresse ist kein https – der Link geht nur, wenn der Server so von aussen erreichbar ist.");
+    }
+}
+
+fn cmd_gaeste(path: &str) {
+    let db = users::open(path).unwrap_or_else(|e| die(e));
+    let now = kvpn::util::now_secs() as i64;
+    let g = users::gaeste(&db).unwrap_or_else(|e| die(e));
+    if g.is_empty() {
+        println!("Keine Gäste. Einladen: kvpn-server gast \"Name\" [--tage 7]");
+    }
+    for e in g {
+        let st = if e.expires <= now { "abgelaufen".to_string() } else if e.used > 0 { format!("abgeholt {}", users::datetime(e.used)) } else { "Link noch nicht abgeholt".into() };
+        println!("  {:<24} bis {}   {st}", e.device, users::date(e.expires));
+    }
+}
+
 fn cmd_totp(path: &str, args: &[String]) {
     let mut c = Config::load(path).unwrap_or_else(|e| die(e));
     match args.first().map(|s| s.as_str()) {
@@ -700,8 +810,10 @@ fn cmd_run(cfg_path: String) {
         let sh = server::Shared::new(cfg_path.clone(), cfg.clone(), tuns);
         server::spawn_tun_readers(&sh);
         server::spawn_background(&sh);
+        server::spawn_waechter(&sh);
         notify::init_seen(&cfg);
-        notify::event_cfg(&cfg, notify::Ereignis::Start { version: VERSION.to_string() });
+        let pause = ausfall::ausfall_dauer(&cfg, kvpn::util::now_secs());
+        notify::event_cfg(&cfg, notify::Ereignis::Start { version: VERSION.to_string(), pause });
         // eigener DNS im Tunnel: Werbe-Blocker + Namen im Heimnetz
         if cfg.dns_proxy {
             crate::dns::load_cached(&sh.dns, &cfg.state_dir);

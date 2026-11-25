@@ -60,7 +60,13 @@ pub fn open(cfg_path: &str) -> Result<Connection, String> {
              ts INTEGER NOT NULL,
              device TEXT NOT NULL,
              event TEXT NOT NULL);
-         CREATE INDEX IF NOT EXISTS events_ts ON events(ts);",
+         CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+         CREATE TABLE IF NOT EXISTS gaeste(
+             device TEXT NOT NULL PRIMARY KEY COLLATE NOCASE,
+             token_hash TEXT NOT NULL UNIQUE,
+             created INTEGER NOT NULL,
+             expires INTEGER NOT NULL,
+             used INTEGER NOT NULL DEFAULT 0);",
     )
     .map_err(e)?;
     Ok(db)
@@ -195,12 +201,55 @@ pub fn remove_device(db: &Connection, name: &str) -> Result<Option<Peer>, String
     let d = devices(db)?.into_iter().find(|d| d.peer.name.eq_ignore_ascii_case(name.trim()));
     if let Some(d) = &d {
         db.execute("DELETE FROM devices WHERE public_key = ?1", [&d.peer.public_key]).map_err(e)?;
+        db.execute("DELETE FROM gaeste WHERE device = ?1", [&d.peer.name]).map_err(e)?;
     }
     Ok(d.map(|d| d.peer))
 }
 
 fn set_device(db: &Connection, name: &str, sql: &str, v: i64) -> Result<bool, String> {
     Ok(db.execute(sql, params![v, name.trim()]).map_err(e)? > 0)
+}
+
+/// Gast-Einladung: (Geraet, Ablauf, abgeholt um (0 = noch nicht))
+#[derive(Debug, Clone)]
+pub struct Einladung {
+    pub device: String,
+    pub created: i64,
+    pub expires: i64,
+    pub used: i64,
+}
+
+pub fn gast_add(db: &Connection, device: &str, token_hash: &str, expires: i64) -> Result<(), String> {
+    db.execute("INSERT OR REPLACE INTO gaeste(device, token_hash, created, expires, used) VALUES(?1, ?2, ?3, ?4, 0)", params![device, token_hash, now(), expires]).map_err(e)?;
+    Ok(())
+}
+
+pub fn gast_by_token(db: &Connection, token_hash: &str) -> Result<Option<Einladung>, String> {
+    db.query_row("SELECT device, created, expires, used FROM gaeste WHERE token_hash = ?1", params![token_hash], |r| {
+        Ok(Einladung { device: r.get(0)?, created: r.get(1)?, expires: r.get(2)?, used: r.get(3)? })
+    })
+    .optional()
+    .map_err(e)
+}
+
+pub fn gast_used(db: &Connection, device: &str) -> Result<(), String> {
+    db.execute("UPDATE gaeste SET used = ?2 WHERE device = ?1 AND used = 0", params![device, now()]).map_err(e)?;
+    Ok(())
+}
+
+pub fn gaeste(db: &Connection) -> Result<Vec<Einladung>, String> {
+    let mut st = db.prepare("SELECT device, created, expires, used FROM gaeste ORDER BY created").map_err(e)?;
+    let v = st
+        .query_map([], |r| Ok(Einladung { device: r.get(0)?, created: r.get(1)?, expires: r.get(2)?, used: r.get(3)? }))
+        .map_err(e)?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(v)
+}
+
+pub fn gast_remove(db: &Connection, device: &str) -> Result<(), String> {
+    db.execute("DELETE FROM gaeste WHERE device = ?1", params![device]).map_err(e)?;
+    Ok(())
 }
 
 pub fn set_disabled(db: &Connection, name: &str, disabled: bool) -> Result<bool, String> {

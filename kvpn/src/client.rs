@@ -10,7 +10,7 @@ use crate::proto::*;
 use crate::transport::{self, ProtectFn, Proxy, TransportInfo};
 use crate::util::now_nanos;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -45,6 +45,45 @@ pub struct StatusInfo {
     pub aes_hw: bool,
 }
 
+/// Geschwindigkeitstest (Anzeige in den Apps). Zustand: "" (nie), "laeuft", "fertig", "fehler"
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Speed {
+    pub state: String,
+    /// gerade gemessen: "ping", "down", "up"
+    pub phase: String,
+    pub ping_ms: f64,
+    pub down_mbps: f64,
+    pub up_mbps: f64,
+    pub error: String,
+    /// Zeitpunkt des Ergebnisses (Unix-Sekunden)
+    pub at: u64,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub t_start: Option<Instant>,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub t_phase: Option<Instant>,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub down_first: Option<Instant>,
+    #[serde(skip)]
+    #[doc(hidden)]
+    pub down_bytes: u64,
+}
+
+impl Speed {
+    pub fn laeuft(&self) -> bool {
+        self.state == "laeuft"
+    }
+    pub fn fehler(&mut self, e: &str) {
+        self.state = "fehler".into();
+        self.phase.clear();
+        self.error = e.into();
+        self.at = crate::util::now_secs();
+    }
+}
+
 /// Zustand fuer die Anzeige (Konsole, Android-App)
 #[derive(Default)]
 pub struct Status {
@@ -69,6 +108,10 @@ pub struct Status {
     pub logo_dir: Mutex<Option<std::path::PathBuf>>,
     /// zaehlt hoch, wenn sich das Logo geaendert hat (neu oder entfernt) – die App zeigt es dann an
     pub logo_seq: AtomicU64,
+    /// Geschwindigkeitstest: Zustand und Ergebnis
+    pub speed: Mutex<Speed>,
+    /// Geschwindigkeitstest starten (von der App)
+    pub speed_go: tokio::sync::Notify,
 }
 
 #[derive(Serialize)]
@@ -83,6 +126,7 @@ struct StatusJson<'a> {
     connects: u64,
     locate: u64,
     crash_ok: Vec<String>,
+    speed: Speed,
     #[serde(flatten)]
     info: StatusInfo,
 }
@@ -116,6 +160,21 @@ impl Status {
         std::mem::take(&mut *self.crash_ok.lock().unwrap())
     }
 
+    /// Geschwindigkeitstest starten (nur mit Verbindung; laeuft schon einer, passiert nichts)
+    pub fn speedtest(&self) -> Result<(), String> {
+        if self.state.load(Relaxed) != ST_CONNECTED {
+            return Err("Nicht verbunden – erst verbinden, dann testen".into());
+        }
+        let mut s = self.speed.lock().unwrap();
+        if s.laeuft() && s.t_start.map(|t| t.elapsed() < Duration::from_secs(30)).unwrap_or(false) {
+            return Ok(());
+        }
+        *s = Speed { state: "laeuft".into(), phase: "ping".into(), t_start: Some(Instant::now()), ..Default::default() };
+        drop(s);
+        self.speed_go.notify_one();
+        Ok(())
+    }
+
     pub fn state_name(&self) -> &'static str {
         match self.state.load(Relaxed) {
             ST_CONNECTING => "connecting",
@@ -136,6 +195,7 @@ impl Status {
             connects: self.connects.load(Relaxed),
             locate: self.locate.load(Relaxed),
             crash_ok: self.crash_ok.lock().unwrap().clone(),
+            speed: self.speed.lock().unwrap().clone(),
             info: self.info.lock().unwrap().clone(),
         })
         .unwrap()
@@ -361,6 +421,14 @@ pub async fn session(
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Vec<u8>>(16);
     let logo_get = logo_want.is_some();
     let mut logo_rx = crate::logo::Empfang::default();
+    {
+        let mut sp = status.speed.lock().unwrap();
+        if sp.laeuft() {
+            sp.fehler("Verbindung wurde waehrend des Tests neu aufgebaut – bitte nochmal");
+        }
+    }
+    // Geschwindigkeitstest: Upload laeuft bis zu diesem Zeitpunkt (vom Empfangs-Task nach dem Download gesetzt)
+    let (up_tx, mut up_rx) = mpsc::channel::<()>(1);
 
     let mut sender = tokio::spawn(async move {
         let send_fail = |out_err: &Arc<Mutex<String>>| {
@@ -430,9 +498,39 @@ pub async fn session(
         tokio::pin!(ka);
         let mut report_tick = tokio::time::interval(Duration::from_secs(2));
         report_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut up_until: Option<Instant> = None;
+        let filler = vec![0u8; SPEED_CHUNK];
         loop {
             let mut buf = Vec::with_capacity(BUNDLE_TARGET + 2048);
             tokio::select! {
+                // Geschwindigkeitstest: erst Ping (letzte Messung des Lebenszeichens), dann Download anfordern
+                _ = st_tx.speed_go.notified() => {
+                    {
+                        let mut sp = st_tx.speed.lock().unwrap();
+                        if !sp.laeuft() { continue; }
+                        sp.ping_ms = (st_tx.rtt_us.load(Relaxed) as f64 / 100.0).round() / 10.0;
+                        sp.phase = "down".into();
+                        sp.t_phase = Some(Instant::now());
+                        sp.down_first = None;
+                        sp.down_bytes = 0;
+                    }
+                    push_record(&mut buf, REC_SPEED_GET, &SPEED_MS.to_be_bytes());
+                }
+                // Download fertig -> Upload fuer dieselbe Dauer
+                Some(()) = up_rx.recv() => {
+                    up_until = Some(Instant::now() + Duration::from_millis(SPEED_MS as u64));
+                    continue;
+                }
+                // Upload: Fuelldaten so schnell, wie die Verbindung sie abnimmt (Pakete gehen weiter mit)
+                _ = std::future::ready(()), if up_until.is_some() => {
+                    if up_until.map(|t| Instant::now() >= t).unwrap_or(true) {
+                        up_until = None;
+                        push_record(&mut buf, REC_SPEED_UP_END, &[]);
+                    } else {
+                        push_record(&mut buf, REC_SPEED_DATA, &filler);
+                        push_record(&mut buf, REC_SPEED_DATA, &filler);
+                    }
+                }
                 c = ctrl_rx.recv() => {
                     let Some(c) = c else { continue };
                     buf.extend_from_slice(&c);
@@ -453,6 +551,14 @@ pub async fn session(
                     st_tx.tx_bytes.fetch_add(bytes, Relaxed);
                 }
                 _ = report_tick.tick() => {
+                    // Geschwindigkeitstest haengt (Server zu alt oder Verbindung bricht ein)
+                    {
+                        let mut sp = st_tx.speed.lock().unwrap();
+                        if sp.laeuft() && sp.t_phase.map(|t| t.elapsed() > Duration::from_secs(SPEED_MS as u64 / 1000 + 12)).unwrap_or(false) {
+                            let e = if sp.phase == "down" && sp.down_bytes == 0 { "Der Server kann den Geschwindigkeitstest noch nicht (ab Server 1.4.0)" } else { "Keine Antwort vom Server – bitte nochmal" };
+                            sp.fehler(e);
+                        }
+                    }
                     for b in take_crash(&mut crash_sent) {
                         senden!(b);
                     }
@@ -521,6 +627,34 @@ pub async fn session(
                                 }
                             }
                         }
+                    }
+                }
+                REC_SPEED_DATA => {
+                    let mut sp = st_rx.speed.lock().unwrap();
+                    if sp.laeuft() && sp.phase == "down" {
+                        sp.down_first.get_or_insert_with(Instant::now);
+                        sp.down_bytes += data.len() as u64;
+                    }
+                }
+                REC_SPEED_RES => {
+                    let Some((art, b, us)) = speed_res_parse(data) else { return };
+                    let mut sp = st_rx.speed.lock().unwrap();
+                    if !sp.laeuft() {
+                        return;
+                    }
+                    if art == 1 && sp.phase == "down" {
+                        // eigene Messung (ab dem ersten Stueck) – sonst die des Servers
+                        let eigen = sp.down_first.map(|t| t.elapsed().as_micros() as u64).unwrap_or(0);
+                        sp.down_mbps = if eigen > 50_000 && sp.down_bytes > 0 { mbit(sp.down_bytes, eigen) } else { mbit(b, us) };
+                        sp.down_mbps = (sp.down_mbps * 10.0).round() / 10.0;
+                        sp.phase = "up".into();
+                        sp.t_phase = Some(Instant::now());
+                        let _ = up_tx.try_send(());
+                    } else if art == 2 && sp.phase == "up" {
+                        sp.up_mbps = (mbit(b, us) * 10.0).round() / 10.0;
+                        sp.state = "fertig".into();
+                        sp.phase.clear();
+                        sp.at = crate::util::now_secs();
                     }
                 }
                 REC_CRASH_OK => {

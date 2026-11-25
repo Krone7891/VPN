@@ -44,6 +44,10 @@ fn env_dir(var: &str, fallback: &str) -> PathBuf {
 pub fn data_dir() -> PathBuf {
     env_dir("ProgramData", r"C:\ProgramData")
 }
+/// installiertes Programm (Program Files\KroneVPN\KroneVPN.exe)
+pub fn installed_exe() -> Option<PathBuf> {
+    Some(prog_dir().join("KroneVPN.exe"))
+}
 fn prog_dir() -> PathBuf {
     env_dir("ProgramFiles", r"C:\Program Files")
 }
@@ -106,7 +110,7 @@ fn benutzer_rechte(cfg: &ClientConfig) {
     if !vf.exists() {
         let _ = std::fs::write(&vf, "auto");
     }
-    for f in [wanted_file(), vf, copies_file()] {
+    for f in [wanted_file(), vf, copies_file(), crate::speed_anfrage()] {
         if !f.exists() {
             let _ = std::fs::write(&f, if f == wanted_file() { "an" } else { "" });
         }
@@ -1064,6 +1068,9 @@ pub struct Fenster {
 }
 
 impl Fenster {
+    pub fn args(&self) -> Args {
+        self.a.clone()
+    }
     pub fn new(a: Args) -> Self {
         Fenster { a }
     }

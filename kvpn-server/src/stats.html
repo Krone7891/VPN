@@ -172,7 +172,12 @@ function build(){
    '<button class="btn" id="updok" hidden style="margin-top:10px">Jetzt an die Geräte verteilen</button></div>'+
    '<h2>Geräte</h2><div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
    '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte sperren</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
-   '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div></div>'+
+   '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div>'+
+   '<h2>Gäste einladen</h2><div class="card"><div class="mute">Für Besuch: ein Link (oder QR-Code), über den sich der Gast die App holt und den Zugang <b>einmal</b> abholt. Nach den Tagen ist der Zugang gesperrt und wird danach entfernt.</div>'+
+   '<form id="gastf" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px" autocomplete="off"><input type="text" id="g_name" maxlength="34" placeholder="Name, z. B. Oma" style="flex:1;min-width:10em"><input type="number" id="g_tage" min="1" max="90" value="7" title="Tage" style="width:6em"><button class="btn" style="margin:0">Einladen</button></form>'+
+   '<div id="gastneu" hidden style="margin-top:12px"><div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center"><div id="gastqr" style="width:180px;background:#fff;border-radius:8px"></div><div style="flex:1;min-width:14em"><b id="gastdev"></b><code id="gastlink" style="display:block;word-break:break-all;margin:6px 0"></code>'+
+   '<button type="button" class="btn2" id="gastcp" style="margin:0">Link kopieren</button><div class="mute" style="margin-top:6px;font-size:13px">Per Messenger schicken oder den QR-Code mit dem Handy des Gasts scannen.</div></div></div></div>'+
+   '<div id="gastl" style="margin-top:12px"></div></div></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div class="tw" id="dtable"></div></details></div>'+
    '<div id="berbox" hidden><h2>Monatsbericht</h2><div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><select id="bermon"></select>'+
@@ -201,9 +206,15 @@ function build(){
    '<div id="s_totpnew" hidden style="margin-top:8px"><div id="s_totpqr" style="width:200px;background:#fff;border-radius:8px"></div><div class="mute" style="margin-top:6px">oder von Hand: <code id="s_totpsec"></code></div></div></div>'+
    '<div class="pw"><input type="text" id="s_totpc" inputmode="numeric" maxlength="7" placeholder="Code" autocomplete="one-time-code" hidden><button type="button" class="btn2" id="s_totpb" style="margin:0">Einrichten</button></div></div>'+
    '<div class="set"><div class="t"><b>Benachrichtigungen aufs Handy</b><span>über die App <b>ntfy</b> (Thema abonnieren, z. B. https://ntfy.sh/ein-langes-geheimes-wort) und/oder einen eigenen <b>Telegram</b>-Bot (Schlüssel von @BotFather, Chat-ID z. B. von @userinfobot)</span>'+
-   '<div class="chk" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px"><label><input type="checkbox" data-n="geraet"> neues Gerät</label><label><input type="checkbox" data-n="passwort"> falsches Passwort</label><label><input type="checkbox" data-n="start"> Server gestartet</label><label><input type="checkbox" data-n="update"> neue App-Version</label><label><input type="checkbox" data-n="bericht"> Monatsbericht</label></div></div>'+
+   '<div class="chk" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px"><label><input type="checkbox" data-n="geraet"> neues Gerät</label><label><input type="checkbox" data-n="passwort"> falsches Passwort</label><label><input type="checkbox" data-n="start"> Server gestartet</label><label><input type="checkbox" data-n="update"> neue App-Version</label><label><input type="checkbox" data-n="bericht"> Monatsbericht</label><label><input type="checkbox" data-n="ausfall"> Ausfall-Alarm</label></div></div>'+
    '<div class="pw"><input type="text" id="s_ntfy" placeholder="ntfy-Adresse" autocomplete="off" spellcheck="false"><input type="password" id="s_ntok" placeholder="ntfy-Zugang (Token)" autocomplete="off"><input type="password" id="s_tgt" placeholder="Telegram-Bot-Schlüssel" autocomplete="off"><input type="text" id="s_tgc" placeholder="Telegram-Chat-ID" autocomplete="off">'+
    '<button type="button" class="btn2" id="s_ntest" style="margin:0">Testnachricht</button></div></div>'+
+   '<div class="set"><div class="t"><b>Tägliche Sicherung</b><span id="s_baki">Schlüssel, Geräte, Benutzer, Einstellungen und Statistik – einmal am Tag</span><div id="s_bakl" class="mute" style="margin-top:6px;font-size:13px"></div></div>'+
+   '<div class="pw"><label style="display:flex;gap:8px;align-items:center"><input type="checkbox" class="sw" id="s_bak"> an</label><input type="number" id="s_bakk" min="1" max="365" title="so viele aufheben" placeholder="aufheben">'+
+   '<button type="button" class="btn2" id="s_bakn" style="margin:0">Jetzt sichern</button></div></div>'+
+   '<div class="set"><div class="t"><b>Ausfall-Alarm</b><span>Nachricht (über die Benachrichtigungen oben), wenn eines dieser Geräte länger nicht im VPN war – und wenn der Server von außen nicht mehr erreichbar ist (DynDNS zeigt woanders hin)</span>'+
+   '<div class="chk" id="s_ausg" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px"></div><span id="s_ausi" class="mute" style="font-size:12.5px"></span></div>'+
+   '<div class="pw"><input type="number" id="s_aush" min="1" max="1440" placeholder="nach Stunden" title="nach so vielen Stunden offline melden"><label style="display:flex;gap:8px;align-items:center;font-size:13.5px"><input type="checkbox" class="sw" id="s_ausx"> Erreichbarkeit prüfen</label></div></div>'+
    '<div class="set"><div class="t"><b>Update-Quelle (GitHub)</b><span id="s_upi">Repo, aus dem der Server neue Apps holt. Ändern nur mit dem Admin-Passwort; im neuen Repo muss dist/update.json mit gültiger Signatur liegen.</span></div><div class="pw">'+
    '<input type="text" id="s_repo" placeholder="besitzer/name" autocomplete="off" spellcheck="false"><input type="text" id="s_branch" placeholder="Zweig (main)" autocomplete="off" spellcheck="false"><input type="password" id="s_upw" placeholder="Admin-Passwort zum Bestätigen" autocomplete="current-password"></div></div>'+
    '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
@@ -397,6 +408,15 @@ function showMgmt(r){
   if(!r||!r.enabled){box.hidden=true;return}
   box.hidden=false;
   if(r.msg)setT($('#mgmtmsg'),r.msg);
+  if(r.neu){$('#gastneu').hidden=false;$('#gastqr').innerHTML=r.neu.svg;setT($('#gastdev'),r.neu.device+' – gültig bis '+zeit(r.neu.bis));setT($('#gastlink'),r.neu.link);
+    $('#gastcp').onclick=()=>navigator.clipboard.writeText(r.neu.link).then(()=>setT($('#gastcp'),'Kopiert ✓'))}
+  const gf=$('#gastf');if(gf&&!gf.dataset.init){gf.dataset.init=1;gf.onsubmit=async e=>{e.preventDefault();const n=$('#g_name').value.trim();if(!n){setT($('#mgmtmsg'),'Name fehlt');return}
+    try{const r=await (await fetch(BASE+'manage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gast:{name:n,tage:+$('#g_tage').value||7}})})).json();
+      if(r.ok){$('#g_name').value='';MG_KEY='';showMgmt(r);MG_T=Date.now()}else setT($('#mgmtmsg'),r.err||'Fehler')}catch(e){setT($('#mgmtmsg'),'Fehler: '+e.message)}}}
+  const gl=r.gaeste||[];
+  $('#gastl').innerHTML=gl.length?'<table class="resp"><thead><tr><th>Gast</th><th>bis</th><th>Status</th><th></th></tr></thead><tbody>'+gl.map(g=>'<tr><td><b>'+esc(g.device)+'</b>'+(g.online?' <span class="badge ok">online</span>':'')+'</td><td data-l="bis">'+esc(g.bis_text)+'</td><td data-l="Status"><span class="badge'+(g.status==='abgelaufen'?' warn':' ok')+'">'+esc(g.status)+'</span></td><td class="act" style="text-align:right"><button type="button" class="btn2" style="margin:0" data-gx="'+esc(g.device)+'">Entfernen</button></td></tr>').join('')+'</tbody></table>':'<div class="mute">Keine Gäste.</div>';
+  $('#gastl').querySelectorAll('button[data-gx]').forEach(b=>b.onclick=async()=>{if(!confirm('„'+b.dataset.gx+'“ entfernen? Link und Zugang gelten sofort nicht mehr.'))return;b.disabled=true;
+    try{const r=await (await fetch(BASE+'manage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gast_entfernen:b.dataset.gx})})).json();if(r.ok){MG_KEY='';showMgmt(r)}else{setT($('#mgmtmsg'),r.err||'Fehler');b.disabled=false}}catch(e){b.disabled=false}});
   const key=JSON.stringify([r.users,r.devices]);if(key===MG_KEY)return;MG_KEY=key;
   const btn=(kind,name,off)=>'<button type="button" class="btn2" style="margin:0" data-k="'+kind+'" data-n="'+esc(name)+'" data-a="'+(off?'entsperren':'sperren')+'">'+(off?'Entsperren':'Sperren')+'</button>';
   const st=(t,bad)=>'<span class="badge'+(bad?' warn':' ok')+'">'+esc(t)+'</span>';
@@ -444,6 +464,14 @@ function showSettings(r){
   setT($('#s_pwi'),(r.admin_password_set?'festgelegt – zum Ändern das bisherige eingeben':'noch keins – jetzt festlegen')+' · schützt Admin-Seite und Update-Quelle · mind. 8 Zeichen, leer = bleibt');
   $('#s_pwold').hidden=!r.admin_password_set;
   setT($('#s_upi'),'Apps kommen von github.com/'+(r.update_repo||'?')+' (Zweig '+(r.update_branch||'?')+') · Server '+(r.server_version||'')+'. Ändern nur mit dem Admin-Passwort'+(r.admin_password_set?'':' (erst eins festlegen)')+'; im neuen Repo muss dist/update.json mit gültiger Signatur liegen.');
+  // Sicherung + Ausfall-Alarm
+  if(!SET_DIRTY){$('#s_bak').checked=!!r.backup;$('#s_bakk').value=r.backup_keep||14;$('#s_aush').value=r.ausfall_stunden||24;$('#s_ausx').checked=!!r.ausfall_extern;
+    $('#s_ausg').innerHTML=(r.device_names||[]).map(n=>'<label><input type="checkbox" data-g="'+esc(n)+'"'+((r.ausfall_geraete||[]).some(x=>x.toLowerCase()===n.toLowerCase())?' checked':'')+'> '+esc(n)+'</label>').join('')||'<span class="mute">noch keine Geräte</span>'}
+  {const bl=r.backups||[];setT($('#s_baki'),'Schlüssel, Geräte, Benutzer, Einstellungen und Statistik – '+(r.backup?'jeden Tag, die letzten '+r.backup_keep+' bleiben':'AUS')+' · Ordner '+(r.backup_dir||'')+' · wiederherstellen: kvpn-server sicherung zurueck <datei>');
+    $('#s_bakl').innerHTML=bl.length?bl.slice(0,5).map(b=>'<a href="'+BASE+'sicherung/'+encodeURIComponent(b.name)+'" download>'+esc(zeit(b.t))+'</a> <span>('+bytes(b.size)+')</span>').join(' · ')+(bl.length>5?' · … '+bl.length+' insgesamt':''):'noch keine Sicherung'}
+  setT($('#s_ausi'),r.ausfall_pruefbar?'':'Erreichbarkeit: nicht prüfbar (Server-Adresse ist eine IP oder ein lokaler Name)');
+  if(!$('#s_bakn').onclick)$('#s_bakn').onclick=async()=>{const m=$('#s_msg');setT(m,'sichert …');
+    try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({backup_now:true})})).json();if(r.ok){showSettings(r)}setT(m,r.ok?r.msg:(r.err||'Fehler'))}catch(e){setT(m,'Fehler: '+e.message)}};
   $('#setrs').hidden=!r.restart_needed;$('#s_rs').hidden=!r.can_restart;
   if(r.restart_needed&&!r.can_restart)setT($('#setrs').firstChild,'Neustart nötig – bitte auf dem Server: systemctl restart krone-vpn (Docker: docker restart krone-vpn)');
 }
@@ -474,6 +502,9 @@ async function saveSettings(){
   {const on=[...document.querySelectorAll('.chk input[data-n]')].filter(x=>x.checked).map(x=>x.dataset.n);if(on.join()!==(SET.notify_on||[]).join())b.notify_on=on}
   [['dns_block','#s_blk'],['dns_allow','#s_alw'],['adblock_lists','#s_lists']].forEach(([k,id])=>{const v=$(id).value.trim();if(v!==(SET[k]||''))b[k]=v});
   const gk=$('#s_gk').value.trim(),wk=$('#s_wk').value.trim();if(gk)b.google_geo_key=gk;if(wk)b.wigle_api=wk;
+  if($('#s_bak').checked!==!!SET.backup)b.backup=$('#s_bak').checked;if(+$('#s_bakk').value!==SET.backup_keep)b.backup_keep=+$('#s_bakk').value;
+  if($('#s_ausx').checked!==!!SET.ausfall_extern)b.ausfall_extern=$('#s_ausx').checked;if(+$('#s_aush').value!==SET.ausfall_stunden)b.ausfall_stunden=+$('#s_aush').value;
+  {const g=[...document.querySelectorAll('#s_ausg input[data-g]')].filter(x=>x.checked).map(x=>x.dataset.g);if(g.join('\n').toLowerCase()!==(SET.ausfall_geraete||[]).join('\n').toLowerCase())b.ausfall_geraete=g}
   if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}
     if(SET.admin_password_set&&!$('#s_pwold').value){setT(m,'Bitte das bisherige Admin-Passwort eingeben');return}b.admin_password=pw;if(SET.admin_password_set)b.admin_password_old=$('#s_pwold').value}
   const repo=$('#s_repo').value.trim(),br=$('#s_branch').value.trim()||'main';

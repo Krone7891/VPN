@@ -11,6 +11,8 @@
 //!   --profile                         gespeicherte Profile (Verbindungscodes) auflisten
 //!   --profil <nr|name>                mit diesem Profil verbinden (wird das aktive Profil)
 //!   --klassisch / --fenster           Windows: alte Text-Ansicht bzw. neues Programmfenster (wird gemerkt)
+//!   --symbol                          Windows: Symbol im Infobereich (startet beim Anmelden, vom Fenster eingetragen)
+//!   --geschwindigkeit                 Geschwindigkeitstest durch das laufende VPN (Ping, Download, Upload zum Server)
 //!
 //! Unter Windows oeffnet sich ein Programmfenster (gui.rs); das VPN selbst laeuft als Dienst im Hintergrund.
 //! Mit --vordergrund, --test usw. gibt es wie frueher die Textanzeige in einer Konsole.
@@ -23,6 +25,8 @@
 
 #[cfg(any(windows, feature = "vorschau"))]
 mod gui;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod symbol;
 
 #[cfg_attr(target_os = "linux", path = "linux.rs")]
 #[cfg_attr(windows, path = "windows.rs")]
@@ -74,10 +78,14 @@ pub struct Args {
     pub classic: Option<bool>,
     /// Schutz-Regeln aendern: (Schluessel, Wert), z. B. ("notbremse", "an")
     pub schutz: Vec<(String, String)>,
+    /// --geschwindigkeit: Test im laufenden VPN anstossen und Ergebnis zeigen
+    pub speedtest: bool,
+    /// Windows: --symbol = Symbol im Infobereich (neben der Uhr)
+    pub tray: bool,
 }
 
 pub fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, cipher: None, setup: false, result_file: None, quiet: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None, schutz: Vec::new() };
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, cipher: None, setup: false, result_file: None, quiet: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None, schutz: Vec::new(), speedtest: false, tray: false };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -107,13 +115,16 @@ pub fn parse_args() -> Args {
             "--automatisch" | "--auto" => a.schutz.push(("auto".into(), it.next().unwrap_or_default())),
             "--vertrauen" => a.schutz.push(("vertrauen".into(), String::new())),
             "--ausnahmen" | "--ausnahme" => a.schutz.push(("ausnahmen".into(), it.next().unwrap_or_default())),
+            "--geschwindigkeit" | "--speedtest" | "--tempo" => a.speedtest = true,
+            "--symbol" | "--tray" => a.tray = true,
+            "--neu" => {}
             "--proxy" => a.proxy = it.next(),
             "--routes" => a.routes = it.next().map(|r| r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--config" => a.config = it.next().map(PathBuf::from),
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
                 konsole(true);
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--verschluesselung auto|aes|chacha] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]\n  Schutz: [--notbremse an|aus] [--lokales-netz an|aus] [--automatisch an|aus] [--vertrauen] [--ausnahmen \"bank.de,203.0.113.0/24\"]", kvpn::VERSION);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--verschluesselung auto|aes|chacha] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--geschwindigkeit] [--config datei]\n  Schutz: [--notbremse an|aus] [--lokales-netz an|aus] [--automatisch an|aus] [--vertrauen] [--ausnahmen \"bank.de,203.0.113.0/24\"]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
@@ -438,6 +449,78 @@ pub fn regeln_path(a: &Args) -> PathBuf {
     config_path(a).with_file_name("regeln.json")
 }
 
+/// Ordner fuer Status und Anfragen des laufenden VPNs (Windows: ProgramData\KroneVPN, Linux: /run/kronevpn)
+pub fn steuer_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("KVPN_RUN_DIR") {
+        return PathBuf::from(d);
+    }
+    #[cfg(windows)]
+    return plat::dienst::data_dir();
+    #[cfg(not(windows))]
+    PathBuf::from("/run/kronevpn")
+}
+
+/// Anfrage-Datei fuer den Geschwindigkeitstest ("los" = bitte starten; der VPN-Dienst leert sie)
+pub fn speed_anfrage() -> PathBuf {
+    steuer_dir().join("geschwindigkeit.txt")
+}
+
+/// Geschwindigkeitstest im laufenden VPN anstossen (das VPN laeuft als Dienst oder in einem anderen Fenster)
+pub fn speedtest_anstossen() -> Result<(), String> {
+    std::fs::write(speed_anfrage(), "los").map_err(|e| format!("Test nicht moeglich ({e}) – laeuft das VPN?"))
+}
+
+/// Ergebnis als Text ("Ping 12 ms · Download 95.3 Mbit/s · Upload 38.1 Mbit/s")
+pub fn speed_text(s: &client::Speed) -> String {
+    match s.state.as_str() {
+        "laeuft" => match s.phase.as_str() {
+            "down" => format!("Ping {:.0} ms · Download wird gemessen ...", s.ping_ms),
+            "up" => format!("Ping {:.0} ms · Download {:.1} Mbit/s · Upload wird gemessen ...", s.ping_ms, s.down_mbps),
+            _ => "Test startet ...".into(),
+        },
+        "fertig" => format!("Ping {:.0} ms · Download {:.1} Mbit/s · Upload {:.1} Mbit/s", s.ping_ms, s.down_mbps, s.up_mbps),
+        "fehler" => s.error.clone(),
+        _ => String::new(),
+    }
+}
+
+fn speedtest_cli() -> ! {
+    let status = steuer_dir().join("status.json");
+    let lesen = || -> Option<Zustand> {
+        let z: Zustand = serde_json::from_slice(&std::fs::read(&status).ok()?).ok()?;
+        (kvpn::util::now_secs().saturating_sub(z.ts) < 5).then_some(z)
+    };
+    match lesen() {
+        Some(z) if z.state == "connected" => {}
+        Some(_) => die("Das VPN ist gerade nicht verbunden".to_string()),
+        None => die(format!("Kein laufendes VPN gefunden ({}) – unter Linux mit sudo aufrufen", status.display())),
+    }
+    let alt = lesen().map(|z| z.speed.at).unwrap_or(0);
+    if let Err(e) = speedtest_anstossen() {
+        die(e);
+    }
+    println!("Geschwindigkeitstest zum eigenen Server (je 5 s Download und Upload) ...");
+    let t0 = std::time::Instant::now();
+    let mut zuletzt = String::new();
+    while t0.elapsed() < Duration::from_secs(40) {
+        std::thread::sleep(Duration::from_millis(500));
+        let Some(z) = lesen() else { continue };
+        let t = speed_text(&z.speed);
+        if z.speed.at > alt && z.speed.state == "fertig" {
+            println!("{t}");
+            std::process::exit(0);
+        }
+        if z.speed.at > alt && z.speed.state == "fehler" {
+            die(t);
+        }
+        if t != zuletzt && z.speed.state == "laeuft" {
+            println!("  {t}");
+            zuletzt = t;
+        }
+    }
+    die("Keine Antwort vom VPN – laeuft es noch?".to_string())
+}
+
 pub fn regeln(a: &Args) -> kvpn::regeln::Regeln {
     kvpn::regeln::Regeln::load(&regeln_path(a))
 }
@@ -537,6 +620,11 @@ fn main() {
         plat::dienst::run_service();
         return;
     }
+    // Windows: Symbol im Infobereich
+    #[cfg(windows)]
+    if a.tray {
+        plat::tray::run(&a);
+    }
     // Windows: vom Fenster mit Admin-Abfrage gestartet, um den Dienst einzurichten
     #[cfg(windows)]
     if a.setup {
@@ -547,6 +635,10 @@ fn main() {
     if let Ok(m) = std::env::var("KVPN_VORSCHAU") {
         gui::vorschau(&m);
         return;
+    }
+    if a.speedtest {
+        konsole(true);
+        speedtest_cli();
     }
     // Schutz-Regeln aendern (ohne Fenster, ohne Admin); nur mit --vordergrund geht es danach weiter zum Verbinden
     if !a.schutz.is_empty() {
@@ -683,6 +775,9 @@ fn fenster(a: &Args) {
         save_code(a, c);
     }
     let st = std::sync::Arc::new(plat::dienst::Fenster::new(a.clone()));
+    // Symbol im Infobereich: beim Anmelden starten und jetzt schon zeigen
+    #[cfg(windows)]
+    std::thread::spawn(plat::tray::sicherstellen);
     if let Err(e) = gui::run(st, cfg, a.code.is_some()) {
         konsole(false);
         println!("Das Programmfenster konnte nicht geoeffnet werden ({e}) – Textanzeige.\n");
@@ -770,6 +865,8 @@ pub struct Zustand {
     /// Wahl ("auto", "aes", "chacha")
     pub cipher_choice: String,
     pub aes_hw: bool,
+    /// Geschwindigkeitstest (ab Apps 1.4.0)
+    pub speed: client::Speed,
 }
 
 /// eine Zeile Live-Werte
@@ -875,11 +972,15 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
         Ui::Datei(f) => Some(f.clone()),
         Ui::Console => None,
     };
+    // Konsole/Linux-Dienst: Status auch nach /run/kronevpn – fuer "kronevpn --geschwindigkeit"
+    let run_status = if status_path.is_none() && std::fs::create_dir_all(steuer_dir()).is_ok() { Some(steuer_dir().join("status.json")) } else { None };
+    let run_status2 = run_status.clone();
     let show = tokio::spawn(async move {
         let (mut lrx, mut ltx) = (0u64, 0u64);
         let mut last_state = String::new();
         let mut last_err = String::new();
         let mut upd_shown = String::new();
+        let mut speed_shown = 0u64;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let ls = st.logo_seq.load(Relaxed);
@@ -922,7 +1023,22 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
                 cipher: info.cipher.clone(),
                 cipher_choice: info.cipher_choice.clone(),
                 aes_hw: info.aes_hw,
+                speed: st.speed.lock().unwrap().clone(),
             };
+            // Geschwindigkeitstest angefragt (Fenster, Tray-Symbol oder --geschwindigkeit)?
+            if std::fs::read_to_string(speed_anfrage()).map(|t| t.trim() == "los").unwrap_or(false) {
+                let _ = std::fs::write(speed_anfrage(), "");
+                match st.speedtest() {
+                    Ok(()) => say("\rGeschwindigkeitstest gestartet                              "),
+                    Err(e) => {
+                        st.speed.lock().unwrap().fehler(&e);
+                    }
+                }
+            }
+            if z.speed.at != speed_shown && z.speed.state != "laeuft" && !z.speed.state.is_empty() {
+                speed_shown = z.speed.at;
+                say(&format!("\rGeschwindigkeitstest: {}                    ", speed_text(&z.speed)));
+            }
             (lrx, ltx) = (rx, tx);
             if !z.update_version.is_empty() && z.update_version != upd_shown {
                 say(&format!("\rNeue Version {} verfuegbar – wird im Hintergrund geladen ({} KB)          ", z.update_version, z.update_size / 1024));
@@ -960,6 +1076,12 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
                     }
                 }
             }
+            if let Some(f) = &run_status {
+                let tmp = f.with_extension("tmp");
+                if std::fs::write(&tmp, serde_json::to_vec(&z).unwrap_or_default()).is_ok() {
+                    let _ = std::fs::rename(&tmp, f);
+                }
+            }
         }
     });
 
@@ -974,6 +1096,9 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
     p.cleanup();
     say("Getrennt.");
     if let Some(f) = &status_path {
+        let _ = std::fs::remove_file(f);
+    }
+    if let Some(f) = &run_status2 {
         let _ = std::fs::remove_file(f);
     }
     Ok(ende)

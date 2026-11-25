@@ -39,7 +39,8 @@ public class MainActivity extends Activity {
     private boolean dark;
     private int cBg, cCard, cInk, cMute, cAcc, cOk, cWarn, cBad, cSoft;
     private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle, tUpd;
-    private Button bUpd, bProfiles, bLoc, bCipher, bPin;
+    private Button bUpd, bProfiles, bLoc, bCipher, bPin, bSpeed;
+    private TextView tSpeed;
     /** eigenes Logo des Servers im Kopf (statt der Krone) */
     private android.widget.ImageView iLogo;
     private String shownLogo = null;
@@ -241,6 +242,19 @@ public class MainActivity extends Activity {
         tErr = text("", 13, cBad, false);
         tErr.setPadding(dp(3), dp(6), dp(3), 0);
         c2.addView(tErr);
+        // Geschwindigkeitstest durch das VPN zum eigenen Server
+        tSpeed = text("", 13.5f, cInk, false);
+        tSpeed.setPadding(dp(3), dp(10), dp(3), 0);
+        tSpeed.setVisibility(View.GONE);
+        c2.addView(tSpeed);
+        bSpeed = button("⚡ Geschwindigkeit testen", false);
+        bSpeed.setVisibility(View.GONE);
+        bSpeed.setOnClickListener(v -> {
+            String e = Native.speedtest(KroneVpnService.handle);
+            if (!e.isEmpty()) Toast.makeText(this, e, Toast.LENGTH_LONG).show();
+            refresh();
+        });
+        c2.addView(bSpeed);
         root.addView(c2);
 
         // Einstellungen
@@ -1155,6 +1169,7 @@ public class MainActivity extends Activity {
                 }
             }
             tInfo.setText(info.toString());
+            showSpeed("connected".equals(state) ? j.optJSONObject("speed") : null);
             String le = j.optString("last_error");
             if (!"connected".equals(state) && !le.isEmpty()) err = le;
         } else {
@@ -1167,6 +1182,7 @@ public class MainActivity extends Activity {
                     : !KroneVpnService.paused.isEmpty() ? "Vertrautes " + KroneVpnService.paused + " – in fremden Netzen verbindet es sich von selbst"
                     : "Zum Verbinden auf den Knopf tippen");
             tInfo.setText("");
+            showSpeed(null);
         }
         tErr.setText(err == null ? "" : err);
 
@@ -1182,6 +1198,40 @@ public class MainActivity extends Activity {
         tUpd.setVisibility(um.isEmpty() ? View.GONE : View.VISIBLE);
         boolean ready = j != null && !j.optString("update_file").isEmpty();
         bUpd.setVisibility(Updater.confirm != null || (ready && !Updater.failed.isEmpty()) ? View.VISIBLE : View.GONE);
+    }
+
+    /** Ergebnis/Fortschritt des Geschwindigkeitstests (null = nicht verbunden: ausblenden) */
+    private void showSpeed(JSONObject sp) {
+        if (sp == null) {
+            tSpeed.setVisibility(View.GONE);
+            bSpeed.setVisibility(View.GONE);
+            return;
+        }
+        String st = sp.optString("state"), ph = sp.optString("phase");
+        double ping = sp.optDouble("ping_ms", 0), down = sp.optDouble("down_mbps", 0), up = sp.optDouble("up_mbps", 0);
+        String t;
+        switch (st) {
+            case "laeuft":
+                t = "down".equals(ph) ? String.format(Locale.GERMANY, "⚡ Ping %.0f ms · Download wird gemessen …", ping)
+                        : "up".equals(ph) ? String.format(Locale.GERMANY, "⚡ Ping %.0f ms · Download %.1f Mbit/s · Upload wird gemessen …", ping, down)
+                        : "⚡ Test startet …";
+                break;
+            case "fertig":
+                t = String.format(Locale.GERMANY, "⚡ Ping %.0f ms · Download %.1f Mbit/s · Upload %.1f Mbit/s", ping, down, up);
+                break;
+            case "fehler":
+                t = "⚡ " + sp.optString("error");
+                break;
+            default:
+                t = "";
+        }
+        tSpeed.setText(t);
+        tSpeed.setTextColor("fehler".equals(st) ? cWarn : cInk);
+        tSpeed.setVisibility(t.isEmpty() ? View.GONE : View.VISIBLE);
+        boolean running = "laeuft".equals(st);
+        bSpeed.setVisibility(View.VISIBLE);
+        bSpeed.setEnabled(!running);
+        bSpeed.setText(running ? "Messe … (ca. 10 s)" : st.isEmpty() ? "⚡ Geschwindigkeit testen" : "⚡ Nochmal testen");
     }
 
     private static String duration(long s) {
