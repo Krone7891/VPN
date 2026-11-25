@@ -319,7 +319,7 @@ public class KroneVpnService extends VpnService {
                     .setOngoing(true)
                     .setShowWhen(false)
                     .build();
-            startForeground(NOTIF_VPN, n);
+            vordergrund(NOTIF_VPN, n);
         } catch (Exception ignored) {
             // z. B. Start durch "Durchgehend aktives VPN" im Hintergrund: dann ohne eigene Benachrichtigung
         }
@@ -349,6 +349,27 @@ public class KroneVpnService extends VpnService {
         handle = 0;
         Kachel.aktualisieren(this);
         if (h != 0) Native.stop(h);
+    }
+
+    /**
+     * Vordergrund-Dienst mit sichtbarer Benachrichtigung. Standort-Teilen an und erlaubt: auch als Standort-Dienst –
+     * nur so darf die App den Standort lesen, solange das VPN laeuft (ohne "Standort im Hintergrund").
+     */
+    private void vordergrund(int id, android.app.Notification n) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            int typ = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+            if (Standort.enabled(this) && Standort.permitted(this)) {
+                try {
+                    startForeground(id, n, typ | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+                    return;
+                } catch (Exception ignored) {
+                    // aus dem Hintergrund gestartet (z. B. beim Hochfahren): dann ohne Standort
+                }
+            }
+            startForeground(id, n, typ);
+        } else {
+            startForeground(id, n);
+        }
     }
 
     /** "Verbindungen ohne VPN blockieren" an? (Android 10+) */
@@ -427,7 +448,7 @@ public class KroneVpnService extends VpnService {
                     .setOngoing(true)
                     .setShowWhen(false)
                     .build();
-            startForeground(NOTIF_VPN, n);
+            vordergrund(NOTIF_VPN, n);
         } catch (Exception ignored) {
         }
     }

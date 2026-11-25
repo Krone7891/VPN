@@ -1,11 +1,11 @@
 {
-  "version": "1.5.3",
+  "version": "1.5.4",
   "files": {
     "android": {
       "name": "KroneVPN.apk",
       "size": 2245364,
-      "sha256": "c1cc9f235d658b1758586361842c91323ce172d2779ebfc4429fd61914a8abd4",
-      "version": "1.5.3"
+      "sha256": "bbc901181ca2ca78284ede75d5e6ed4c888f9c0f73c05fc1e3f63e758a59bdbb",
+      "version": "1.5.4"
     },
     "linux": {
       "name": "kronevpn-linux",

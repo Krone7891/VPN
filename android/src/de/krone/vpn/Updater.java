@@ -25,7 +25,7 @@ import java.io.OutputStream;
  * Automatische Aktualisierung: Der Rust-Kern laedt die neue APK ueber die VPN-Verbindung, prueft Signatur und
  * Pruefsumme und legt sie ab. Hier wird sie mit dem Paket-Installer von Android eingespielt.
  * Android prueft zusaetzlich, dass die neue APK mit demselben Schluessel signiert ist wie die installierte.
- * Ab Android 12 geht das ohne Rueckfrage (die App aktualisiert sich selbst); sonst fragt Android einmal nach.
+ * Android fragt jedes Mal nach ("Installieren?") – bewusst ohne stille Updates (Google Play Protect).
  */
 final class Updater {
     private Updater() {}
@@ -183,9 +183,7 @@ final class Updater {
                 PackageInstaller.SessionParams p = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
                 p.setAppPackageName(app.getPackageName());
                 p.setSize(apk.length());
-                if (Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
                 // ab Android 14: diese App wird "Update-Besitzer" – spaetere Updates gehen dann sicher ohne Rueckfrage
-                if (Build.VERSION.SDK_INT >= 34) p.setRequestUpdateOwnership(true);
                 int id = pi.createSession(p);
                 session = id;
                 try (PackageInstaller.Session s = pi.openSession(id)) {

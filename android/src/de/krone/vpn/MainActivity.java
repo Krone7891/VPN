@@ -357,20 +357,8 @@ public class MainActivity extends Activity {
             return;
         }
         Standort.set(this, true);
-        if (Standort.permitted(this)) askBackgroundLocation();
-        else requestPermissions(new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOC);
+        if (!Standort.permitted(this)) requestPermissions(new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION}, REQ_LOC);
         showLocation();
-    }
-
-    /** damit auch bei geschlossener App gemeldet wird: Android fragt nach "Immer zulassen" (eigene Einstellungsseite) */
-    private void askBackgroundLocation() {
-        if (android.os.Build.VERSION.SDK_INT < 29) return;
-        if (checkSelfPermission(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED) return;
-        if (KroneVpnService.prefs(this).getBoolean("loc_bg_asked", false)) return;
-        KroneVpnService.prefs(this).edit().putBoolean("loc_bg_asked", true).apply();
-        if (android.os.Build.VERSION.SDK_INT >= 30)
-            Toast.makeText(this, "Für den Standort auch bei geschlossener App: „Immer zulassen“ wählen", Toast.LENGTH_LONG).show();
-        requestPermissions(new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_LOC_BG);
     }
 
     @Override
@@ -384,7 +372,7 @@ public class MainActivity extends Activity {
         if (req == REQ_LOC) {
             if (Standort.enabled(this) && Standort.permitted(this)) {
                 Standort.report(this);
-                askBackgroundLocation();
+                refreshOngoing(); // laufendes VPN: jetzt mit Standort-Erlaubnis (Vordergrund-Dienst neu melden)
             }
             showLocation();
         } else if (req == REQ_LOC_BG) {
@@ -426,7 +414,7 @@ public class MainActivity extends Activity {
         box.addView(text("KroneVPN braucht dafür ein paar Erlaubnisse von Android. Alles bleibt zwischen diesem Gerät und deinem eigenen Server.", 14, cMute, false));
         box.addView(setupRow("🔒", "VPN-Verbindung", "Damit der Datenverkehr verschlüsselt über deinen Server läuft."));
         box.addView(setupRow("🔔", "Benachrichtigungen", "Zeigt, dass das VPN läuft und ob der Standort geteilt wird, und meldet Updates."));
-        box.addView(setupRow("📍", "Standort – auch im Hintergrund", "WLAN-Name und Standort gehen nur an deinen Server: Admin-Seite, Bewegungs-Karte und Orten, falls das Handy verloren geht oder gestohlen wird. Jederzeit in der App abschaltbar."));
+        box.addView(setupRow("📍", "Standort", "WLAN-Name und Standort gehen nur an deinen Server – nur solange die App offen ist oder das VPN läuft (sichtbare Benachrichtigung), nie heimlich im Hintergrund: Admin-Seite, Bewegungs-Karte und Orten, falls das Handy verloren geht. Jederzeit in der App abschaltbar."));
         box.addView(setupRow("📦", "Updates installieren", "Damit sich KroneVPN selbst aktualisieren kann – nur geprüfte, signierte Versionen von deinem Server."));
         ScrollView sv = new ScrollView(this);
         sv.addView(box);
@@ -446,7 +434,7 @@ public class MainActivity extends Activity {
         return checkSelfPermission(p) == android.content.pm.PackageManager.PERMISSION_GRANTED;
     }
 
-    /** naechste Abfrage der Einrichtung (VPN -> Hinweise + Standort -> Standort im Hintergrund -> Updates) */
+    /** naechste Abfrage der Einrichtung (VPN -> Hinweise + Standort -> Updates) */
     private void setupNext() {
         setupStep++;
         switch (setupStep) {
@@ -475,14 +463,7 @@ public class MainActivity extends Activity {
                 return;
             }
             case 2: {
-                KroneVpnService.prefs(this).edit().putBoolean("loc_bg_asked", true).apply();
-                if (android.os.Build.VERSION.SDK_INT >= 29 && Standort.enabled(this) && Standort.permitted(this)
-                        && !granted(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
-                    if (android.os.Build.VERSION.SDK_INT >= 30)
-                        Toast.makeText(this, "Für den Standort auch bei geschlossener App: „Immer zulassen“ wählen", Toast.LENGTH_LONG).show();
-                    requestPermissions(new String[]{android.Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_SETUP_BG);
-                    return;
-                }
+                // (frueher: "Standort im Hintergrund" – entfaellt, Standort nur solange das VPN sichtbar laeuft)
                 setupNext();
                 return;
             }

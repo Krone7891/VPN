@@ -82,6 +82,11 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 | Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
 | Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
 
+## Neu in Apps 1.5.4 (Server bleibt 1.5.0)
+
+- **Weniger Anlass für Google Play Protect:** Die Android-App fragt nicht mehr nach „Standort im Hintergrund“ („Immer zulassen“). Der Standort wird nur noch gelesen, solange die App offen ist oder das VPN mit sichtbarer Benachrichtigung läuft – nie heimlich. Orten über die Admin-Seite geht weiter (das VPN ist dafür ohnehin an).
+- **Updates nur mit Rückfrage:** Android fragt bei jedem Update einmal „Installieren?“ (stille Selbst-Updates außerhalb des Play Store wertet Play Protect als Risiko). Ist die App im Hintergrund, kommt eine Benachrichtigung zum Antippen.
+
 ## Neu in Apps 1.5.3 (Server bleibt 1.5.0)
 
 - **Wirbel lebendiger:** jeder Punkt bewegt sich frei – eigenes Tempo, schlingert hin und her, innen schneller, taucht zufällig neu auf; die Spiralarme biegen und winden sich

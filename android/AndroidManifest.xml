@@ -6,22 +6,21 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- automatische Updates (die App installiert ihre eigene neue Version) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- ab Android 12: eigene Updates OHNE Rueckfrage einspielen (sonst fragt Android jedes Mal nach – und aus dem
-         Hintergrund kann die Rueckfrage gar nicht erscheinen) -->
-    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
-    <!-- ab Android 14: Voraussetzung fuer setRequestUpdateOwnership -->
-    <uses-permission android:name="android.permission.ENFORCE_UPDATE_OWNERSHIP" />
+    <!-- Updates nur MIT Rueckfrage ("Installieren?"): keine Berechtigung fuer stille Updates – Google Play Protect
+         wertet stille Selbst-Updates bei Apps ausserhalb des Play Store als Risiko -->
     <!-- Hinweis "Update bereit – tippen zum Installieren" (Android 13+ fragt einmal nach) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Vordergrund-Dienst mit dauerhafter Benachrichtigung, solange das VPN laeuft ("verbunden", "Standort wird
          geteilt") – so laeuft nichts verdeckt; auch fuer den Neustart nach einem Update -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- fuer "Standort teilen" (Standard an, in der App abschaltbar): WLAN-Name und Standort an den eigenen VPN-Server -->
+    <!-- Standort nur, solange das VPN mit sichtbarer Benachrichtigung laeuft (kein Standort im Hintergrund) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- fuer "Standort teilen" (in der App abschaltbar): WLAN-Name und Standort an den eigenen VPN-Server – nur waehrend
+         die App offen ist oder das VPN laeuft (sichtbare Benachrichtigung), NIE im Hintergrund ohne Hinweis -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
 
     <!-- "Apps am VPN vorbei": Liste der Apps mit Startsymbol (ohne die Berechtigung, alle Pakete zu sehen) -->
     <queries>
@@ -60,7 +59,7 @@
         <service
             android:name=".KroneVpnService"
             android:exported="false"
-            android:foregroundServiceType="specialUse"
+            android:foregroundServiceType="specialUse|location"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
