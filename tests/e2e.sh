@@ -382,12 +382,22 @@ SJ '{"users":false}' | grep -q '"users":false' && grep -q '^\[\[peer\]\]' "$W/se
 SJ '{"users":true}' | grep -q '"users":true' && ! grep -q '^\[\[peer\]\]' "$W/server.toml" && "$BIN/kvpn-server" benutzer | grep -q Tester \
   && ok "Webseite: Benutzerverwaltung wieder an (Benutzer bleiben erhalten)" || bad "Webseite Benutzerverwaltung an"
 SJ '{"admin_password":"kurz"}' | grep -q '"ok":false' && ok "Webseite: zu kurzes Admin-Passwort abgelehnt" || bad "kurzes Admin-Passwort angenommen"
-SJ '{"admin_password":"Neues-Geheim-99"}' | grep -q 'Admin-Passwort geändert' && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"local":true' \
+SJ '{"admin_password":"Neues-Geheim-99"}' | grep -q 'bisherige Admin-Passwort' && SJ '{"admin_password":"Neues-Geheim-99","admin_password_old":"falsch-0000"}' | grep -q '"ok":false' \
+  && ok "Webseite: Admin-Passwort aendern nur mit dem bisherigen" || bad "Admin-Passwort ohne bisheriges aenderbar!"
+# Update-Quelle: nur mit Admin-Passwort
+SJ '{"update_repo":"boese/repo"}' | grep -q 'Admin-Passwort falsch' && SJ '{"update_repo":"boese/repo","password":"falsch-0000"}' | grep -q '"ok":false' \
+  && grep -q '^update_repo = "Krone7891/VPN"' "$W/server.toml" && ok "Webseite: Update-Quelle ohne/mit falschem Passwort nicht aenderbar" || bad "Update-Quelle ohne Passwort geaendert!"
+SJ '{"update_repo":"kein repo","password":"Geheim-1234"}' | grep -q 'kein GitHub-Repo' && ok "Webseite: ungueltiger Repo-Name abgelehnt" || bad "ungueltiges Repo angenommen"
+ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/settings.json" | grep -q '"update_repo":"Krone7891/VPN"' && ok "Webseite: Update-Quelle wird angezeigt" || bad "settings.json ohne update_repo"
+SJ '{"admin_password":"Neues-Geheim-99","admin_password_old":"Geheim-1234"}' | grep -q 'Admin-Passwort geändert' && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q '"local":true' \
   && ! ns kv-cli1 curl -s -m 5 -b "$W/adm1" "$A/data.json" | grep -q '"local":true' && ns kv-cli1 curl -s -m 5 -H 'Content-Type: application/json' -d '{"pw":"Neues-Geheim-99"}' "$A/login" | grep -q '"ok":true' \
   && ok "Webseite: Admin-Passwort geaendert (dieser Browser bleibt angemeldet, andere muessen neu anmelden)" || bad "Webseite Admin-Passwort aendern"
 SJ '{"vpn_name":"","max_devices":8}' >/dev/null
 # Version auf der Webseite
 VER=$(grep -m1 '^version' "$R/Cargo.toml" | cut -d'"' -f2)
+SVER=$(grep -m1 '^version' "$R/kvpn-server/Cargo.toml" | cut -d'"' -f2)
+[ "$("$BIN/kvpn-server" version)" = "$SVER" ] && ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"version\":\"$SVER\"" \
+  && ok "Server hat eigene Version $SVER (Apps $VER)" || bad "Server-Version: $("$BIN/kvpn-server" version) statt $SVER"
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"apps\":\"$VER\"" && ok "Webseite: App-Version $VER angezeigt" || bad "data.json ohne App-Version"
 ns kv-cli2 curl -s -m 5 -b "$W/adm2" "$A/data.json" | grep -q "\"ver\":\"$VER\"" && ok "Webseite: App-Version je Geraet" || bad "data.json ohne Geraete-Version"
 # Standort der Geraete (ungefaehr, aus der IP) – nur auf der Admin-Seite
@@ -459,7 +469,19 @@ if [ -f "$KEY" ]; then
   sleep 4; [ ! -f "$W/updated.txt" ] && ok "abgelehnt -> nichts verteilt" || bad "trotz Ablehnung verteilt"
   cp "$G/dist/update.json" "$W/uj"; sed -i 's/99.0.0/99.0.1/' "$G/dist/update.json"
   "$BIN/kvpn-server" update --ja > "$W/upd-f.txt" 2>&1 && bad "gefaelschte Liste angenommen" || ok "gefaelschte Liste abgelehnt: $(grep -o 'Signatur[^–]*' "$W/upd-f.txt" | head -1)"
+  echo Neues-Geheim-99 | "$BIN/kvpn-server" update-quelle test/neu main > "$W/quelle-f.txt" 2>&1 && bad "Update-Quelle mit gefaelschter Liste angenommen" \
+    || { grep -q "nicht mit dem Update-Schlüssel" "$W/quelle-f.txt" && ok "Update-Quelle: Repo ohne gueltige Signatur abgelehnt" || bad "quelle-f: $(cat "$W/quelle-f.txt")"; }
   cp "$W/uj" "$G/dist/update.json"
+  # Update-Quelle aendern: nur mit Admin-Passwort, das neue Repo muss eine gueltig signierte Liste haben
+  # (ohne festgelegtes Passwort geht es auf der Kommandozeile – Einrichtung; Test 10c hat es geloescht)
+  "$BIN/kvpn-server" admin-passwort Neues-Geheim-99 >/dev/null
+  echo falsch-0000 | "$BIN/kvpn-server" update-quelle test/neu main > "$W/quelle1.txt" 2>&1 && bad "Update-Quelle mit falschem Passwort geaendert!" \
+    || { grep -q '^update_repo = "Krone7891/VPN"' "$W/server.toml" && ok "Update-Quelle: falsches Passwort abgelehnt" || bad "quelle1: $(cat "$W/quelle1.txt")"; }
+  echo falsch-0000 | "$BIN/kvpn-server" set update_repo test/neu > /dev/null 2>&1 && bad "set update_repo ohne Passwort!" || ok "set update_repo braucht ebenfalls das Passwort"
+  echo Neues-Geheim-99 | "$BIN/kvpn-server" update-quelle test/neu main > "$W/quelle2.txt" 2>&1 && grep -q '^update_repo = "test/neu"' "$W/server.toml" && grep -q "gültig signiert" "$W/quelle2.txt" \
+    && ok "Update-Quelle geaendert: $(grep -o 'Update-Quelle jetzt[^–]*' "$W/quelle2.txt")" || bad "quelle2: $(cat "$W/quelle2.txt")"
+  "$BIN/kvpn-server" update-quelle | grep -q "github.com/test/neu" && ok "kvpn-server update-quelle zeigt die neue Quelle" || bad "update-quelle Anzeige"
+  echo Neues-Geheim-99 | "$BIN/kvpn-server" update-quelle Krone7891/VPN main >/dev/null 2>&1 && grep -q '^update_repo = "Krone7891/VPN"' "$W/server.toml" && ok "Update-Quelle zurueckgestellt" || bad "Update-Quelle zurueck"
   mkdir -p "$W/mirror/dl"; echo alt > "$W/mirror/dl/Mein VPN-linux"; echo '{}' > "$W/mirror/files.json"
   "$BIN/kvpn-server" set download_mirror "$W/mirror/dl" >/dev/null
   "$BIN/kvpn-server" update --ja > "$W/upd-y.txt" 2>&1 && ok "Freigabe: $(grep -o 'Version 99.0.0 ist freigegeben' "$W/upd-y.txt")" || bad "Freigabe: $(cat "$W/upd-y.txt")"
@@ -487,6 +509,28 @@ if [ -f "$KEY" ]; then
 else
   echo "  (uebersprungen: kein Signier-Schluessel $KEY)"
 fi
+
+echo "== Test 13: eigenes Logo vom Server in den Apps (kommt durch den Tunnel)"
+python3 - "$W/logo-test.png" <<'PY'
+import struct, sys, zlib
+w, h = 300, 180
+raw = b"".join(b"\x00" + b"".join(bytes([(x * 255) // w, (y * 255) // h, 160, 255]) for x in range(w)) for y in range(h))
+chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+PY
+"$BIN/kvpn-server" logo "$W/logo-test.png" > "$W/logo.txt" 2>&1 && [ -s "$W/state/app-logo/logo.id" ] && python3 -c "import struct,sys;d=open(sys.argv[1],'rb').read();sys.exit(0 if struct.unpack('>II',d[16:24])==(256,256) else 1)" "$W/state/app-logo/logo.png" \
+  && ok "Logo hochgeladen -> App-Logo 256x256 erzeugt" || bad "App-Logo: $(cat "$W/logo.txt")"
+mkdir -p "$W/lg"; "$BIN/kvpn-server" add "logo-geraet" | grep '^kronevpn://' > "$W/lg/code"; sleep 4
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/lg/code" --kein-update
+for i in $(seq 1 25); do [ "$(cat "$W/lg/logo/logo.id" 2>/dev/null)" = "$(cat "$W/state/app-logo/logo.id")" ] && break; sleep 1; done
+[ "$(cat "$W/lg/logo/logo.id" 2>/dev/null)" = "$(cat "$W/state/app-logo/logo.id")" ] && cmp -s "$W/lg/logo/logo.png" "$W/state/app-logo/logo.png" \
+  && ok "Geraet hat das Logo durch den Tunnel geholt ($(stat -c %s "$W/lg/logo/logo.png") Bytes, Kennung passt)" || bad "Logo kam nicht an: $(ls -la "$W/lg" "$W/lg/logo" 2>&1 | tail -4)"
+grep -q "logo-geraet: Logo uebertragen" "$W/log.kv-srv-kvpn-server" && ok "Server: Logo uebertragen" || bad "Server-Log ohne Logo"
+"$BIN/kvpn-server" logo --entfernen >/dev/null; pkill -f "lg/code --kein-update"; sleep 1
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/lg/code" --kein-update
+for i in $(seq 1 20); do [ ! -f "$W/lg/logo/logo.id" ] && break; sleep 1; done
+[ ! -f "$W/lg/logo/logo.id" ] && [ ! -f "$W/lg/logo/logo.png" ] && ok "Logo auf dem Server entfernt -> App nimmt wieder die Krone" || bad "Logo nicht entfernt"
+pkill -f "lg/code --kein-update"; "$BIN/kvpn-server" remove logo-geraet >/dev/null
 
 echo
 grep -h "verbunden von\|abgelehnt\|Inspektion" "$W"/log.kv-srv-kvpn-server 2>/dev/null | tail -5

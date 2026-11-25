@@ -33,6 +33,10 @@ pub const REC_LOCATE: u8 = 10;
 pub const REC_CRASH: u8 = 11;
 /// Server -> Client: Absturz-Protokoll gespeichert ([Name]) – erst dann loescht die App ihre Kopie
 pub const REC_CRASH_OK: u8 = 12;
+/// Client -> Server: eigenes Logo des Servers schicken (leer) – ab Apps 1.2.0
+pub const REC_LOGO_GET: u8 = 13;
+/// Server -> Client: Stueck des Logos ([Gesamtgroesse u32 BE][Position u32 BE][Daten], siehe logo.rs)
+pub const REC_LOGO: u8 = 14;
 /// hoechste Groesse eines Absturz-Protokolls (Rest wird abgeschnitten)
 pub const MAX_CRASH: usize = 48 * 1024;
 
@@ -120,6 +124,9 @@ pub struct Welcome {
     /// Fuellzeichen zufaelliger Laenge (siehe Hello::pad)
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub pad: String,
+    /// eigenes Logo des Servers: Kennung (siehe logo.rs); Some("") = keins (Krone), None = Server zu alt
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
 }
 
 /// Update-Angebot: Inhalt von update.json und dessen Ed25519-Signatur (Base64)

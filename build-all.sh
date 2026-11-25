@@ -16,12 +16,13 @@ cargo build --release --target x86_64-unknown-linux-musl -p kvpn-server -p krone
 cargo build --release --target x86_64-pc-windows-gnu -p kronevpn
 OUT=target/apk bash android/build-apk.sh
 mkdir -p dist
-cp target/x86_64-unknown-linux-musl/release/kvpn-server dist/kvpn-server
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-# Apps nur dann mit neuer Version nach dist/, wenn sich ihr Code geaendert hat (sonst bekommen die Geraete kein Update)
-echo "== App-Versionen"
+# Apps und Server nur dann mit neuer Version nach dist/, wenn sich ihr Code geaendert hat (sonst bekommen die Geraete
+# kein Update). Versionen: Apps = Cargo.toml, Server = kvpn-server/Cargo.toml – getrennt.
+echo "== Versionen (Apps $VERSION, Server $(grep -m1 '^version' kvpn-server/Cargo.toml | cut -d'"' -f2))"
 python3 tools/app-versions.py "$VERSION" android=target/apk/KroneVPN.apk \
-  windows=target/x86_64-pc-windows-gnu/release/kronevpn.exe linux=target/x86_64-unknown-linux-musl/release/kronevpn
+  windows=target/x86_64-pc-windows-gnu/release/kronevpn.exe linux=target/x86_64-unknown-linux-musl/release/kronevpn \
+  server=target/x86_64-unknown-linux-musl/release/kvpn-server
 python3 - "$VERSION" <<'PY'
 import hashlib, json, os, sys, time
 av = json.load(open("dist/app-versions.json"))

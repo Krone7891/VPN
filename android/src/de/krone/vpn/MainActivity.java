@@ -39,7 +39,10 @@ public class MainActivity extends Activity {
     private boolean dark;
     private int cBg, cCard, cInk, cMute, cAcc, cOk, cWarn, cBad, cSoft;
     private TextView tState, tSub, tDown, tUp, tPing, tTotal, tInfo, tErr, tName, tTitle, tUpd;
-    private Button bUpd, bProfiles, bLoc, bCipher;
+    private Button bUpd, bProfiles, bLoc, bCipher, bPin;
+    /** eigenes Logo des Servers im Kopf (statt der Krone) */
+    private android.widget.ImageView iLogo;
+    private String shownLogo = null;
     private TextView tLoc;
     private static final int REQ_LOC = 3, REQ_LOC_BG = 4;
     private PowerButton power;
@@ -180,8 +183,17 @@ public class MainActivity extends Activity {
         sv.addView(root);
 
         tTitle = text("🛡️ KroneVPN", 28, cInk, true);
-        TextView title = tTitle;
-        root.addView(title);
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        iLogo = new android.widget.ImageView(this);
+        iLogo.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(dp(40), dp(40));
+        il.rightMargin = dp(10);
+        iLogo.setVisibility(View.GONE);
+        head.addView(iLogo, il);
+        head.addView(tTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(head);
         tName = text("", 14, cMute, false);
         tName.setOnClickListener(v -> showProfiles());
         root.addView(tName);
@@ -244,6 +256,14 @@ public class MainActivity extends Activity {
         bCipher.setOnClickListener(v -> chooseCipher());
         c3.addView(bCipher);
         showCipher();
+        // Verknuepfung mit dem eigenen Logo (das Symbol der App selbst kann Android nicht austauschen)
+        bPin = button("📌 Logo als Symbol auf den Startbildschirm", false);
+        bPin.setVisibility(View.GONE);
+        bPin.setOnClickListener(v -> {
+            String t = getTitle() == null ? "KroneVPN" : getTitle().toString();
+            if (!Logo.pin(this, t)) Toast.makeText(this, "Dein Startbildschirm erlaubt keine Verknüpfungen", Toast.LENGTH_LONG).show();
+        });
+        c3.addView(bPin);
         Button always = button("Immer verbunden (Always-on VPN) …", false);
         always.setOnClickListener(v -> {
             try {
@@ -889,7 +909,16 @@ public class MainActivity extends Activity {
             tName.setText(pc == null ? "Noch kein Verbindungscode" : "Gerät: " + pc.optString("name") + (n > 1 ? "  ·  Profil wechseln ›" : ""));
             bProfiles.setText(n > 1 ? "Profile (" + n + ") …" : "Profile …");
             String t = pc == null ? "KroneVPN" : pc.optString("title", "KroneVPN");
-            tTitle.setText("🛡️ " + t);
+            String lid = Logo.id(this);
+            if (!lid.equals(shownLogo)) {
+                shownLogo = lid;
+                android.graphics.Bitmap b = Logo.bitmap(this);
+                iLogo.setImageBitmap(b);
+                iLogo.setVisibility(b != null ? View.VISIBLE : View.GONE);
+                bPin.setVisibility(b != null && Logo.canPin(this) ? View.VISIBLE : View.GONE);
+                if (b != null) iLogo.animate().alpha(1f).setDuration(300).start();
+            }
+            tTitle.setText(iLogo.getVisibility() == View.VISIBLE ? t : "🛡️ " + t);
             setTitle(t);
         } catch (Exception ignored) {
         }

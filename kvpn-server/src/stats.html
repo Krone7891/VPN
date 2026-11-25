@@ -183,7 +183,9 @@ function build(){
    '<div class="set"><div class="t"><b>Ortung über WLAN</b><span id="s_wli">Google Geolocation API (Schlüssel aus der Google Cloud Console) und/oder WiGLE (wigle.net → Account → API-Name:Token). Leer lassen = bleibt, „aus“ = entfernen.</span></div><div class="pw">'+
    '<input type="password" id="s_gk" placeholder="Google-Schlüssel" autocomplete="off"><input type="password" id="s_wk" placeholder="WiGLE Name:Token" autocomplete="off"></div></div>'+
    '<div class="set"><div class="t"><b>Admin-Passwort ändern</b><span id="s_pwi">mindestens 8 Zeichen · leer lassen = bleibt</span></div><div class="pw">'+
-   '<input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
+   '<input type="password" id="s_pwold" placeholder="Bisheriges Passwort" autocomplete="current-password"><input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
+   '<div class="set"><div class="t"><b>Update-Quelle (GitHub)</b><span id="s_upi">Repo, aus dem der Server neue Apps holt. Ändern nur mit dem Admin-Passwort; im neuen Repo muss dist/update.json mit gültiger Signatur liegen.</span></div><div class="pw">'+
+   '<input type="text" id="s_repo" placeholder="besitzer/name" autocomplete="off" spellcheck="false"><input type="text" id="s_branch" placeholder="Zweig (main)" autocomplete="off" spellcheck="false"><input type="password" id="s_upw" placeholder="Admin-Passwort zum Bestätigen" autocomplete="current-password"></div></div>'+
    '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
    '<div id="setrs" hidden><span style="flex:1;min-width:14em"><b>Neustart nötig</b> – Leistungsmodus bzw. Admin-Seite gelten erst nach einem Neustart des Servers. Verbundene Geräte sind dabei kurz (ein paar Sekunden) getrennt.</span>'+
    '<button type="button" class="btn2" id="s_rs" style="margin:0">Server jetzt neu starten</button></div></form></div>'+
@@ -366,11 +368,13 @@ function showSettings(r){
   if(!f.dataset.init){f.dataset.init=1;f.onsubmit=e=>{e.preventDefault();saveSettings()};
     f.addEventListener('input',()=>{SET_DIRTY=true});$('#s_rs').onclick=restartServer}
   if(!SET_DIRTY){$('#s_name').value=r.vpn_name;$('#s_max').value=r.max_devices;$('#s_max').max=r.max_possible||250;
-    $('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo}
+    $('#s_repo').value=r.update_repo||'';$('#s_branch').value=r.update_branch||'';$('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo}
   setT($('#s_maxi'),r.devices+' angelegt, möglich bis '+(r.max_possible||250));
   $('#s_gk').placeholder=r.google_geo_key?'Google: eingetragen ✓':'Google-Schlüssel';$('#s_wk').placeholder=r.wigle_api?'WiGLE: eingetragen ✓':'WiGLE Name:Token';
   setT($('#s_admi'),r.admin_vpn?(r.admin_url?'erreichbar unter '+r.admin_url+' (mit Passwort)':'an'):'aus – dann nur noch lokal auf dem Server');
-  setT($('#s_pwi'),(r.admin_password_set?'festgelegt':'noch keins – wird beim ersten Aufruf im VPN festgelegt')+' · mindestens 8 Zeichen, leer lassen = bleibt');
+  setT($('#s_pwi'),(r.admin_password_set?'festgelegt – zum Ändern das bisherige eingeben':'noch keins – jetzt festlegen')+' · schützt Admin-Seite und Update-Quelle · mind. 8 Zeichen, leer = bleibt');
+  $('#s_pwold').hidden=!r.admin_password_set;
+  setT($('#s_upi'),'Apps kommen von github.com/'+(r.update_repo||'?')+' (Zweig '+(r.update_branch||'?')+') · Server '+(r.server_version||'')+'. Ändern nur mit dem Admin-Passwort'+(r.admin_password_set?'':' (erst eins festlegen)')+'; im neuen Repo muss dist/update.json mit gültiger Signatur liegen.');
   $('#setrs').hidden=!r.restart_needed;$('#s_rs').hidden=!r.can_restart;
   if(r.restart_needed&&!r.can_restart)setT($('#setrs').firstChild,'Neustart nötig – bitte auf dem Server: systemctl restart krone-vpn (Docker: docker restart krone-vpn)');
 }
@@ -381,13 +385,20 @@ async function saveSettings(){
   if(name!==SET.vpn_name)b.vpn_name=name;if(max!==SET.max_devices)b.max_devices=max;
   [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin'],['geo','#s_geo']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
   const gk=$('#s_gk').value.trim(),wk=$('#s_wk').value.trim();if(gk)b.google_geo_key=gk;if(wk)b.wigle_api=wk;
-  if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}b.admin_password=pw}
+  if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}
+    if(SET.admin_password_set&&!$('#s_pwold').value){setT(m,'Bitte das bisherige Admin-Passwort eingeben');return}b.admin_password=pw;if(SET.admin_password_set)b.admin_password_old=$('#s_pwold').value}
+  const repo=$('#s_repo').value.trim(),br=$('#s_branch').value.trim()||'main';
+  if(repo&&(repo!==SET.update_repo||br!==SET.update_branch)){
+    if(!SET.admin_password_set){setT(m,'Zum Ändern der Update-Quelle zuerst ein Admin-Passwort festlegen');return}
+    if(!$('#s_upw').value){setT(m,'Zum Ändern der Update-Quelle das Admin-Passwort eingeben');return}
+    if(!confirm('Update-Quelle auf github.com/'+repo+' (Zweig '+br+') ändern? Neue Apps kommen dann von dort (weiterhin erst nach Freigabe).'))return;
+    b.update_repo=repo;b.update_branch=br;b.password=$('#s_upw').value}
   if(!Object.keys(b).length){setT(m,'Nichts geändert');SET_DIRTY=false;return}
   if(b.admin_vpn===false&&viaVpn()&&!confirm('Admin-Seite im VPN ausschalten? Nach dem Neustart ist diese Seite nur noch lokal auf dem Server erreichbar.'))return;
   if(b.users===false&&!confirm('Benutzerverwaltung ausschalten? Aktive Geräte bleiben, gesperrte und abgelaufene Geräte bleiben gesperrt (nur in der Datenbank).'))return;
   const btn=$('#s_ok');btn.disabled=true;setT(m,'Speichert …');
   try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();
-    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value=$('#s_gk').value=$('#s_wk').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
+    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value=$('#s_pwold').value=$('#s_upw').value=$('#s_gk').value=$('#s_wk').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
     else setT(m,r.err||'Fehler')}
   catch(e){setT(m,'Fehler: '+e.message)}
   btn.disabled=false;

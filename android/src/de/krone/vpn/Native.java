@@ -21,6 +21,9 @@ final class Native {
     static native boolean aesHw();
     /** Ordner fuer Absturz-Protokolle des Rust-Kerns (einmal beim Start) */
     static native void crashDir(String dir);
+
+    /** Ordner fuer das eigene Logo des Servers (vor start) */
+    static native void logoDir(String dir);
     /** Absturz-Protokoll an den Server schicken (Status "crash_ok" meldet, was angekommen ist) */
     static native void crash(long handle, String name, String text);
 }

@@ -117,6 +117,8 @@ public class KroneVpnService extends VpnService {
             File upd = new File(getCacheDir(), "update");
             new File(upd, "update.apk").delete(); // Rest eines frueheren Updates
             Native.cipher(MainActivity.cipherPref(this));
+            Native.logoDir(Logo.dir(this).getAbsolutePath());
+            logoId = Logo.id(this);
             handle = Native.start(fd, code, systemProxy(), upd.getAbsolutePath());
             if (handle == 0) {
                 lastError = "Der VPN-Kern konnte nicht starten. Bitte den Verbindungscode prüfen oder die App neu öffnen.";
@@ -140,6 +142,8 @@ public class KroneVpnService extends VpnService {
 
     private final Handler timer = new Handler(Looper.getMainLooper());
     private long lastLocate = 0;
+    /** Kennung des Logos beim letzten Nachsehen – neues Logo: Benachrichtigung + Verknuepfung erneuern */
+    private String logoId = "";
 
     /** alle 5 s: liegt eine fertig geladene, gepruefte neue Version bereit? -> installieren */
     private final Runnable checkUpdate = new Runnable() {
@@ -159,6 +163,12 @@ public class KroneVpnService extends VpnService {
                 if (loc > lastLocate) {
                     lastLocate = loc;
                     Standort.locateNow(KroneVpnService.this);
+                }
+                String lid = Logo.id(KroneVpnService.this);
+                if (!lid.equals(logoId)) {
+                    logoId = lid;
+                    ongoing();
+                    Logo.refreshShortcut(KroneVpnService.this, vpnTitle());
                 }
             } catch (Exception ignored) {
             }
@@ -212,13 +222,18 @@ public class KroneVpnService extends VpnService {
     }
 
     /** Benachrichtigung "KroneVPN verbunden" (mit Hinweis auf Standort-Teilen und Knopf zum Trennen) */
+    /** Name des VPN aus dem Verbindungscode */
+    String vpnTitle() {
+        try {
+            return new JSONObject(Native.parse(prefs(this).getString("code", ""))).optString("title", "KroneVPN");
+        } catch (Exception e) {
+            return "KroneVPN";
+        }
+    }
+
     void ongoing() {
         try {
-            String title = "KroneVPN ist an";
-            try {
-                title = new JSONObject(Native.parse(prefs(this).getString("code", ""))).optString("title", "KroneVPN") + " ist an";
-            } catch (Exception ignored) {
-            }
+            String title = vpnTitle() + " ist an";
             String text = Standort.enabled(this) && Standort.permitted(this)
                     ? "Standort wird mit deinem eigenen Server geteilt (abschaltbar in der App)"
                     : "Datenverkehr läuft verschlüsselt über deinen Server";
@@ -230,6 +245,7 @@ public class KroneVpnService extends VpnService {
                     .setSmallIcon(android.R.drawable.ic_lock_lock)
                     .setContentTitle(title)
                     .setContentText(text)
+                    .setLargeIcon(Logo.bitmap(this))
                     .setStyle(new android.app.Notification.BigTextStyle().bigText(text))
                     .setContentIntent(open)
                     .addAction(new android.app.Notification.Action.Builder(null, "Trennen", stop).build())

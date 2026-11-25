@@ -11,6 +11,29 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Neu in Apps 1.2.0 / Server 1.2.1: eigenes Logo überall
+
+- Ein hochgeladenes Logo (Admin-Seite oder `kvpn-server logo bild.png`) erscheint jetzt **auch in den Apps**: Der
+  Server macht daraus ein quadratisches PNG (256 × 256) und schickt es beim nächsten Verbinden durch den Tunnel.
+  - **PC (Windows):** Logo im Fenster, Fenster- und Taskleisten-Symbol, Symbol der Verknüpfung im Startmenü.
+  - **Android:** Logo im Kopf der App und in der Benachrichtigung; „📌 Logo als Symbol auf den Startbildschirm“ legt
+    eine Verknüpfung mit dem Logo an, die bei jedem neuen Logo von selbst mitwechselt.
+  - Logo entfernen (`kvpn-server logo --entfernen`) → überall wieder die Krone.
+- Nicht austauschbar (Grenzen der Systeme): das Symbol der App im Android-App-Menü und das Symbol in der EXE-Datei
+  selbst – beide stecken in der signierten Datei; ein Austausch würde die Signatur (und Auto-Updates) brechen.
+
+## Neu: Server 1.2.0 (Apps bleiben 1.1.2)
+
+- **Server und Apps haben getrennte Versionen.** Ändert sich nur der Server, bekommen die Geräte kein Update – und
+  jede App (Android, Windows, Linux) steigt nur, wenn sich genau ihr Code oder ihre Abhängigkeiten ändern.
+- **Admin-Passwort bei der Einrichtung:** Installer und `kvpn-server einstellungen` fragen danach, solange keins
+  festgelegt ist (`kvpn-server admin-passwort`). Es gilt für die Admin-Seite und schützt die Update-Quelle.
+- **Update-Quelle ändern** (eigenes GitHub-Repo für die App-Updates): `kvpn-server update-quelle besitzer/name [zweig]`
+  oder auf der Admin-Seite unter Einstellungen – nur mit dem Admin-Passwort. Vorher prüft der Server, ob im neuen
+  Repo `dist/update.json` mit gültiger Signatur liegt (sonst würden die Apps die Updates von dort ablehnen).
+  Neues Repo anlegen: auf GitHub ein Repo erstellen und den Ordner `dist/` (Apps, `update.json`, `update.json.sig`)
+  hineinlegen. Admin-Passwort ändern geht auf der Webseite nur mit dem bisherigen.
+
 ## Neu in 1.1.2
 
 - **„Sicherheit“ verständlich erklärt** (PC und Android): Verschlüsselt ist immer – man wählt nur das Verfahren

@@ -374,6 +374,7 @@ impl Config {
             cipher: String::new(),
             tarn: None,
             pad: String::new(),
+            logo: Some(crate::web::logo_app_id(&self.state_dir)),
         }
     }
 

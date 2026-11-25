@@ -371,14 +371,15 @@ fn settings_json(sh: &Shared) -> serde_json::Value {
         "google_geo_key": !c.google_geo_key.is_empty(), "wigle_api": !c.wigle_api.is_empty(),
         "max_devices": c.max_devices, "max_possible": c.capacity().unwrap_or(0), "devices": c.device_count(),
         "vpn_name": c.display_name(),
+        "update_repo": c.update_repo, "update_branch": c.update_branch, "server_version": crate::VERSION,
         "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot,
         "can_restart": can_restart(),
         "msg": "",
     })
 }
 
-/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?,
-/// google_geo_key?, wigle_api?}
+/// GET: aktuelle Einstellungen; POST {users?, aes256?, performance?, admin_vpn?, geo?, max_devices?, vpn_name?, admin_password?
+/// (+ admin_password_old, sobald eins festgelegt ist), google_geo_key?, wigle_api?, update_repo?/update_branch? (+ password)}
 /// Rueckgabe: (Einstellungen + Meldung, Admin-Passwort geaendert)
 fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value, bool), String> {
     if !body.is_object() {
@@ -387,6 +388,17 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     let path = &sh.cfg_path;
     let mut msgs: Vec<String> = Vec::new();
     let flag = |k: &str| body.get(k).and_then(|v| v.as_bool());
+    let text = |k: &str| body.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
+    // Update-Quelle: nur mit Admin-Passwort, und nur wenn im neuen Repo eine gueltig signierte Update-Liste liegt
+    if text("update_repo").is_some() || text("update_branch").is_some() {
+        let c = sh.cfg();
+        let (repo, branch) = (text("update_repo").unwrap_or(&c.update_repo).to_string(), text("update_branch").unwrap_or(&c.update_branch).to_string());
+        if repo != c.update_repo || branch != c.update_branch {
+            let m = crate::updates::set_source(path, &repo, &branch, text("password"), false, true)?;
+            sh.reload();
+            msgs.push(m);
+        }
+    }
     if let Some(on) = flag("users") {
         if let Some(m) = crate::users::switch(path, on)? {
             crate::log!("Webseite: {m}");
@@ -418,6 +430,11 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     }
     if let Some(pw) = body.get("admin_password").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
         crate::admin::check_new(pw)?;
+        // das Passwort schuetzt auch die Update-Quelle: aendern nur mit dem bisherigen
+        if !c.admin_password.is_empty() && !text("admin_password_old").map(|o| crate::admin::verify(&c.admin_password, o)).unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            return Err("Zum Ändern bitte das bisherige Admin-Passwort eingeben (falsch oder leer)".into());
+        }
         c.admin_password = crate::admin::hash(pw);
         pw_changed = true;
     }
@@ -569,18 +586,62 @@ pub fn image_type(b: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// Bild speichern (auch fuer den Installer: kvpn-server logo <datei>)
+/// Bild speichern (auch fuer den Installer: kvpn-server logo <datei>) – und daraus das Logo fuer die Apps machen
 pub fn logo_store(state_dir: &str, data: &[u8]) -> Result<&'static str, String> {
     if data.len() > LOGO_MAX {
         return Err("Bild zu gross (hoechstens 2 MB)".into());
     }
     let t = image_type(data).ok_or("Nur PNG, JPG, WebP oder GIF")?;
+    let app = logo_app_png(data)?;
     let d = std::path::Path::new(state_dir);
     std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     std::fs::write(d.join("logo.bin.tmp"), data).map_err(|e| e.to_string())?;
     std::fs::write(d.join("logo.type"), t).map_err(|e| e.to_string())?;
     std::fs::rename(d.join("logo.bin.tmp"), d.join("logo.bin")).map_err(|e| e.to_string())?;
+    kvpn::logo::save(&d.join("app-logo"), &app)?;
+    crate::log!("Neues Logo: Webseiten sofort, Apps beim naechsten Verbinden ({} KB)", app.len() / 1024);
     Ok(t)
+}
+
+/// Logo entfernen (Webseiten und Apps zeigen wieder die Krone)
+pub fn logo_remove(state_dir: &str) {
+    let d = std::path::Path::new(state_dir);
+    let _ = std::fs::remove_file(d.join("logo.bin"));
+    let _ = std::fs::remove_file(d.join("logo.type"));
+    kvpn::logo::remove(&d.join("app-logo"));
+}
+
+/// Logo fuer die Apps: quadratisch 256 x 256 (Bild mittig, Rand durchsichtig), als PNG
+pub fn logo_app_png(data: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(data).map_err(|e| format!("Bild nicht lesbar: {e}"))?;
+    let small = img.resize(256, 256, image::imageops::FilterType::Lanczos3).to_rgba8();
+    let mut out = image::RgbaImage::new(256, 256);
+    let (x, y) = ((256 - small.width()) / 2, (256 - small.height()) / 2);
+    image::imageops::overlay(&mut out, &small, x as i64, y as i64);
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(out)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("PNG: {e}"))?;
+    Ok(png)
+}
+
+/// Kennung des App-Logos fuer das Welcome ("" = keins); aeltere Server-Staende ohne App-Logo: jetzt anlegen
+pub fn logo_app_id(state_dir: &str) -> String {
+    let d = std::path::Path::new(state_dir);
+    let id = kvpn::logo::id_in(&d.join("app-logo"));
+    if id.is_empty() {
+        if let Ok(b) = std::fs::read(d.join("logo.bin")) {
+            if let Ok(app) = logo_app_png(&b) {
+                return kvpn::logo::save(&d.join("app-logo"), &app).unwrap_or_default();
+            }
+        }
+    }
+    id
+}
+
+/// App-Logo (PNG) fuer REC_LOGO
+pub fn logo_app_data(state_dir: &str) -> Option<Vec<u8>> {
+    std::fs::read(std::path::Path::new(state_dir).join("app-logo").join("logo.png")).ok()
 }
 
 async fn logo<S: AsyncRead + AsyncWrite + Unpin>(sh: &Shared, s: &mut S, method: &str, headers: &HashMap<String, String>, local: bool) {
@@ -609,9 +670,7 @@ async fn logo<S: AsyncRead + AsyncWrite + Unpin>(sh: &Shared, s: &mut S, method:
             }
         }
         "DELETE" => {
-            let (b, t) = logo_paths(sh);
-            let _ = std::fs::remove_file(b);
-            let _ = std::fs::remove_file(t);
+            logo_remove(&sh.cfg().state_dir);
             respond(s, "200 OK", "application/json", "", br#"{"ok":true}"#).await
         }
         _ => respond(s, "405 Method Not Allowed", "text/plain", "", b"").await,
@@ -814,7 +873,7 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
     json!({
         "now": now,
         "server": {
-            "version": kvpn::VERSION, "name": cfg.display_name(), "logo": logo_version(sh), "downloads": !cfg.downloads_dir.is_empty(), "started": sh.started, "queues": sh.queues,
+            "version": crate::VERSION, "name": cfg.display_name(), "logo": logo_version(sh), "downloads": !cfg.downloads_dir.is_empty(), "started": sh.started, "queues": sh.queues,
             "cores": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
             "admin_url": cfg.admin_addr().map(|a| format!("http://{a}/")).unwrap_or_default(),
             "url": cfg.public_url, "tun": cfg.tun, "net4": cfg.net4, "net6": cfg.net6, "mtu": cfg.mtu,

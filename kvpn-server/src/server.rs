@@ -518,6 +518,24 @@ where
                     // (Default: keine WLAN-Ortung, kein Verlauf)
                     crate::geo::device_report(&c.state_dir, &peer_name, data, &keys)
                 }
+                // eigenes Logo fuer die App (Stuecke ueber den Steuer-Kanal)
+                kvpn::proto::REC_LOGO_GET => {
+                    let c = sh_rx.cfg();
+                    if let Some(png) = crate::web::logo_app_data(&c.state_dir) {
+                        let ctrl = ctrl_tx.clone();
+                        let name = peer_name.clone();
+                        tokio::spawn(async move {
+                            for st in kvpn::logo::stuecke(&png) {
+                                let mut b = Vec::with_capacity(st.len() + 8);
+                                push_record(&mut b, kvpn::proto::REC_LOGO, &st);
+                                if ctrl.send(b).await.is_err() {
+                                    return;
+                                }
+                            }
+                            log!("{name}: Logo uebertragen ({} KB)", png.len() / 1024);
+                        });
+                    }
+                }
                 REC_UPD_GET if data.len() >= 4 => {
                     if let Some(u) = &upd {
                         if !upd_sending.swap(true, Relaxed) {

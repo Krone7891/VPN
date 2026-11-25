@@ -372,6 +372,15 @@ pub fn crash_dir(a: &Args) -> PathBuf {
     config_path(a).with_file_name("absturz")
 }
 
+/// Ordner fuer das Logo des Servers (logo.png, logo.id, Windows auch logo.ico)
+pub fn logo_dir(a: &Args) -> PathBuf {
+    #[cfg(windows)]
+    if a.config.is_none() {
+        return plat::dienst::data_dir().join("logo");
+    }
+    config_path(a).with_file_name("logo")
+}
+
 /// letzte Zeilen des Protokolls fuer ein Absturz-Protokoll
 fn log_tail() -> String {
     #[cfg(windows)]
@@ -775,6 +784,10 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
     for (n, b) in kvpn::fehler::absturz_dateien(&crashes) {
         status.add_crash(&n, &b);
     }
+    // eigenes Logo des Servers: kommt beim Verbinden, wenn es neu ist (Windows: Symbol der Verknuepfung)
+    let logos = logo_dir(a);
+    *status.logo_dir.lock().unwrap() = Some(logos.clone());
+    let mut logo_seq = 0u64;
     let st = status.clone();
     let title = cfg.display_name().to_string();
     let name = cfg.name.clone();
@@ -789,6 +802,14 @@ pub async fn run_vpn<F: std::future::Future<Output = ()>>(cfg: ClientConfig, a: 
         let mut upd_shown = String::new();
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            let ls = st.logo_seq.load(Relaxed);
+            if ls != logo_seq {
+                logo_seq = ls;
+                let neu = !kvpn::logo::id_in(&logos).is_empty();
+                say(&format!("\r{}                              ", if neu { "Neues Logo vom Server uebernommen" } else { "Logo entfernt – wieder die Krone" }));
+                #[cfg(windows)]
+                plat::dienst::logo_geaendert(&logos);
+            }
             for n in st.take_crash_ok() {
                 if std::fs::remove_file(crashes.join(&n)).is_ok() {
                     say(&format!("\rAbsturz-Protokoll {n} an den Server uebertragen                    "));

@@ -94,6 +94,11 @@ pub extern "system" fn Java_de_krone_vpn_Native_start<'l>(
     let (tx, rx) = mpsc::channel(4096);
     let reader = fdtun::spawn_reader(tun.clone(), tx);
     let status = Arc::new(Status::default());
+    // eigenes Logo des Servers landet in diesem Ordner (logo.png + logo.id); die App zeigt es dann an
+    let ld = LOGO_DIR.lock().unwrap().clone();
+    if !ld.is_empty() {
+        *status.logo_dir.lock().unwrap() = Some(std::path::PathBuf::from(ld));
+    }
     let (stop, stop_rx) = watch::channel(false);
     let kick = Arc::new(Notify::new());
     // Updates: signierte APK kommt ueber die VPN-Verbindung und wird hier abgelegt
@@ -206,6 +211,14 @@ pub extern "system" fn Java_de_krone_vpn_Native_crash<'l>(mut env: JNIEnv<'l>, _
 
 /// gewaehlte Verschluesselung ("auto", "aes", "chacha") – gilt ab dem naechsten Verbindungsaufbau
 static CIPHER: Mutex<String> = Mutex::new(String::new());
+
+/// Ordner fuer das Logo des Servers (vor start setzen)
+static LOGO_DIR: Mutex<String> = Mutex::new(String::new());
+
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_logoDir<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, dir: JString<'l>) {
+    *LOGO_DIR.lock().unwrap() = jstr(&mut env, &dir);
+}
 
 #[no_mangle]
 pub extern "system" fn Java_de_krone_vpn_Native_cipher<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>, choice: JString<'l>) {

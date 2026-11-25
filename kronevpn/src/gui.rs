@@ -70,6 +70,10 @@ pub trait Steuerung: Send + Sync + 'static {
     fn neue_version_starten(&self) -> bool {
         false
     }
+    /// Ordner mit dem eigenen Logo des Servers (logo.png + logo.id), None = immer die Krone
+    fn logo_ordner(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,6 +115,9 @@ struct App {
     danach_verbinden: bool,
     log: Option<String>,
     logo: egui::TextureHandle,
+    /// Kennung des angezeigten Logos ("" = Krone) und wann zuletzt nachgesehen wurde
+    logo_id: String,
+    logo_geprueft: Option<Instant>,
     start: Instant,
     /// Version, fuer die der Neustart des Fensters schon versucht wurde
     neu_versucht: String,
@@ -295,6 +302,8 @@ impl App {
             danach_verbinden: false,
             log: None,
             logo,
+            logo_id: String::new(),
+            logo_geprueft: None,
             start: Instant::now(),
             neu_versucht: String::new(),
             schliessen: false,
@@ -469,6 +478,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.abfragen();
+        self.logo_pruefen(ctx);
         if self.schliessen {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -516,6 +526,28 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// eigenes Logo des Servers: neu (oder entfernt)? Dann im Fenster und als Fenster-/Taskleisten-Symbol tauschen
+    fn logo_pruefen(&mut self, ctx: &egui::Context) {
+        if self.logo_geprueft.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.logo_geprueft = Some(Instant::now());
+        let Some(dir) = self.st.logo_ordner() else { return };
+        let id = kvpn::logo::id_in(&dir);
+        if id == self.logo_id {
+            return;
+        }
+        let icon = if id.is_empty() {
+            Some(egui::IconData { rgba: LOGO.to_vec(), width: 128, height: 128 })
+        } else {
+            std::fs::read(dir.join("logo.png")).ok().and_then(|b| eframe::icon_data::from_png_bytes(&b).ok())
+        };
+        let Some(icon) = icon else { return };
+        self.logo = ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([icon.width as usize, icon.height as usize], &icon.rgba), egui::TextureOptions::LINEAR);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(icon))));
+        self.logo_id = id;
+    }
+
     fn kopf(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(vec2(44.0, 44.0), Sense::hover());
@@ -1113,6 +1145,9 @@ pub fn vorschau(modus: &str) {
         wahl: Mutex<String>,
     }
     impl Steuerung for Demo {
+        fn logo_ordner(&self) -> Option<std::path::PathBuf> {
+            std::env::var_os("KVPN_VORSCHAU_LOGO").map(std::path::PathBuf::from)
+        }
         fn lage(&self) -> Lage {
             match (self.modus.as_str(), *self.an.lock().unwrap()) {
                 (_, false) => Lage::Aus,

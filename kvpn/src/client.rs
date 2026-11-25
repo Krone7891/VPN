@@ -65,6 +65,10 @@ pub struct Status {
     pub crash_out: Mutex<Vec<(String, Vec<u8>)>>,
     /// vom Server bestaetigt (Name) – die App darf ihre Kopie loeschen
     pub crash_ok: Mutex<Vec<String>>,
+    /// Ordner fuer das Logo des Servers (logo.png + logo.id); None = App will keins
+    pub logo_dir: Mutex<Option<std::path::PathBuf>>,
+    /// zaehlt hoch, wenn sich das Logo geaendert hat (neu oder entfernt) – die App zeigt es dann an
+    pub logo_seq: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -280,8 +284,21 @@ pub async fn run(
                     let _ = futures_util::FutureExt::now_or_never(k.notified());
                 }
                 let tarn = welcome.tarn.map(|t| t.sicher()).unwrap_or_else(crate::proto::Tarn::alt);
+                // eigenes Logo des Servers: anderes als gespeichert -> holen; keins mehr -> entfernen
+                let logo_dir = status.logo_dir.lock().unwrap().clone();
+                let logo_want = match (&logo_dir, &welcome.logo) {
+                    (Some(d), Some(id)) if id.is_empty() => {
+                        if !crate::logo::id_in(d).is_empty() {
+                            crate::logo::remove(d);
+                            status.logo_seq.fetch_add(1, Relaxed);
+                        }
+                        None
+                    }
+                    (Some(d), Some(id)) if *id != crate::logo::id_in(d) => Some(id.clone()),
+                    _ => None,
+                };
                 let r = tokio::select! {
-                    r = session(ws, sealer, opener, tarn, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone(), opts.update.clone()) => r,
+                    r = session(ws, sealer, opener, tarn, tun_in.clone(), tun_out.clone(), status.clone(), stop.clone(), opts.update.clone(), logo_want) => r,
                     _ = async { match &kick { Some(k) => k.notified().await, None => std::future::pending().await } } => {
                         backoff = 0;
                         Err("Netzwerk gewechselt – verbinde neu".to_string())
@@ -332,6 +349,7 @@ pub async fn session(
     status: Arc<Status>,
     mut stop: watch::Receiver<bool>,
     update: Option<Arc<crate::update::Updater>>,
+    logo_want: Option<String>,
 ) -> Result<(), String> {
     let (sink, stream) = ws.split();
     let (out, out_err, _w) = crate::pipe::writer(sink, 64);
@@ -341,6 +359,8 @@ pub async fn session(
     let upd_rx = update.clone();
     // Antworten des Empfangs-Tasks (z. B. auf stilles Anpingen), gehen mit dem naechsten Buendel hinaus
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Vec<u8>>(16);
+    let logo_get = logo_want.is_some();
+    let mut logo_rx = crate::logo::Empfang::default();
 
     let mut sender = tokio::spawn(async move {
         let send_fail = |out_err: &Arc<Mutex<String>>| {
@@ -362,6 +382,12 @@ pub async fn session(
         if let Some(off) = update.as_ref().and_then(|u| u.request()) {
             let mut buf = Vec::with_capacity(64);
             push_record(&mut buf, REC_UPD_GET, &off.to_be_bytes());
+            senden!(buf);
+        }
+        // eigenes Logo des Servers anfordern
+        if logo_get {
+            let mut buf = Vec::with_capacity(16);
+            push_record(&mut buf, crate::proto::REC_LOGO_GET, &[]);
             senden!(buf);
         }
         let mut rx = tun_in.lock().await;
@@ -484,6 +510,18 @@ pub async fn session(
                 }
                 REC_LOCATE => {
                     st_rx.locate.fetch_add(1, Relaxed);
+                }
+                crate::proto::REC_LOGO => {
+                    if let Some(id) = &logo_want {
+                        if let Some(png) = logo_rx.stueck(id, data) {
+                            let dir = st_rx.logo_dir.lock().unwrap().clone();
+                            if let Some(d) = dir {
+                                if crate::logo::save(&d, &png).is_ok() {
+                                    st_rx.logo_seq.fetch_add(1, Relaxed);
+                                }
+                            }
+                        }
+                    }
                 }
                 REC_CRASH_OK => {
                     let n = String::from_utf8_lossy(data).to_string();

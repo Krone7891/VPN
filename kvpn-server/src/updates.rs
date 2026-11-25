@@ -16,10 +16,85 @@ use kvpn::update::{newer, verify, Manifest};
 use std::path::{Path, PathBuf};
 
 pub fn base_url(cfg: &Config) -> String {
+    source_url(&cfg.update_repo, &cfg.update_branch)
+}
+
+fn source_url(repo: &str, branch: &str) -> String {
     if let Ok(u) = std::env::var("KVPN_UPDATE_URL") {
         return u.trim_end_matches('/').to_string();
     }
-    format!("https://raw.githubusercontent.com/{}/{}", cfg.update_repo.trim_matches('/'), cfg.update_branch)
+    format!("https://raw.githubusercontent.com/{}/{}", repo.trim_matches('/'), branch)
+}
+
+// ------------------------------------------------------------------ Update-Quelle (GitHub-Repo) aendern
+
+/// "besitzer/name" wie auf GitHub
+pub fn check_repo(repo: &str) -> Result<(), String> {
+    let ok_part = |p: &str| !p.is_empty() && p.len() <= 100 && p.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !p.starts_with('.');
+    match repo.split('/').collect::<Vec<_>>().as_slice() {
+        [a, b] if ok_part(a) && ok_part(b) => Ok(()),
+        _ => Err(format!("„{repo}“ ist kein GitHub-Repo – bitte als besitzer/name, z. B. Krone7891/VPN")),
+    }
+}
+
+pub fn check_branch(b: &str) -> Result<(), String> {
+    if !b.is_empty() && b.len() <= 200 && b.chars().all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c)) && !b.contains("..") && !b.starts_with('/') {
+        Ok(())
+    } else {
+        Err(format!("„{b}“ ist kein gültiger Zweig"))
+    }
+}
+
+/// Liegt im Repo eine Update-Liste, die mit dem Schluessel dieser Apps signiert ist? (sonst wuerden die Geraete
+/// die Apps von dort ablehnen) Liefert die Liste.
+pub fn probe(repo: &str, branch: &str) -> Result<Manifest, String> {
+    let base = source_url(repo, branch);
+    let get = |f: &str, max: u64| -> Result<String, String> {
+        let b = fetch(&format!("{base}/dist/{f}"), max).map_err(|_| format!("im Repo {repo} (Zweig {branch}) gibt es keine dist/{f} – Repo öffentlich? Name und Zweig richtig?"))?;
+        String::from_utf8(b).map_err(|_| format!("dist/{f} ist kein Text"))
+    };
+    let text = get("update.json", 64 * 1024)?;
+    let sig = get("update.json.sig", 4096)?;
+    verify(&text, &sig).map_err(|e| {
+        format!("dist/update.json in {repo} ist nicht mit dem Update-Schlüssel dieser Apps signiert ({e}) – die Geräte würden Apps von dort ablehnen")
+    })
+}
+
+/// Update-Quelle aendern. Ist ein Admin-Passwort festgelegt, muss `pw` stimmen. Ohne Passwort geht es nur, wenn
+/// `ohne_pw_erlaubt` (Einrichtung auf der Kommandozeile, solange noch keins festgelegt ist). `pruefen`: vorher im
+/// neuen Repo nach einer gueltig signierten Update-Liste sehen.
+pub fn set_source(path: &str, repo: &str, branch: &str, pw: Option<&str>, ohne_pw_erlaubt: bool, pruefen: bool) -> Result<String, String> {
+    let repo = repo.trim().trim_matches('/');
+    let branch = branch.trim();
+    check_repo(repo)?;
+    check_branch(branch)?;
+    let mut c = Config::load(path)?;
+    if !c.admin_password.is_empty() {
+        let ok = pw.map(|p| crate::admin::verify(&c.admin_password, p)).unwrap_or(false);
+        if !ok {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            return Err("Admin-Passwort falsch – Update-Quelle bleibt unverändert".into());
+        }
+    } else if !ohne_pw_erlaubt {
+        return Err("Zuerst ein Admin-Passwort festlegen (Einstellungen oder kvpn-server admin-passwort) – damit wird das Ändern der Update-Quelle geschützt".into());
+    }
+    if c.update_repo == repo && c.update_branch == branch {
+        return Ok(format!("Update-Quelle ist schon {repo} (Zweig {branch})"));
+    }
+    let gefunden = if pruefen { Some(probe(repo, branch)?) } else { None };
+    let (alt_repo, alt_zweig) = (c.update_repo.clone(), c.update_branch.clone());
+    c.update_repo = repo.into();
+    c.update_branch = branch.into();
+    c.save(path)?;
+    // von der alten Quelle vorgemerkte Version verwerfen
+    let d = Path::new(&c.state_dir);
+    let _ = std::fs::remove_file(d.join("update-pending.json"));
+    let _ = std::fs::remove_file(d.join("update-pending.json.sig"));
+    crate::log!("Update-Quelle geaendert: {alt_repo} ({alt_zweig}) -> {repo} ({branch})");
+    Ok(match gefunden {
+        Some(m) => format!("Update-Quelle jetzt {repo} (Zweig {branch}) – dort gefunden: Apps {} (gültig signiert). Verteilen weiterhin erst nach Freigabe.", m.version),
+        None => format!("Update-Quelle jetzt {repo} (Zweig {branch}) – nicht geprüft"),
+    })
 }
 
 /// Datei laden (curl: Proxy, Weiterleitungen, Zertifikatspruefung)

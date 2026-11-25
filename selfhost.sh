@@ -129,7 +129,8 @@ K set listen "$LISTEN" >/dev/null
 K set tls_cert "$CERT" >/dev/null
 K set tls_key "$KEY" >/dev/null
 [ -n "$NAME" ] && K set vpn_name "$NAME" >/dev/null
-[ -n "${KVPN_REPO:-}" ] && K set update_repo "$KVPN_REPO" >/dev/null
+# eigenes Update-Repo (Einrichtung; ist schon ein Admin-Passwort festgelegt, geht das nur mit: kvpn-server update-quelle)
+[ -n "${KVPN_REPO:-}" ] && { K update-quelle "$KVPN_REPO" "${KVPN_REPO_BRANCH:-main}" --ohne-pruefung </dev/null >/dev/null 2>&1 || echo "   Update-Repo nicht geaendert (Admin-Passwort noetig): kvpn-server update-quelle $KVPN_REPO"; }
 NAME=$(sed -n 's/^vpn_name = "\(.*\)"/\1/p' "$CFG"); NAME=${NAME:-KroneVPN}
 PWF=$(dirname "$CFG")/statistik-passwort.txt
 if ! grep -q '^stats_password = "..*"' "$CFG"; then
@@ -147,6 +148,8 @@ elif [ -z "$YES" ] && [ -z "$TEST" ] && { [ -n "$ASK" ] || [ -t 0 ]; } && (: </d
   K einstellungen </dev/tty
 else
   K einstellungen --ja | sed 's/^/   /'
+  # Admin-Passwort (Admin-Seite + Update-Quelle): einmal fragen, solange keins festgelegt ist
+  [ -z "$TEST" ] && (: </dev/tty) 2>/dev/null && K admin-passwort --falls-fehlt </dev/tty || true
 fi
 
 say "4/6 Apps zum Herunterladen ($DL)"

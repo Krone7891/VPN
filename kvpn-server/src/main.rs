@@ -8,6 +8,8 @@
 //!   kvpn-server import <code>                                       Code eines Geraets uebernehmen (fuer 'code')
 //!   kvpn-server update [--ja]                                       neue App-Version von GitHub freigeben und verteilen
 //!   kvpn-server update-sign <schluessel.pk8> <dist>                 update.json fuer die Apps signieren (beim Bauen)
+//!   kvpn-server update-quelle [besitzer/name [zweig]]               Repo fuer App-Updates aendern (Admin-Passwort)
+//!   kvpn-server admin-passwort [--loeschen]                         Passwort fuer Admin-Seite und Update-Quelle
 //!   kvpn-server password <passwort>                                 Passwort fuer die Statistik von aussen
 //!   kvpn-server set <schluessel> <wert>                             einzelnen Wert setzen (z. B. vpn_name, listen)
 //!   kvpn-server run                                                 Server starten (systemd: krone-vpn.service)
@@ -33,6 +35,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use config::{Config, Peer};
 use std::sync::Arc;
 
+/// Version des Servers – eigene Nummer, unabhaengig von den Apps (die haben je App ihre eigene, siehe
+/// tools/app-versions.py). Aendert sich nur der Server, bekommen die Geraete kein Update.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[macro_export]
 macro_rules! log {
     ($($t:tt)*) => {{ eprintln!($($t)*); }};
@@ -42,8 +48,8 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [<neu> | --loeschen]   Admin-Seite im VPN (http://10.77.0.1:8180)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
-        kvpn::VERSION
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        VERSION
     );
     std::process::exit(2)
 }
@@ -82,6 +88,7 @@ fn main() {
             None => die("Aufruf: kvpn-server standort <ip-adresse>"),
         },
         "admin-passwort" | "admin-password" => cmd_admin_pw(&cfg_path, &args[1..]),
+        "update-quelle" | "update-source" | "quelle" => cmd_update_quelle(&cfg_path, &args[1..]),
         "status" => cmd_status(&cfg_path),
         "remove" | "rm" => cmd_remove(&cfg_path, &args[1..].join(" ")),
         "list" | "ls" => cmd_list(&cfg_path),
@@ -97,7 +104,7 @@ fn main() {
         "max" | "max-geraete" | "max_devices" => cmd_max(&cfg_path, args.get(1).map(|s| s.as_str())),
         "logo" | "bild" => cmd_logo(&cfg_path, &args[1..]),
         "run" => cmd_run(cfg_path),
-        "version" | "--version" => println!("{}", kvpn::VERSION),
+        "version" | "--version" => println!("{VERSION}"),
         _ => usage(),
     }
 }
@@ -455,6 +462,11 @@ fn cmd_set(path: &str, args: &[String]) {
         switch_users(path, config::on_off(&args[1]).unwrap_or_else(|e| die(e)));
         return;
     }
+    if matches!(args[0].as_str(), "update_repo" | "update_branch") {
+        let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+        let (r, b) = if args[0] == "update_repo" { (args[1].clone(), cfg.update_branch.clone()) } else { (cfg.update_repo.clone(), args[1].clone()) };
+        return cmd_update_quelle(path, &[r, b]);
+    }
     let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
     cfg.set(&args[0], &args[1..].join(" ")).unwrap_or_else(|e| die(e));
     cfg.save(path).unwrap_or_else(|e| die(e));
@@ -471,15 +483,13 @@ fn cmd_logo(path: &str, args: &[String]) {
     let cfg = Config::load(path).unwrap_or_else(|e| die(e));
     match args.first().map(|s| s.as_str()) {
         Some("--entfernen") | Some("--remove") => {
-            let d = std::path::Path::new(&cfg.state_dir);
-            let _ = std::fs::remove_file(d.join("logo.bin"));
-            let _ = std::fs::remove_file(d.join("logo.type"));
-            println!("Bild entfernt");
+            web::logo_remove(&cfg.state_dir);
+            println!("Bild entfernt – Webseiten und Apps zeigen wieder die Krone");
         }
         Some(f) => {
             let data = std::fs::read(f).unwrap_or_else(|e| die(format!("{f}: {e}")));
             let t = web::logo_store(&cfg.state_dir, &data).unwrap_or_else(|e| die(e));
-            println!("Bild gespeichert ({t}, {} KB) – erscheint auf Download- und Statistik-Seite", data.len() / 1024);
+            println!("Bild gespeichert ({t}, {} KB) – erscheint auf den Webseiten und in den Apps (beim naechsten Verbinden)", data.len() / 1024);
         }
         None => die("Aufruf: kvpn-server logo <bild.png|jpg|webp>   oder   kvpn-server logo --entfernen"),
     }
@@ -528,7 +538,7 @@ fn cmd_run(cfg_path: String) {
         };
         log!(
             "KroneVPN Server {} laeuft: {} ({}), {} Geraet(e), {} TUN-Queues, {} Kerne, Leistungsmodus {}, Verschluesselung {}, Benutzerverwaltung {} – Clients: {}",
-            kvpn::VERSION,
+            VERSION,
             cfg.listen,
             if tls.is_some() { "TLS selbst" } else { "hinter nginx" },
             cfg.peers.len(),
@@ -849,6 +859,13 @@ fn cmd_settings(path: &str, args: &[String]) {
             }
         }
     }
+    if interactive && cfg.admin_password.is_empty() {
+        println!("  Admin-Passwort (Admin-Seite + Ändern der Update-Quelle) ist noch nicht festgelegt.");
+        if let Some(pw) = ask_new_password("Admin-Passwort") {
+            let addr = cfg.admin_addr().map(|a| format!("http://{a}")).unwrap_or_else(|| "lokal".into());
+            set_admin_pw(path, &pw, &addr);
+        }
+    }
     let mut restart = false;
     for (k, v) in &want {
         if *k == "users" {
@@ -890,8 +907,29 @@ fn cmd_admin_pw(path: &str, args: &[String]) {
     match args.first().map(|s| s.as_str()) {
         None => {
             println!("Admin-Seite im VPN: {addr}");
-            println!("Passwort: {}", if cfg.admin_password.is_empty() { "noch keins – wird beim ersten Aufruf im VPN festgelegt" } else { "festgelegt" });
-            println!("Neu setzen: kvpn-server admin-passwort '<neues>'   ·   vergessen: kvpn-server admin-passwort --loeschen");
+            println!("Passwort: {}", if cfg.admin_password.is_empty() { "noch keins" } else { "festgelegt" });
+            println!("Es schützt die Admin-Seite und das Ändern der Update-Quelle (kvpn-server update-quelle).");
+            if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                if let Some(pw) = ask_new_password(if cfg.admin_password.is_empty() { "Jetzt festlegen" } else { "Neues Passwort" }) {
+                    set_admin_pw(path, &pw, &addr);
+                }
+            } else {
+                println!("Neu setzen: kvpn-server admin-passwort (fragt nach)   ·   vergessen: kvpn-server admin-passwort --loeschen");
+            }
+        }
+        // bei der Einrichtung: nur fragen, wenn noch keins festgelegt ist (und jemand am Terminal sitzt)
+        Some("--falls-fehlt") | Some("--if-missing") => {
+            if !cfg.admin_password.is_empty() {
+                println!("Admin-Passwort: festgelegt");
+            } else if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                println!("Admin-Passwort festlegen – gilt für die Admin-Seite ({addr}) und zum Ändern der Update-Quelle.");
+                match ask_new_password("Admin-Passwort") {
+                    Some(pw) => set_admin_pw(path, &pw, &addr),
+                    None => println!("  später: kvpn-server admin-passwort (oder beim ersten Aufruf der Admin-Seite im VPN)"),
+                }
+            } else {
+                println!("Admin-Passwort: noch keins – festlegen mit: kvpn-server admin-passwort");
+            }
         }
         Some("--loeschen") | Some("--delete") | Some("--reset") => {
             cfg.admin_password.clear();
@@ -901,10 +939,86 @@ fn cmd_admin_pw(path: &str, args: &[String]) {
         Some(_) => {
             let pw = args.join(" ");
             admin::check_new(&pw).unwrap_or_else(|e| die(e));
-            cfg.admin_password = admin::hash(&pw);
-            cfg.save(path).unwrap_or_else(|e| die(e));
-            println!("Admin-Passwort gesetzt ({addr}). Alle bisherigen Anmeldungen sind abgemeldet.");
+            set_admin_pw(path, &pw, &addr);
         }
+    }
+}
+
+fn set_admin_pw(path: &str, pw: &str, addr: &str) {
+    let mut cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    cfg.admin_password = admin::hash(pw);
+    cfg.save(path).unwrap_or_else(|e| die(e));
+    println!("Admin-Passwort gesetzt (Admin-Seite {addr}, Update-Quelle). Alle bisherigen Anmeldungen sind abgemeldet.");
+}
+
+/// Passwort lesen, ohne es anzuzeigen (Terminal) – sonst eine Zeile von der Standardeingabe (fuer Skripte)
+fn read_secret(prompt: &str) -> String {
+    use std::io::Write;
+    print!("{prompt}");
+    let _ = std::io::stdout().flush();
+    let fd = 0;
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    let mut old: libc::termios = unsafe { std::mem::zeroed() };
+    let hidden = tty && unsafe { libc::tcgetattr(fd, &mut old) } == 0 && {
+        let mut t = old;
+        t.c_lflag &= !libc::ECHO;
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &t) == 0 }
+    };
+    let mut a = String::new();
+    let _ = std::io::stdin().read_line(&mut a);
+    if hidden {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &old) };
+        println!();
+    }
+    a.trim_end_matches(['\r', '\n']).to_string()
+}
+
+/// neues Passwort zweimal abfragen; None = leer gelassen (spaeter)
+fn ask_new_password(was: &str) -> Option<String> {
+    loop {
+        let pw = read_secret(&format!("  {was} (mind. 8 Zeichen, Enter = später): "));
+        if pw.is_empty() {
+            return None;
+        }
+        if let Err(e) = admin::check_new(&pw) {
+            println!("    {e}");
+            continue;
+        }
+        if read_secret("  Wiederholen: ") != pw {
+            println!("    Die beiden Eingaben sind verschieden – bitte noch einmal.");
+            continue;
+        }
+        return Some(pw);
+    }
+}
+
+/// Update-Quelle (GitHub-Repo, aus dem der Server neue Apps holt) anzeigen bzw. aendern – mit Admin-Passwort
+fn cmd_update_quelle(path: &str, args: &[String]) {
+    let mut args = args.to_vec();
+    let ungeprueft = args.iter().any(|a| a == "--ohne-pruefung");
+    args.retain(|a| a != "--ohne-pruefung");
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let Some(repo) = args.first().cloned() else {
+        println!("Update-Quelle: https://github.com/{} (Zweig {})", cfg.update_repo, cfg.update_branch);
+        println!("Ändern: kvpn-server update-quelle <besitzer/name> [zweig]   – braucht das Admin-Passwort.");
+        println!("Im neuen Repo muss dist/update.json mit Signatur liegen (mit demselben Update-Schlüssel signiert, sonst lehnen die Apps ab).");
+        return;
+    };
+    let zweig = args.get(1).cloned().unwrap_or_else(|| if repo == cfg.update_repo { cfg.update_branch.clone() } else { "main".into() });
+    updates::check_repo(&repo).unwrap_or_else(|e| die(e));
+    updates::check_branch(&zweig).unwrap_or_else(|e| die(e));
+    let pw = if cfg.admin_password.is_empty() {
+        println!("Hinweis: noch kein Admin-Passwort festgelegt – danach ist das Ändern der Update-Quelle damit geschützt (kvpn-server admin-passwort).");
+        None
+    } else {
+        Some(read_secret("Admin-Passwort: "))
+    };
+    if !ungeprueft {
+        println!("prüfe {repo} (Zweig {zweig}) ...");
+    }
+    match updates::set_source(path, &repo, &zweig, pw.as_deref(), true, !ungeprueft) {
+        Ok(m) => println!("{m}"),
+        Err(e) => die(e),
     }
 }
 

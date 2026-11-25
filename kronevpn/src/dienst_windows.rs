@@ -706,8 +706,11 @@ fn shortcut(title: &str, target: &Path) {
         return;
     }
     let q = |p: &Path| p.display().to_string().replace('\'', "''");
+    // eigenes Logo des Servers als Symbol (sonst das Symbol im Programm)
+    let ico = data_dir().join("logo").join("logo.ico");
+    let icon = if ico.exists() { format!("$s.IconLocation='{},0'; ", q(&ico)) } else { String::new() };
     let ps = format!(
-        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Description='VPN'; $s.Save()",
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.TargetPath='{}'; $s.WorkingDirectory='{}'; $s.Description='VPN'; {icon}$s.Save()",
         q(&lnk),
         q(target),
         q(target.parent().unwrap_or(target))
@@ -721,6 +724,39 @@ fn shortcut(title: &str, target: &Path) {
     if ok {
         let _ = std::fs::write(data_dir().join("verknuepfung.txt"), lnk.display().to_string());
     }
+}
+
+/// neues (oder entferntes) Logo vom Server: Symbol-Datei schreiben und der Verknuepfung im Startmenue geben.
+/// Das Programmfenster bemerkt es selbst (liest logo.id) und tauscht Logo und Fenster-/Taskleisten-Symbol.
+pub fn logo_geaendert(dir: &Path) {
+    let png = dir.join("logo.png");
+    let ico = dir.join("logo.ico");
+    let neu = !kvpn::logo::id_in(dir).is_empty();
+    if neu {
+        match std::fs::read(&png) {
+            Ok(b) => {
+                let _ = std::fs::write(&ico, kvpn::logo::ico_from_png(&b));
+            }
+            Err(_) => return,
+        }
+    } else {
+        let _ = std::fs::remove_file(&ico);
+    }
+    let Ok(lnk) = std::fs::read_to_string(data_dir().join("verknuepfung.txt")) else { return };
+    let lnk = lnk.trim().to_string();
+    if !Path::new(&lnk).exists() {
+        return;
+    }
+    let q = |p: &str| p.replace('\'', "''");
+    let icon = if neu { format!("{},0", ico.display()) } else { format!("{},0", prog_dir().join("KroneVPN.exe").display()) };
+    let ps = format!("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}'); $s.IconLocation='{}'; $s.Save()", q(&lnk), q(&icon));
+    let ok = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    say(&format!("Symbol der Verknuepfung {}", if ok { "erneuert" } else { "konnte nicht erneuert werden" }));
 }
 
 /// laeuft hier nicht die installierte Version und ist die installierte neuer (Auto-Update)? Dann deren Pfad
@@ -1023,6 +1059,10 @@ impl crate::gui::Steuerung for Fenster {
 
     fn verschluesselung(&self) -> String {
         crate::cipher_choice(&self.a)
+    }
+
+    fn logo_ordner(&self) -> Option<PathBuf> {
+        Some(data_dir().join("logo"))
     }
 
     fn verschluesselung_setzen(&self, wahl: &str) -> Result<(), String> {
