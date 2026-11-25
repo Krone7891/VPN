@@ -19,6 +19,9 @@ use std::time::Duration;
 pub struct Waechter {
     /// schon gemeldete Geraete (bis sie wieder da sind)
     gemeldet: HashSet<String>,
+    /// seit wann ein Geraet (wieder) verbinden darf – nach einer Sperre oder ausserhalb seines Zeitfensters
+    /// zaehlt die Offline-Zeit erst ab da (Mo 07:00 kein Alarm, nur weil es seit Freitag weg war)
+    darf_seit: HashMap<String, u64>,
     /// Name zeigte schon einmal auf die eigene Adresse (sonst kein Alarm)
     pub extern_passte: bool,
     extern_fehler: u32,
@@ -45,6 +48,11 @@ impl Waechter {
         // (Tests: Grenze in Sekunden ueber KVPN_AUSFALL_S)
         let grenze = std::env::var("KVPN_AUSFALL_S").ok().and_then(|x| x.parse().ok()).unwrap_or(c.ausfall_stunden.max(1) as u64 * 3600);
         let ueberwacht: Vec<String> = c.ausfall_geraete.iter().map(|x| x.to_lowercase()).collect();
+        let erster = self.darf_seit.is_empty();
+        self.darf_seit.retain(|k, _| letzte.contains_key(k));
+        for k in letzte.keys() {
+            self.darf_seit.entry(k.clone()).or_insert(if erster { 0 } else { now });
+        }
         for (name, (online, seen)) in letzte {
             let key = name.to_lowercase();
             if !ueberwacht.contains(&key) {
@@ -57,7 +65,7 @@ impl Waechter {
                 }
                 continue;
             }
-            let seit = if *seen > 0 { *seen } else { started };
+            let seit = (if *seen > 0 { *seen } else { started }).max(self.darf_seit.get(name).copied().unwrap_or(0));
             if now.saturating_sub(seit) >= grenze && self.gemeldet.insert(key) {
                 let wann = if *seen > 0 { format!("zuletzt verbunden am {} (UTC)", crate::users::datetime(*seen as i64)) } else { "seit dem Start des Servers nicht verbunden".to_string() };
                 out.push((
@@ -221,6 +229,23 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r[0].0.contains("wieder da"));
         assert!(w.geraete(&c, &m, start, start + 31 * 3600).is_empty());
+    }
+
+    #[test]
+    fn erst_ab_zeitfenster() {
+        let c = cfg();
+        let mut w = Waechter::default();
+        let start = 1_000_000u64;
+        // erste Pruefung: nur der PC darf gerade (Handy ausserhalb seines Zeitfensters)
+        let mut m = HashMap::new();
+        m.insert("PC".to_string(), (true, start));
+        assert!(w.geraete(&c, &m, start, start + 3600).is_empty());
+        // zwei Tage spaeter beginnt das Zeitfenster des Handys: kein Alarm, obwohl es lange weg war
+        let t = start + 48 * 3600;
+        m.insert("Handy Lea".to_string(), (false, start + 100));
+        assert!(w.geraete(&c, &m, start, t).is_empty());
+        assert!(w.geraete(&c, &m, start, t + 23 * 3600).is_empty());
+        assert_eq!(w.geraete(&c, &m, start, t + 24 * 3600).len(), 1, "erst 24 h nach Beginn des Zeitfensters");
     }
 
     #[test]

@@ -11,6 +11,92 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Alle Funktionen
+
+Überblick über alles, was Server und Apps können – mit dem passenden Befehl bzw. Ort. Auf dem Server jederzeit:
+`kvpn-server anleitung` (mit den Adressen des eigenen Servers; liegt nach der Installation auch in `/etc/krone-vpn/ANLEITUNG.txt`).
+
+**Verbindung & Sicherheit**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| VPN über HTTPS (Port 443) | sieht für Firewalls wie eine normale Webseite aus – kommt auch durch strenge Firmen-Firewalls (Sophos) und Firmen-Proxys | immer an |
+| Ende-zu-Ende-Verschlüsselung | Noise (wie WireGuard) + AES-256-GCM oder ChaCha20 – auch wenn eine Firewall HTTPS aufbricht, liest niemand mit | App → Sicherheit |
+| Tarnung | Paketgrößen und Takt ändern sich bei jeder Verbindung, keine typischen VPN-Muster | immer an |
+| Notbremse (Kill-Switch) | fällt das VPN aus, geht nichts unverschlüsselt ins Internet | App → Schutz |
+| Automatisch schützen | in fremden WLANs/Mobilfunk verbinden, im eigenen WLAN pausieren | App → Schutz |
+| Am VPN vorbei | einzelne Apps (Android) bzw. Ziele (PC) gehen direkt ins Internet | App → Schutz |
+| Zweiter Schritt (2FA) | Admin-Seite nur mit Passwort + Code aus einer Authenticator-App | `kvpn-server zwei-faktor an` |
+
+**Geräte & Benutzer**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| Gerät anlegen | zeigt QR-Code und Verbindungscode für die App | `kvpn-server add "Mein Handy"` |
+| Liste / Code nochmal zeigen | alle Geräte mit Status; Code und QR erneut | `kvpn-server list` · `kvpn-server code "Name"` |
+| Benutzer | Personen mit mehreren Geräten, Höchstzahl je Benutzer | `kvpn-server benutzer add "Anna"` · `add "Annas Handy" --benutzer Anna` |
+| Sperren / Ablaufdatum | Gerät oder Benutzer sofort sperren, Zugang bis zu einem Datum | `kvpn-server sperren "Name"` · `ablauf "Name" 2026-12-31` |
+| Zeitfenster | VPN nur zu bestimmten Zeiten, z. B. Mo-Fr 07:00-16:00 (je Gerät oder Benutzer) | `kvpn-server zeiten "Name" "Mo-Fr 7-16"` |
+| Gäste einladen | Link/QR mit Ablauf, Zugang nur einmal abholbar, danach automatisch weg | `kvpn-server gast "Oma" --tage 7` |
+| Verlauf | wann sich welches Gerät verbunden hat (90 Tage) | `kvpn-server verlauf [Gerät]` |
+| Höchstzahl Geräte | wie viele Geräte gleichzeitig angelegt sein dürfen | `kvpn-server max 20` |
+
+**Netz & Werbe-Blocker**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| Werbe- & Tracker-Blocker | wie Pi-hole für alle Geräte im VPN, Listen täglich neu | `kvpn-server einstellungen --werbeblocker an` |
+| Eigene Sperren/Ausnahmen | einzelne Seiten sperren oder freigeben | Admin-Seite → Einstellungen |
+| Heimnetz | Geräte im VPN erreichen Drucker/NAS daheim, auch mit Namen | `kvpn-server einstellungen --heimnetz an` |
+| Geschwindigkeitstest | Ping, Download, Upload durch das VPN bis zum Server | App → Geschwindigkeit testen |
+
+**Überblick & Meldungen**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| Admin-Seite | Live-Datenrate, Geräte, Verlauf, Einstellungen, sperren, Gäste, Sicherung | im VPN: http://<server-im-vpn>:8180 |
+| Monatsbericht | Daten, Online-Zeit, Verbindungen je Gerät; auch als CSV | `kvpn-server bericht [JJJJ-MM]` |
+| Benachrichtigungen | aufs Handy über ntfy oder Telegram: neues Gerät, falsches Passwort, Start, Update, Bericht, Ausfall | `kvpn-server benachrichtigung ntfy https://ntfy.sh/<thema>` |
+| Ausfall-Alarm | Gerät zu lange offline; Server von außen nicht erreichbar (DynDNS) | `kvpn-server set ausfall_geraete "Handy Lea"` |
+| Standort & Orten | Standort der Geräte (wenn in der App erlaubt), Karte mit Verlauf, Gerät orten | Admin-Seite → Geräte |
+| Gerät anpingen | prüfen, ob ein Gerät gerade erreichbar ist | Admin-Seite → Geräte |
+| Absturz-Protokolle | Fehlerberichte der Apps landen auf dem Server | `kvpn-server abstuerze` |
+
+**Wartung**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| Tägliche Sicherung | Schlüssel, Geräte, Benutzer, Einstellungen; die letzten 14 bleiben | `kvpn-server sicherung` · `sicherung jetzt` |
+| Wiederherstellen | auch auf einem neuen Server nach der Installation | `kvpn-server sicherung zurueck <datei>` |
+| Server aktualisieren | neueste Version von GitHub, Schlüssel und Geräte bleiben | `kvpn-update` |
+| App-Updates verteilen | neue App-Version (signiert) geht nach Freigabe durch den Tunnel an die Geräte | `kvpn-server update` |
+| Eigener Name & Logo | erscheinen in den Apps und auf den Webseiten | `kvpn-server set vpn_name "…"` · `kvpn-server logo bild.png` |
+| Start beim Hochfahren | prüfen bzw. einschalten | `kvpn-server autostart an` |
+| Status | Geräte mit App-Version und Update-Stand | `kvpn-server status` |
+
+**Apps**
+
+| Funktion | Was sie macht | Befehl / Ort |
+|---|---|---|
+| Android | Ein/Aus-Knopf, Schnelleinstellungs-Kachel, Schutz, Geschwindigkeit, Logo des Servers | App |
+| Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
+| Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
+
+## Neu in Apps 1.5.0 / Server 1.5.0
+
+- **Zeitfenster**: ein Gerät – oder alle Geräte eines Benutzers – dürfen nur zu bestimmten Zeiten ins VPN, z. B.
+  nur **Montag bis Freitag 7–16 Uhr**. Außerhalb wird sofort getrennt; die App zeigt den Grund („VPN nur Mo-Fr
+  07:00-16:00 – wieder ab Mo 07:00“) und verbindet sich zur erlaubten Zeit von selbst wieder.
+  - `kvpn-server zeiten "Schul-Tablet" "Mo-Fr 7-16"` · für einen Benutzer: `kvpn-server benutzer zeiten "Lea" "Mo-Fr 7-16; Sa 9-12"`
+  - Schreibweisen: `Mo-Fr 07:00-16:00`, `Sa,So 9-12`, `täglich 6-21`, `werktags 8-18`, über Mitternacht `Fr 22-02`;
+    mehrere mit `;` · `aus` = immer erlaubt · ein eigenes Zeitfenster des Geräts geht vor dem des Benutzers
+  - Admin-Seite → Benutzer & Geräte → **Zeiten**; es gilt die Uhrzeit des Servers (`kvpn-server set zeitzone Europe/Berlin`)
+  - Der Ausfall-Alarm zählt erst ab Beginn des Zeitfensters (kein Alarm am Montagmorgen, nur weil das Gerät übers
+    Wochenende weg war).
+- **Installation erklärt alles**: Willkommen mit Überblick, zu jeder Frage und jedem Schritt eine kurze Erklärung, am
+  Ende die ersten Schritte und – auf Wunsch – alle Funktionen. Jederzeit wieder: `kvpn-server anleitung`
+  (gespeichert in `/etc/krone-vpn/ANLEITUNG.txt`).
+
 ## Neu in Apps 1.4.0 / Server 1.4.0
 
 **Server**

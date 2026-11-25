@@ -177,6 +177,19 @@ impl Shared {
                     log!("Hinweis: Leistungsmodus geaendert – das gilt erst nach einem Neustart des Dienstes");
                 }
                 let changed = c.peers != old.peers || c.inactive != old.inactive;
+                // Zeitfenster: beginnt bzw. endet
+                for p in &c.inactive {
+                    if old.peers.iter().any(|o| o.public_key == p.public_key) {
+                        if let Some(g) = c.inactive_grund.get(&p.public_key).filter(|g| g.starts_with("VPN nur")) {
+                            log!("{}: Zeitfenster vorbei – getrennt ({g})", p.name);
+                        }
+                    }
+                }
+                for p in &c.peers {
+                    if old.inactive.iter().any(|o| o.public_key == p.public_key) && old.inactive_grund.get(&p.public_key).map(|g| g.starts_with("VPN nur")).unwrap_or(false) {
+                        log!("{}: Zeitfenster beginnt – darf wieder verbinden", p.name);
+                    }
+                }
                 self.apply_peers(&c);
                 self.dns.on.store(c.adblock, Relaxed);
                 self.dns.set_own(&c.dns_block, &c.dns_allow);
@@ -339,8 +352,28 @@ where
         }
     };
     let Some(prt) = sh.peers.read().unwrap().get(&cpub).cloned() else {
-        log!("{remote}: unbekannter Geraete-Schluessel {} – abgelehnt", kvpn::code::key_to_b64(&cpub));
-        let _ = ws.close(None).await;
+        let k = kvpn::code::key_to_b64(&cpub);
+        // bekanntes, aber gerade nicht erlaubtes Geraet (gesperrt, abgelaufen, ausserhalb der Zeit): Grund mitschicken
+        let cfg = sh.cfg();
+        let grund = cfg.inactive.iter().find(|p| p.public_key == k).map(|p| (p.name.clone(), cfg.inactive_grund.get(&k).cloned().unwrap_or_default()));
+        match grund {
+            Some((name, g)) => {
+                log!("{remote}: {name} abgelehnt – {}", if g.is_empty() { "gesperrt" } else { g.as_str() });
+                let mut reason: String = String::new();
+                for c in g.chars() {
+                    if reason.len() + c.len_utf8() > 120 {
+                        break;
+                    }
+                    reason.push(c);
+                }
+                let frame = tokio_tungstenite::tungstenite::protocol::CloseFrame { code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Policy, reason: reason.into() };
+                let _ = ws.close(Some(frame)).await;
+            }
+            None => {
+                log!("{remote}: unbekannter Geraete-Schluessel {k} – abgelehnt");
+                let _ = ws.close(None).await;
+            }
+        }
         return;
     };
     {
@@ -767,6 +800,7 @@ pub fn spawn_background(sh: &Arc<Shared>) {
         let mut upd_mtime = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();
         let mut dns_last = (0u64, 0u64);
         let mut month_seen = String::new();
+        let mut minute_seen = now_secs() / 60;
         loop {
             tick.tick().await;
             n += 1;
@@ -814,8 +848,9 @@ pub fn spawn_background(sh: &Arc<Shared>) {
                 } else if dm != db_mtime && s.cfg().users {
                     db_mtime = dm;
                     s.reload();
-                } else if n % 60 == 0 && s.cfg().users {
-                    // Ablaufdaten pruefen
+                } else if now / 60 != minute_seen && s.cfg().users {
+                    // jede volle Minute: Ablaufdaten und Zeitfenster pruefen (trennt bzw. laesst wieder zu)
+                    minute_seen = now / 60;
                     s.reload_quiet(true);
                 }
                 // neue App-Version freigegeben: Geraete mit aelterer Version kurz neu verbinden lassen -> Angebot
@@ -847,6 +882,7 @@ pub fn spawn_waechter(sh: &Arc<Shared>) {
             // ueberwachte Geraete
             if !c.ausfall_geraete.is_empty() {
                 let mut letzte: HashMap<String, (bool, u64)> = HashMap::new();
+                // (gesperrte, abgelaufene und Geraete ausserhalb ihres Zeitfensters sind nicht "ausgefallen")
                 for p in s.peers.read().unwrap().values() {
                     letzte.insert(p.peer.name.clone(), (p.stats.connected_since.load(Relaxed) > 0, p.stats.last_seen.load(Relaxed)));
                 }

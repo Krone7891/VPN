@@ -1,18 +1,18 @@
 {
  "android": {
-  "version": "1.4.0",
-  "fp2": "be1ea0c55ad74d20f8a1b1a9983f25af30f5a63335b7f95f127e4f7270f66d6b"
+  "version": "1.5.0",
+  "fp2": "101ee109f372389c5d990cea58c920fb4108c4d79e3b64b6bcf1acd4b531201c"
  },
  "windows": {
-  "version": "1.4.0",
-  "fp2": "167a6fd6662aeaf588b107e381b53294a1493f98d34d406a1afd3618f74e23bb"
+  "version": "1.5.0",
+  "fp2": "8e448bdaf47dca47fc8b56a36826c8b237942d3f2f4b6d3bc595629496706163"
  },
  "linux": {
-  "version": "1.4.0",
-  "fp2": "167a6fd6662aeaf588b107e381b53294a1493f98d34d406a1afd3618f74e23bb"
+  "version": "1.5.0",
+  "fp2": "8e448bdaf47dca47fc8b56a36826c8b237942d3f2f4b6d3bc595629496706163"
  },
  "server": {
-  "version": "1.4.0",
-  "fp2": "c6e26480cb06c6233e5f31f99cb198e7f1e98a574b9e2376ad3093375c178016"
+  "version": "1.5.0",
+  "fp2": "f0b13224f4337b3982003c09de07f64da87fa3442d7b6770fb496e6fa11b8fa8"
  }
 }

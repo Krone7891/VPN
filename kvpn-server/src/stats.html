@@ -171,7 +171,7 @@ function build(){
    '<div id="updbox" class="card" hidden style="margin-top:14px;border-color:var(--acc)"><b id="updt"></b><div class="mute" id="upds" style="margin-top:4px"></div>'+
    '<button class="btn" id="updok" hidden style="margin-top:10px">Jetzt an die Geräte verteilen</button></div>'+
    '<h2>Geräte</h2><div class="grid" id="peers"></div><div class="mute" id="inact" style="margin-top:8px"></div>'+
-   '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte sperren</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
+   '<div id="mgmt" hidden><h2>Benutzer &amp; Geräte: sperren, Zeiten</h2><div class="card"><div class="mute" id="mgmtmsg" style="min-height:1.2em"></div>'+
    '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div>'+
    '<h2>Gäste einladen</h2><div class="card"><div class="mute">Für Besuch: ein Link (oder QR-Code), über den sich der Gast die App holt und den Zugang <b>einmal</b> abholt. Nach den Tagen ist der Zugang gesperrt und wird danach entfernt.</div>'+
    '<form id="gastf" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px" autocomplete="off"><input type="text" id="g_name" maxlength="34" placeholder="Name, z. B. Oma" style="flex:1;min-width:10em"><input type="number" id="g_tage" min="1" max="90" value="7" title="Tage" style="width:6em"><button class="btn" style="margin:0">Einladen</button></form>'+
@@ -420,13 +420,20 @@ function showMgmt(r){
   const key=JSON.stringify([r.users,r.devices]);if(key===MG_KEY)return;MG_KEY=key;
   const btn=(kind,name,off)=>'<button type="button" class="btn2" style="margin:0" data-k="'+kind+'" data-n="'+esc(name)+'" data-a="'+(off?'entsperren':'sperren')+'">'+(off?'Entsperren':'Sperren')+'</button>';
   const st=(t,bad)=>'<span class="badge'+(bad?' warn':' ok')+'">'+esc(t)+'</span>';
+  const zbtn=(kind,name,z)=>'<button type="button" class="btn2" style="margin:0 6px 0 0" data-zk="'+kind+'" data-n="'+esc(name)+'" data-z="'+esc(z||'')+'" title="VPN nur zu bestimmten Zeiten, z. B. Mo-Fr 07:00-16:00">'+(z?'⏰ '+esc(z):'Zeiten')+'</button>';
   $('#mgmtu').innerHTML=r.users.length?'<table class="resp"><thead><tr><th>Benutzer</th><th>Geräte</th><th>Status</th><th></th></tr></thead><tbody>'+
     r.users.map(u=>'<tr><td><b>'+esc(u.name)+'</b> '+st(u.disabled?'gesperrt':'aktiv',u.disabled).replace('<span','<span data-m')+(u.note?' <span class="mute">'+esc(u.note)+'</span>':'')+'</td><td data-l="Geräte">'+esc(u.devices.join(', ')||'–')+(u.max?' <span class="mute">(max. '+u.max+')</span>':'')+'</td><td class="stc">'+
-      st(u.disabled?'gesperrt':'aktiv',u.disabled)+'</td><td class="act" style="text-align:right">'+btn('user',u.name,u.disabled)+'</td></tr>').join('')+'</tbody></table>'
+      st(u.disabled?'gesperrt':'aktiv',u.disabled)+'</td><td class="act" style="text-align:right">'+zbtn('user',u.name,u.zeiten)+btn('user',u.name,u.disabled)+'</td></tr>').join('')+'</tbody></table>'
     :'<div class="mute">Noch keine Benutzer – anlegen auf dem Server: <code>kvpn-server benutzer add "Name"</code></div>';
   $('#mgmtd').innerHTML='<table class="resp"><thead><tr><th>Gerät</th><th>Benutzer</th><th>Adresse</th><th>Status</th><th></th></tr></thead><tbody>'+
     r.devices.map(x=>'<tr><td><b>'+esc(x.name)+'</b>'+(x.online?' <span class="badge ok">online</span>':'')+' '+st(x.status,!x.active).replace('<span','<span data-m')+'</td><td data-l="Benutzer">'+esc(x.user||'–')+'</td><td data-l="Adresse">'+esc(x.ip4)+'</td><td class="stc">'+st(x.status,!x.active)+
-      '</td><td class="act" style="text-align:right">'+btn('device',x.name,x.disabled)+'</td></tr>').join('')+'</tbody></table>';
+      '</td><td class="act" style="text-align:right">'+zbtn('device',x.name,x.zeiten)+btn('device',x.name,x.disabled)+'</td></tr>').join('')+'</tbody></table>';
+  box.querySelectorAll('button[data-zk]').forEach(b=>b.onclick=async()=>{
+    const user=b.dataset.zk==='user',w=prompt((user?'Benutzer':'Gerät')+' „'+b.dataset.n+'“: VPN nur zu diesen Zeiten'+(user?' (gilt für alle seine Geräte ohne eigene Zeiten)':'')+
+      '.\n\nBeispiele:  Mo-Fr 07:00-16:00   ·   Mo-Fr 7-16; Sa 9-12   ·   täglich 6-21   ·   Fr 22-02 (über Mitternacht)\nLeer = immer erlaubt. Es gilt die Uhrzeit des Servers.',b.dataset.z);
+    if(w===null)return;b.disabled=true;
+    try{const r=await (await fetch(BASE+'manage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({zeiten:{kind:b.dataset.zk,name:b.dataset.n,wert:w}})})).json();
+      if(r.ok){MG_KEY='';showMgmt(r);MG_T=Date.now()}else{setT($('#mgmtmsg'),r.err||'Fehler');b.disabled=false}}catch(e){setT($('#mgmtmsg'),'Fehler: '+e.message);b.disabled=false}});
   box.querySelectorAll('button[data-k]').forEach(b=>b.onclick=async()=>{
     const off=b.dataset.a==='sperren',what=(b.dataset.k==='user'?'Benutzer':'Gerät')+' „'+b.dataset.n+'“';
     if(off&&!confirm(what+' sperren?'+(b.dataset.k==='user'?' Alle seine Geräte':' Es')+' werden sofort getrennt.'))return;

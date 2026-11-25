@@ -367,6 +367,18 @@ fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde
             v
         });
     }
+    // Zeitfenster eines Geraets/Benutzers setzen ("" = immer)
+    if let Some(z) = body.get("zeiten").filter(|z| z.is_object()) {
+        let (kind, name, wert) = (z["kind"].as_str().unwrap_or("device"), z["name"].as_str().unwrap_or(""), z["wert"].as_str().unwrap_or(""));
+        let t = users::set_zeiten(&db, kind, name, wert)?;
+        drop(db);
+        sh.reload();
+        crate::log!("Webseite: Zeitfenster '{}' {}", name.trim(), if t.is_empty() { "aufgehoben".to_string() } else { t.clone() });
+        return manage(sh, cfg_path, &serde_json::Value::Null).map(|mut v| {
+            v["msg"] = json!(if t.is_empty() { format!("„{}“: immer erlaubt", name.trim()) } else { format!("„{}“: VPN nur {t}", name.trim()) });
+            v
+        });
+    }
     if let Some(kind) = body["kind"].as_str() {
         let name = body["name"].as_str().unwrap_or("").trim().to_string();
         let off = match body["action"].as_str() {
@@ -399,12 +411,13 @@ fn manage(sh: &Shared, cfg_path: &str, body: &serde_json::Value) -> Result<serde
         .into_iter()
         .map(|d| {
             json!({"name": d.peer.name, "user": d.peer.user, "ip4": cfg.ip4(d.peer.index).to_string(), "status": d.status(),
-                   "active": d.active(), "disabled": d.disabled, "online": online.contains(&d.peer.name)})
+                   "active": d.active(), "disabled": d.disabled, "online": online.contains(&d.peer.name),
+                   "zeiten": d.zeiten, "zeiten_eff": d.zeitplan().text()})
         })
         .collect();
     let users: Vec<_> = users::users(&db)?
         .into_iter()
-        .map(|u| json!({"name": u.name, "note": u.note, "disabled": u.disabled, "devices": u.devices, "max": u.max_devices}))
+        .map(|u| json!({"name": u.name, "note": u.note, "disabled": u.disabled, "devices": u.devices, "max": u.max_devices, "zeiten": u.zeiten}))
         .collect();
     let now = now_secs() as i64;
     let gaeste: Vec<_> = users::gaeste(&db)?

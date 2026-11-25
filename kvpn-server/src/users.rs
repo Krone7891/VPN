@@ -69,6 +69,13 @@ pub fn open(cfg_path: &str) -> Result<Connection, String> {
              used INTEGER NOT NULL DEFAULT 0);",
     )
     .map_err(e)?;
+    // Zeitfenster (ab Server 1.5.0): Spalte in aelteren Datenbanken nachruesten
+    for t in ["devices", "users"] {
+        let has: bool = db.prepare(&format!("SELECT 1 FROM pragma_table_info('{t}') WHERE name = 'zeiten'")).and_then(|mut s| s.exists([])).map_err(e)?;
+        if !has {
+            db.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN zeiten TEXT NOT NULL DEFAULT ''")).map_err(e)?;
+        }
+    }
     Ok(db)
 }
 
@@ -80,13 +87,54 @@ pub struct Device {
     pub expires: i64,
     #[allow(dead_code)]
     pub created: i64,
+    /// Zeitfenster des Geraets (leer = das des Benutzers)
+    pub zeiten: String,
+    /// Zeitfenster des Benutzers (gilt fuer alle seine Geraete ohne eigenes)
+    pub user_zeiten: String,
 }
 
 impl Device {
+    /// gueltiges Zeitfenster (eigenes, sonst das des Benutzers; unlesbares = keins)
+    pub fn zeitplan(&self) -> crate::zeitplan::Zeitplan {
+        let z = if self.zeiten.trim().is_empty() { &self.user_zeiten } else { &self.zeiten };
+        crate::zeitplan::Zeitplan::parse(z).unwrap_or_default()
+    }
+    pub fn in_zeit(&self) -> bool {
+        self.zeitplan().erlaubt(now() as u64)
+    }
     pub fn active(&self) -> bool {
-        !self.disabled && !self.user_disabled && (self.expires == 0 || self.expires > now())
+        !self.disabled && !self.user_disabled && (self.expires == 0 || self.expires > now()) && self.in_zeit()
+    }
+    /// Grund fuer die App, wenn das Geraet gerade nicht darf (kurz, geht im WebSocket-Schliessen mit)
+    pub fn grund(&self) -> String {
+        if self.disabled || self.user_disabled {
+            "Zugang gesperrt – bitte beim Admin melden".into()
+        } else if self.expires != 0 && self.expires <= now() {
+            format!("Zugang abgelaufen am {}", date(self.expires))
+        } else if !self.in_zeit() {
+            let z = self.zeitplan();
+            match z.naechster(now() as u64) {
+                Some(n) => format!("VPN nur {} – wieder ab {n}", z.text()),
+                None => format!("VPN nur {}", z.text()),
+            }
+        } else {
+            String::new()
+        }
     }
     pub fn status(&self) -> String {
+        let z = self.zeitplan();
+        let zt = if z.leer() { String::new() } else { format!(" · {}", z.text()) };
+        if !self.disabled && !self.user_disabled && (self.expires == 0 || self.expires > now()) && !self.in_zeit() {
+            return format!("außerhalb der Zeit{zt}");
+        }
+        let s = self.status_ohne_zeit();
+        if s.starts_with("aktiv") {
+            format!("{s}{zt}")
+        } else {
+            s
+        }
+    }
+    fn status_ohne_zeit(&self) -> String {
         if self.disabled {
             "gesperrt".into()
         } else if self.user_disabled {
@@ -104,7 +152,7 @@ impl Device {
 pub fn devices(db: &Connection) -> Result<Vec<Device>, String> {
     let mut st = db
         .prepare(
-            "SELECT d.name, d.public_key, d.idx, COALESCE(u.name, ''), d.disabled, COALESCE(u.disabled, 0), d.expires, d.created
+            "SELECT d.name, d.public_key, d.idx, COALESCE(u.name, ''), d.disabled, COALESCE(u.disabled, 0), d.expires, d.created, d.zeiten, COALESCE(u.zeiten, '')
              FROM devices d LEFT JOIN users u ON u.id = d.user_id ORDER BY d.idx",
         )
         .map_err(e)?;
@@ -116,16 +164,33 @@ pub fn devices(db: &Connection) -> Result<Vec<Device>, String> {
                 user_disabled: r.get::<_, i64>(5)? != 0,
                 expires: r.get(6)?,
                 created: r.get(7)?,
+                zeiten: r.get(8)?,
+                user_zeiten: r.get(9)?,
             })
         })
         .map_err(e)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(e)
 }
 
-/// (aktive, gesperrte/abgelaufene) Geraete
-pub fn peers(db: &Connection) -> Result<(Vec<Peer>, Vec<Peer>), String> {
+/// (aktive, gesperrte/abgelaufene/ausserhalb der Zeit, Grund je Schluessel) Geraete
+pub fn peers(db: &Connection) -> Result<(Vec<Peer>, Vec<Peer>, std::collections::HashMap<String, String>), String> {
     let (a, b): (Vec<Device>, Vec<Device>) = devices(db)?.into_iter().partition(|d| d.active());
-    Ok((a.into_iter().map(|d| d.peer).collect(), b.into_iter().map(|d| d.peer).collect()))
+    let gruende = b.iter().map(|d| (d.peer.public_key.clone(), d.grund())).collect();
+    Ok((a.into_iter().map(|d| d.peer).collect(), b.into_iter().map(|d| d.peer).collect(), gruende))
+}
+
+/// Zeitfenster setzen ("" = keins). kind: "device" oder "user". Ergebnis: einheitliche Schreibweise
+pub fn set_zeiten(db: &Connection, kind: &str, name: &str, wert: &str) -> Result<String, String> {
+    let z = crate::zeitplan::Zeitplan::parse(wert)?;
+    let t = z.text();
+    let n = match kind {
+        "user" => db.execute("UPDATE users SET zeiten = ?1 WHERE name = ?2", params![t, name.trim()]).map_err(e)?,
+        _ => db.execute("UPDATE devices SET zeiten = ?1 WHERE name = ?2", params![t, name.trim()]).map_err(e)?,
+    };
+    if n == 0 {
+        return Err(format!("{} „{}“ nicht gefunden", if kind == "user" { "Benutzer" } else { "Gerät" }, name.trim()));
+    }
+    Ok(t)
 }
 
 fn user_id(db: &Connection, name: &str, create: bool) -> Result<Option<i64>, String> {
@@ -273,15 +338,16 @@ pub struct User {
     pub disabled: bool,
     pub max_devices: i64,
     pub devices: Vec<String>,
+    pub zeiten: String,
 }
 
 pub fn users(db: &Connection) -> Result<Vec<User>, String> {
-    let mut st = db.prepare("SELECT id, name, note, created, disabled, max_devices FROM users ORDER BY name").map_err(e)?;
+    let mut st = db.prepare("SELECT id, name, note, created, disabled, max_devices, zeiten FROM users ORDER BY name").map_err(e)?;
     let rows: Vec<(i64, User)> = st
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
-                User { name: r.get(1)?, note: r.get(2)?, created: r.get(3)?, disabled: r.get::<_, i64>(4)? != 0, max_devices: r.get(5)?, devices: vec![] },
+                User { name: r.get(1)?, note: r.get(2)?, created: r.get(3)?, disabled: r.get::<_, i64>(4)? != 0, max_devices: r.get(5)?, devices: vec![], zeiten: r.get(6)? },
             ))
         })
         .map_err(e)?
@@ -455,7 +521,7 @@ mod tests {
         assert_eq!(import(&db, &[peer("Handy", 2, "")]).unwrap(), 0, "gleicher Name/Adresse wird nicht doppelt angelegt");
         add_device(&db, &peer("Laptop", 4, "Anna")).unwrap();
         assert!(add_device(&db, &peer("laptop", 5, "")).is_err(), "Name doppelt");
-        let (a, b) = peers(&db).unwrap();
+        let (a, b, _) = peers(&db).unwrap();
         assert_eq!((a.len(), b.len()), (3, 0));
         assert_eq!(users(&db).unwrap()[0].devices, vec!["PC".to_string(), "Laptop".to_string()]);
         // sperren / Benutzer sperren / Ablauf
@@ -465,7 +531,7 @@ mod tests {
         assert_eq!(peers(&db).unwrap().0.len(), 0);
         set_user_disabled(&db, "Anna", false).unwrap();
         set_expires(&db, "PC", now() - 10).unwrap();
-        let (a, b) = peers(&db).unwrap();
+        let (a, b, _) = peers(&db).unwrap();
         assert_eq!((a.len(), b.len()), (1, 2));
         // Hoechstzahl je Benutzer
         set_user_max(&db, "Anna", 2).unwrap();
@@ -485,6 +551,37 @@ mod tests {
         assert!(devices(&db).unwrap().iter().any(|d| d.peer == neu));
         log_event(&cfg, "Handy", "verbunden");
         assert_eq!(events(&db, 10, Some("handy")).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zeitfenster() {
+        let dir = std::env::temp_dir().join(format!("kvpn-zeiten-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("server.toml").to_string_lossy().to_string();
+        let db = open(&cfg).unwrap();
+        add_device(&db, &peer("Kinderhandy", 2, "Lea")).unwrap();
+        add_device(&db, &peer("Tablet", 3, "Lea")).unwrap();
+        add_device(&db, &peer("PC", 4, "")).unwrap();
+        // ein Tag, der heute nicht ist -> gerade gesperrt
+        let (wt, _) = crate::zeitplan::jetzt(now() as u64);
+        let anderer = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][((wt + 3) % 7) as usize];
+        assert_eq!(set_zeiten(&db, "user", "Lea", &format!("{anderer} 7-16")).unwrap(), format!("{anderer} 07:00-16:00"));
+        let (a, b, g) = peers(&db).unwrap();
+        assert_eq!(a.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), vec!["PC"]);
+        assert_eq!(b.len(), 2, "beide Geraete von Lea erben das Zeitfenster");
+        let gk = &g[&b[0].public_key];
+        assert!(gk.starts_with(&format!("VPN nur {anderer} 07:00-16:00 – wieder ab ")), "{gk}");
+        assert!(gk.len() <= 120);
+        // eigenes Zeitfenster des Geraets geht vor (hier: immer erlaubt ueber taeglich 0-24)
+        set_zeiten(&db, "device", "Tablet", "taeglich 0-24").unwrap();
+        assert_eq!(peers(&db).unwrap().0.len(), 2);
+        assert!(devices(&db).unwrap().iter().find(|d| d.peer.name == "Kinderhandy").unwrap().status().starts_with("außerhalb der Zeit"));
+        // aufheben
+        set_zeiten(&db, "user", "Lea", "aus").unwrap();
+        assert_eq!(peers(&db).unwrap().0.len(), 3);
+        assert!(set_zeiten(&db, "device", "Gibtsnicht", "Mo 7-8").is_err());
+        assert!(set_zeiten(&db, "device", "PC", "Mo").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -106,6 +106,10 @@ online() {   # Online-Installer wie von GitHub: Paket als Archiv, Skript ueber e
       bash -s -- --name "Potzplitz VPN" --bild "$K/assets/favicon-64.png" --geraet "Handy" --ja > "$C/install.txt" 2>&1 \
     && ok "Online-Installer lief durch (Quellen nach $(basename "$C")/src geladen)" || { bad "Online-Installer"; cat "$C/install.txt"; return; }
   [ -f "$C/src/selfhost.sh" ] && ok "Paket von 'GitHub' entpackt" || bad "Paket nicht entpackt"
+  grep -q "ist eingerichtet und läuft" "$C/install.txt" && grep -q "^SO GEHT ES LOS" "$C/install.txt" && grep -q "kvpn-server anleitung" "$C/install.txt" \
+    && ok "Installer erklaert am Ende die ersten Schritte" || bad "keine Erklaerung am Ende: $(tail -5 "$C/install.txt")"
+  grep -q "^ALLE FUNKTIONEN" "$C/ANLEITUNG.txt" && grep -q 'kvpn-server zeiten' "$C/ANLEITUNG.txt" && grep -q 'https://198.51.100.1/download/' "$C/ANLEITUNG.txt" \
+    && ok "ANLEITUNG.txt mit allen Funktionen ($(grep -c '    • ' "$C/ANLEITUNG.txt") Funktionen)" || bad "ANLEITUNG.txt fehlt/unvollstaendig"
   grep -q '^vpn_name = "Potzplitz VPN"' "$C/server.toml" && ok "Name gesetzt: Potzplitz VPN" || bad "Name fehlt"
   grep -A3 'Geraet: Handy' "$C/install.txt" | head -1 >/dev/null; grep -q '^kronevpn://' "$C/install.txt" && ok "Geraet 'Handy' angelegt (Code ausgegeben)" || bad "Geraet nicht angelegt"
   grep -q 'Apps zum Herunterladen: https://198.51.100.1/download/' "$C/install.txt" && ok "Download-Link wird beim Anlegen angezeigt" || bad "kein Download-Link"

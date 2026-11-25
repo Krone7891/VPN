@@ -276,6 +276,10 @@ pub async fn connect_once_with(
     let m2 = loop {
         match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
             Err(_) => return Err("Server antwortet nicht auf den Handshake".into()),
+            // ab Server 1.5.0 mit Grund (gesperrt, abgelaufen, ausserhalb des Zeitfensters)
+            Ok(Some(Ok(Message::Close(Some(f))))) if !f.reason.trim().is_empty() => {
+                return Err(format!("Server lehnt ab: {}", f.reason.trim()))
+            }
             Ok(None) | Ok(Some(Ok(Message::Close(_)))) => {
                 return Err("Server hat den Handshake abgelehnt (Geraet entfernt, Code veraltet oder alle 8 Plaetze belegt)".into())
             }
@@ -374,7 +378,7 @@ pub async fn run(
             }
             Err(e) => {
                 // vom Server abgelehnt (Geraet entfernt): nicht im Sekundentakt anklopfen
-                if e.contains("abgelehnt") {
+                if e.contains("abgelehnt") || e.contains("lehnt ab") {
                     backoff = 30;
                 }
                 status.error(&e);

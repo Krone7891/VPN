@@ -715,6 +715,38 @@ for i in $(seq 1 15); do grep -q "Server gestartet" "$W/notify17.txt" 2>/dev/nul
 grep -q "war 3 h nicht erreichbar" "$W/notify17.txt" && ok "Start-Meldung nennt die Dauer des Ausfalls (3 h)" || bad "Start-Meldung: $(grep 'gestartet' "$W/notify17.txt")"
 ns kv-srv "$BIN/kvpn-server" benachrichtigung aus >/dev/null; "$BIN/kvpn-server" set ausfall_geraete "" >/dev/null; "$BIN/kvpn-server" remove waechter-geraet >/dev/null; sleep 8
 
+echo "== Test 18: Zeitfenster (VPN nur zu bestimmten Zeiten, z. B. Mo-Fr 7-16 Uhr)"
+mkdir -p "$W/t18"; "$BIN/kvpn-server" add "zeit-geraet" --benutzer "Schulkind" | grep '^kronevpn://' > "$W/t18/code"; sleep 4
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/t18/code" --kein-update; sleep 7
+ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "ohne Zeitfenster: verbunden" || bad "zeit-geraet verbindet nicht"
+TAGE=(Mo Di Mi Do Fr Sa So); ANDERER=${TAGE[$(( ($(date +%u) - 1 + 3) % 7 ))]}
+"$BIN/kvpn-server" benutzer zeiten "Schulkind" "$ANDERER 7-16" > "$W/t18/set.txt" 2>&1 && grep -q "VPN nur $ANDERER 07:00-16:00" "$W/t18/set.txt" && ok "Zeitfenster fuer den Benutzer: $(head -1 "$W/t18/set.txt")" || bad "zeiten setzen: $(cat "$W/t18/set.txt")"
+sleep 6
+ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "ausserhalb des Zeitfensters noch verbunden" || ok "ausserhalb des Zeitfensters: sofort getrennt"
+for i in $(seq 1 15); do grep -q "VPN nur $ANDERER 07:00-16:00 – wieder ab" "$W/log.kv-cli9-kronevpn" 2>/dev/null && break; sleep 1; done
+grep -q "VPN nur $ANDERER 07:00-16:00 – wieder ab" "$W/log.kv-cli9-kronevpn" && ok "App zeigt den Grund: $(grep -o "VPN nur $ANDERER[^[]*" "$W/log.kv-cli9-kronevpn" | tail -1)" || bad "App zeigt keinen Grund: $(tail -3 "$W/log.kv-cli9-kronevpn")"
+grep -q "zeit-geraet abgelehnt – VPN nur" "$W/log.kv-srv-kvpn-server" && ok "Server: Verbindungsversuch ausserhalb abgelehnt (mit Grund)" || bad "Server-Protokoll ohne Ablehnung"
+"$BIN/kvpn-server" list | grep "zeit-geraet" | grep -q "außerhalb der Zeit · $ANDERER 07:00-16:00" && ok "Liste: Status „außerhalb der Zeit“" || bad "Liste: $("$BIN/kvpn-server" list | grep zeit-geraet)"
+ns kv-srv curl -s -m 5 http://127.0.0.1:8180/users.json | grep -q '"zeiten":"'"$ANDERER"' 07:00-16:00"' && ok "Admin-Seite kennt das Zeitfenster" || bad "users.json ohne Zeitfenster"
+# eigenes Zeitfenster des Geraets geht vor dem des Benutzers; endet zur naechsten vollen Minute
+while [ "$(date +%S)" -ge 40 ]; do sleep 1; done   # genug Zeit bis zur naechsten vollen Minute
+NM=$(date -d '+1 minute' +%H:%M)
+if [ "$NM" != "00:00" ]; then
+  ns kv-srv curl -s -m 5 -X POST -H 'Content-Type: application/json' -d "{\"zeiten\":{\"kind\":\"device\",\"name\":\"zeit-geraet\",\"wert\":\"täglich 00:00-$NM\"}}" http://127.0.0.1:8180/manage | grep -q '"ok":true' && ok "Admin-Seite: Zeitfenster des Geraets gesetzt (bis $NM)" || bad "manage zeiten"
+  for i in $(seq 1 40); do ns kv-cli9 ping -c 1 -W 1 10.201.0.2 >/dev/null 2>&1 && break; sleep 1; done
+  ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "im Zeitfenster: verbindet sich von selbst wieder" || bad "verbindet im Zeitfenster nicht wieder"
+  while [ "$(date +%H:%M)" != "$NM" ]; do sleep 1; done; sleep 6
+  ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && bad "nach Ende des Zeitfensters noch verbunden" || ok "Ende des Zeitfensters ($NM): getrennt"
+  grep -q "zeit-geraet: Zeitfenster vorbei – getrennt" "$W/log.kv-srv-kvpn-server" && ok "Server meldet: Zeitfenster vorbei" || bad "keine Meldung Zeitfenster vorbei"
+else
+  echo "  (Minuten-Test uebersprungen: Mitternacht)"
+fi
+"$BIN/kvpn-server" zeiten "zeit-geraet" aus >/dev/null; "$BIN/kvpn-server" benutzer zeiten "Schulkind" aus >/dev/null
+for i in $(seq 1 40); do ns kv-cli9 ping -c 1 -W 1 10.201.0.2 >/dev/null 2>&1 && break; sleep 1; done
+ns kv-cli9 ping -c 2 -W 2 10.201.0.2 >/dev/null 2>&1 && ok "Zeitfenster aufgehoben: wieder verbunden" || bad "nach Aufheben nicht verbunden"
+"$BIN/kvpn-server" zeiten "zeit-geraet" "Mo 25-26" > "$W/t18/bad.txt" 2>&1 && bad "falsche Uhrzeit angenommen" || ok "falsche Eingabe abgelehnt: $(head -1 "$W/t18/bad.txt")"
+pkill -f "t18/code --kein-update"; "$BIN/kvpn-server" remove zeit-geraet >/dev/null
+
 echo
 grep -h "verbunden von\|abgelehnt\|Inspektion" "$W"/log.kv-srv-kvpn-server 2>/dev/null | tail -5
 [ -n "${HOOK:-}" ] && W="$W" bash -c "$HOOK"

@@ -45,7 +45,9 @@ CFG=${KVPN_CONFIG:-/etc/krone-vpn/server.toml}
 DL=${KVPN_DOWNLOADS:-/var/lib/krone-vpn/downloads}
 TEST=${KVPN_TEST:-}                          # nur fuer automatische Tests: kein systemd/certbot/Firewall
 [ -n "$TEST" ] || [ "$(id -u)" = 0 ] || { echo "Bitte als root starten (sudo bash selfhost.sh ...)"; exit 1; }
-say() { echo "== $*"; }
+say() { echo; echo "== $*"; }
+# kurze Erklaerung zu jedem Schritt (grau)
+erkl() { printf '   \033[2m%s\033[0m\n' "$@"; }
 ETC=$(dirname "$CFG")
 # Aktualisieren: bisherige Einrichtung beibehalten (Domain, hinter nginx, Docker), wenn nichts anderes angegeben ist
 if [ -f "$CFG" ]; then
@@ -57,6 +59,7 @@ if [ -z "$MODE" ]; then [ -f "$ETC/.docker" ] && MODE=docker || MODE=systemd; fi
 RESTART="systemctl restart krone-vpn"; [ "$MODE" = docker ] && RESTART="docker restart krone-vpn"
 
 say "1/6 Programm kvpn-server"
+erkl "Der VPN-Server selbst (ein einziges Programm, nach /usr/local/bin). Dazu kvpn-update zum Aktualisieren."
 ARCH=$(uname -m)
 if [ "$ARCH" = x86_64 ] && [ -x dist/kvpn-server ] && [ -z "${KVPN_BUILD:-}" ]; then
   BIN=dist/kvpn-server; echo "   fertige Datei (statisch, laeuft auf jedem x86_64-Linux)"
@@ -72,6 +75,7 @@ sed "s#@REPO@#${KVPN_REPO:-Krone7891/VPN}#" deploy/kvpn-update > "$(dirname "$DE
 echo "   $DEST $("$DEST" version)"
 
 say "2/6 Adresse und Zertifikat"
+erkl "Unter dieser Adresse finden die Apps den Server. Das Zertifikat macht die Verbindung zu normalem HTTPS;" "zusaetzlich pruefen die Apps den Server ueber seinen eigenen Schluessel (sicher auch ohne Let's Encrypt)."
 if [ -z "$DOMAIN" ]; then
   if [ -f "$CFG" ] && [ -z "${KVPN_PUBLIC_IP:-}" ]; then
     HOST=$(sed -n 's#^public_url = "wss://\[\{0,1\}\([^]/"]*\)\]\{0,1\}/.*#\1#p' "$CFG")
@@ -110,6 +114,7 @@ if [ "$NGINX" = 0 ]; then
 fi
 
 say "3/6 Konfiguration $CFG"
+erkl "Schluessel des Servers, Name, Adressen und Einstellungen (nur fuer root lesbar). Bei einem Update bleibt alles."
 URLHOST=$HOST; [[ "$HOST" == *:* ]] && URLHOST="[$HOST]"
 URL="wss://$URLHOST/api/v1/stream"
 if [ -f "$CFG" ]; then
@@ -153,6 +158,7 @@ else
 fi
 
 say "4/6 Apps zum Herunterladen ($DL)"
+erkl "Android-, Windows- und Linux-App mit deinem Namen – fuer die Download-Seite. Neue App-Versionen kommen" "spaeter signiert durch den Tunnel auf die Geraete (nach Freigabe: kvpn-server update)."
 SLUG=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//'); SLUG=${SLUG:-vpn}
 mkdir -p "$DL"; find "$DL" -maxdepth 1 -type f -delete
 [ -f dist/KroneVPN.apk ] && install -m 644 dist/KroneVPN.apk "$DL/$NAME.apk"
@@ -174,6 +180,7 @@ if [ -n "$TEST" ]; then echo "== Testmodus: kein systemd/Firewall"; exit 0; fi
 
 if [ "$MODE" = docker ]; then
   say "5/6 Docker Compose (Container krone-vpn)"
+  erkl "Der Server laeuft im Container krone-vpn und startet mit dem Rechner neu."
   if ! docker compose version >/dev/null 2>&1; then
     echo "   installiere Docker (offizielles Skript get.docker.com) ..."
     curl -fsSL https://get.docker.com | sh >/dev/null
@@ -199,6 +206,7 @@ if [ "$MODE" = docker ]; then
   touch "$ETC/.docker"
 else
   say "5/6 Dienst krone-vpn (systemd)"
+  erkl "Der Server laeuft als Dienst im Hintergrund, startet mit dem Rechner und nach Fehlern von selbst neu."
   if [ -f "$ETC/.docker" ]; then
     docker compose -f "$STATE/docker/docker-compose.yml" -p krone-vpn down >/dev/null 2>&1 || docker rm -f krone-vpn >/dev/null 2>&1 || true
     rm -f "$ETC/.docker"; echo "   Docker-Container entfernt (laeuft jetzt als systemd-Dienst)"
@@ -211,6 +219,7 @@ else
 fi
 
 say "6/6 Firewall"
+erkl "Port 443 (TCP) muss von aussen erreichbar sein – zu Hause zusaetzlich im Router freigeben (Portfreigabe)."
 if [ "$NGINX" = 0 ]; then
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then ufw allow 443/tcp >/dev/null && echo "   ufw: 443/tcp offen"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then firewall-cmd -q --permanent --add-service=https && firewall-cmd -q --reload && echo "   firewalld: https offen"
@@ -235,3 +244,5 @@ echo "Statistik:          https://$URLHOST$SP   (Passwort: $(cat "$PWF" 2>/dev/n
 echo "Pruefen am PC:      \"$NAME.exe\" --test"
 [ "$MODE" = docker ] && echo "Docker:             docker logs -f krone-vpn   ·   docker restart krone-vpn"
 echo "Aktualisieren:      kvpn-update   (Server von GitHub)  ·  Apps an die Geraete verteilen: kvpn-server update (mit Freigabe)"
+echo "Alle Funktionen:    kvpn-server anleitung   (gespeichert in $ETC/ANLEITUNG.txt)"
+K anleitung --datei "$ETC/ANLEITUNG.txt" --still 2>/dev/null || true

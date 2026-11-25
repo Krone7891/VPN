@@ -18,6 +18,7 @@
 
 mod absturz;
 mod admin;
+mod anleitung;
 mod ausfall;
 mod config;
 mod dns;
@@ -31,6 +32,7 @@ mod sicherung;
 mod stats;
 mod updates;
 mod users;
+mod zeitplan;
 mod web;
 
 // statische Linux-Builds (musl): schneller Speicher-Allokator
@@ -54,7 +56,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server bericht [JJJJ-MM]          Monatsbericht (Daten, Online-Zeit, Server-Laufzeit, Blocker)\n  kvpn-server zwei-faktor [an|aus]       zweiter Schritt fuer die Admin-Seite (Code aus Authenticator-App)\n  kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <geraet,passwort,start,update>|aus|test]\n  kvpn-server sicherung [jetzt|zurueck <datei> [--ja]|an|aus|ordner <pfad>|behalten <n>]   Sicherung (taeglich automatisch)\n  kvpn-server gast <name> [--tage 7]    Gast einladen: Link zum einmaligen Abholen, Zugang endet von selbst\n  kvpn-server gaeste                    eingeladene Gaeste\n  kvpn-server autostart [an]            pruefen, ob der VPN-Server beim Hochfahren mit startet (an = einschalten)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zeiten <geraet> \"Mo-Fr 07:00-16:00\"|aus   VPN nur zu diesen Zeiten (auch: benutzer zeiten <name> …)\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server bericht [JJJJ-MM]          Monatsbericht (Daten, Online-Zeit, Server-Laufzeit, Blocker)\n  kvpn-server zwei-faktor [an|aus]       zweiter Schritt fuer die Admin-Seite (Code aus Authenticator-App)\n  kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <geraet,passwort,start,update>|aus|test]\n  kvpn-server anleitung                 erste Schritte und ALLE Funktionen mit Befehl (mit den Adressen dieses Servers)\n  kvpn-server sicherung [jetzt|zurueck <datei> [--ja]|an|aus|ordner <pfad>|behalten <n>]   Sicherung (taeglich automatisch)\n  kvpn-server gast <name> [--tage 7]    Gast einladen: Link zum einmaligen Abholen, Zugang endet von selbst\n  kvpn-server gaeste                    eingeladene Gaeste\n  kvpn-server autostart [an]            pruefen, ob der VPN-Server beim Hochfahren mit startet (an = einschalten)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         VERSION
     );
     std::process::exit(2)
@@ -83,6 +85,7 @@ fn main() {
         "sperren" | "disable" => cmd_device_flag(&cfg_path, &args[1..].join(" "), true),
         "entsperren" | "enable" => cmd_device_flag(&cfg_path, &args[1..].join(" "), false),
         "ablauf" | "expire" => cmd_expire(&cfg_path, &args[1..]),
+        "zeiten" | "zeitfenster" | "zeit" | "schedule" => cmd_zeiten(&cfg_path, "device", &args[1..]),
         "zuordnen" | "assign" => cmd_assign(&cfg_path, &args[1..]),
         "verlauf" | "log" | "events" => cmd_events(&cfg_path, &args[1..]),
         "einstellungen" | "settings" => cmd_settings(&cfg_path, &args[1..]),
@@ -114,6 +117,7 @@ fn main() {
         "autostart" | "systemstart" => cmd_autostart(&args[1..]),
         "bericht" | "monatsbericht" | "report" => cmd_report(&cfg_path, &args[1..]),
         "sicherung" | "sicherungen" | "backup" => cmd_backup(&cfg_path, &args[1..]),
+        "anleitung" | "hilfe" | "funktionen" | "guide" => cmd_anleitung(&cfg_path, &args[1..]),
         "gast" | "guest" | "einladen" => cmd_gast(&cfg_path, &args[1..]),
         "gaeste" | "gäste" | "guests" => cmd_gaeste(&cfg_path),
         "zwei-faktor" | "2fa" | "totp" => cmd_totp(&cfg_path, &args[1..]),
@@ -614,6 +618,20 @@ fn cmd_backup(path: &str, args: &[String]) {
     }
 }
 
+fn cmd_anleitung(path: &str, args: &[String]) {
+    let c = Config::load(path).unwrap_or_else(|e| die(e));
+    let t = anleitung::text(&c);
+    // --datei <pfad>: (auch) in eine Datei schreiben (der Installer legt ANLEITUNG.txt neben server.toml)
+    if let Some(i) = args.iter().position(|a| a == "--datei") {
+        let f = args.get(i + 1).cloned().unwrap_or_else(|| die("--datei braucht einen Pfad"));
+        std::fs::write(&f, &t).unwrap_or_else(|e| die(format!("{f}: {e}")));
+        if args.iter().any(|a| a == "--still") {
+            return;
+        }
+    }
+    print!("{t}");
+}
+
 fn cmd_gast(path: &str, args: &[String]) {
     let mut args = args.to_vec();
     let tage = take_opt(&mut args, &["--tage", "--days", "-t"]).map(|t| t.trim().parse::<u32>().unwrap_or_else(|_| die("--tage: Zahl 1 bis 90"))).unwrap_or(7);
@@ -1008,12 +1026,13 @@ fn cmd_users(path: &str, args: &[String]) {
             }
             for u in &list {
                 println!(
-                    "  {:<20} {:<10} seit {}  {} Geraet(e){}{}  {}",
+                    "  {:<20} {:<10} seit {}  {} Geraet(e){}{}{}  {}",
                     u.name,
                     if u.disabled { "GESPERRT" } else { "aktiv" },
                     users::date(u.created),
                     u.devices.len(),
                     if u.max_devices > 0 { format!(" (max. {})", u.max_devices) } else { String::new() },
+                    if u.zeiten.is_empty() { String::new() } else { format!(" [nur {}]", u.zeiten) },
                     if u.devices.is_empty() { String::new() } else { format!(": {}", u.devices.join(", ")) },
                     if u.note.is_empty() { String::new() } else { format!("– {}", u.note) }
                 );
@@ -1067,8 +1086,58 @@ fn cmd_users(path: &str, args: &[String]) {
             }
             println!("Benutzer '{}': {}", name.trim(), if n > 0 { format!("hoechstens {n} Geraete") } else { "keine Grenze".into() });
         }
-        _ => die("Aufruf: kvpn-server benutzer [list | add <name> [--notiz …] | remove <name> [--mit-geraeten] | sperren <name> | entsperren <name> | max <name> <anzahl>]"),
+        "zeiten" | "zeitfenster" | "zeit" => {
+            drop(db);
+            cmd_zeiten(path, "user", &rest)
+        }
+        _ => die("Aufruf: kvpn-server benutzer [list | add <name> [--notiz …] | remove <name> [--mit-geraeten] | sperren <name> | entsperren <name> | max <name> <anzahl> | zeiten <name> \"Mo-Fr 07:00-16:00\"|aus]"),
     }
+}
+
+/// Zeitfenster eines Geraets bzw. Benutzers: kvpn-server zeiten "<geraet>" "Mo-Fr 7-16; Sa 9-12" | aus
+fn cmd_zeiten(path: &str, kind: &str, args: &[String]) {
+    let (_cfg, db) = db_or_die(path);
+    let was = if kind == "user" { "Benutzer" } else { "Geraet" };
+    let hilfe = format!(
+        "Aufruf: kvpn-server {}zeiten \"<{}>\" \"Mo-Fr 07:00-16:00\"   (mehrere mit ;  ·  Sa,So 9-12  ·  taeglich 6-21  ·  Fr 22-02  ·  aus = immer)",
+        if kind == "user" { "benutzer " } else { "" },
+        was.to_lowercase()
+    );
+    // Name und Zeiten: Zeiten = letztes Argument; ein Argument allein = anzeigen
+    match args.len() {
+        0 => {
+            for d in users::devices(&db).unwrap_or_default() {
+                let z = d.zeitplan();
+                if !z.leer() {
+                    println!("  {:<24} {:<34} {}", d.peer.name, z.text(), if d.in_zeit() { "gerade erlaubt" } else { "gerade gesperrt" });
+                }
+            }
+            println!("{hilfe}");
+        }
+        1 => {
+            let d = users::devices(&db).unwrap_or_default().into_iter().find(|d| d.peer.name.eq_ignore_ascii_case(args[0].trim()));
+            match d {
+                Some(d) if !d.zeitplan().leer() => println!("{}: nur {} ({})", d.peer.name, d.zeitplan().text(), if d.in_zeit() { "gerade erlaubt" } else { "gerade gesperrt" }),
+                Some(d) => println!("{}: immer erlaubt", d.peer.name),
+                None => die(hilfe),
+            }
+        }
+        _ => {
+            let name = args[..args.len() - 1].join(" ");
+            let t = users::set_zeiten(&db, kind, &name, &args[args.len() - 1]).unwrap_or_else(|e| die(format!("{e}\n{hilfe}")));
+            if t.is_empty() {
+                println!("{was} '{}': keine Zeitbeschraenkung mehr (immer erlaubt).", name.trim());
+            } else {
+                println!("{was} '{}': VPN nur {t} (Uhrzeit des Servers: {}).", name.trim(), zeitplan_jetzt());
+                println!("Ausserhalb wird getrennt; die App verbindet sich zur erlaubten Zeit von selbst wieder.");
+            }
+        }
+    }
+}
+
+fn zeitplan_jetzt() -> String {
+    let (wt, m) = zeitplan::jetzt(kvpn::util::now_secs());
+    format!("{} {:02}:{:02}", ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"][wt as usize], m / 60, m % 60)
 }
 
 fn cmd_device_flag(path: &str, name: &str, off: bool) {
@@ -1146,6 +1215,7 @@ fn cmd_settings(path: &str, args: &[String]) {
         (&["--heimnetz", "--lan"][..], "lan_access"),
         (&["--dns", "--eigener-dns"][..], "dns_proxy"),
         (&["--max", "--max-geraete"][..], "max_devices"),
+        (&["--sicherung", "--backup"][..], "backup"),
     ] {
         if let Some(v) = take_opt(&mut args, keys) {
             want.push((k, v));
@@ -1158,23 +1228,23 @@ fn cmd_settings(path: &str, args: &[String]) {
     let onoff = |b: bool| if b { "an" } else { "aus" };
     let interactive = want.is_empty() && !quiet && std::io::IsTerminal::is_terminal(&std::io::stdin());
     if interactive {
-        println!("{} – Einstellungen (Enter = so lassen, sonst an/aus bzw. Zahl):", cfg.display_name());
-        for (k, q, cur) in [
-            ("users", "Benutzerverwaltung (SQLite: Benutzer, sperren, Ablaufdatum, Verlauf)", onoff(cfg.users).to_string()),
-            ("aes256", "AES-256-GCM fuer aeltere Apps 1.0.6–1.0.13 (ab 1.1.0 waehlt die App selbst)", onoff(cfg.aes256).to_string()),
-            ("performance", "Leistungsmodus (alle CPU-Kerne, mehr Durchsatz, mehr Last)", onoff(cfg.performance).to_string()),
-            (
-                "admin_vpn",
-                "Admin-Seite im VPN (http://<server-im-vpn>:8180, mit Passwort)",
-                onoff(cfg.admin_vpn).to_string(),
-            ),
-            ("geo", "Standort der Geraete auf der Admin-Seite (ungefaehr aus der IP, Abfrage bei ipwho.is)", onoff(cfg.geo).to_string()),
-            ("adblock", "Werbe- und Tracker-Blocker fuer alle Geraete im VPN (wie Pi-hole)", onoff(cfg.adblock).to_string()),
-            ("lan_access", "Geraete im VPN duerfen ins Heimnetz (Drucker, NAS, ... auch mit Namen)", onoff(cfg.lan_access).to_string()),
-            ("max_devices", "Hoechstzahl Geraete", cfg.max_devices.to_string()),
+        println!("\n{} – Einstellungen. Zu jeder Frage steht kurz, was sie bedeutet.", cfg.display_name());
+        println!("Enter = so lassen (Wert in [Klammern]), sonst an/aus bzw. eine Zahl. Alles laesst sich spaeter aendern:");
+        println!("kvpn-server einstellungen  oder auf der Admin-Seite.\n");
+        for (k, q, info, cur) in [
+            ("users", "Benutzerverwaltung", "Geraete Personen zuordnen, sperren, Ablaufdatum, Zeitfenster (z. B. nur Mo-Fr 7-16 Uhr), Gaeste, Verlauf. Empfohlen: an", onoff(cfg.users).to_string()),
+            ("adblock", "Werbe- und Tracker-Blocker", "blockt Werbung, Tracker und bekannte Schadseiten fuer alle Geraete im VPN (wie Pi-hole). Empfohlen: an", onoff(cfg.adblock).to_string()),
+            ("lan_access", "Zugriff aufs Heimnetz", "Geraete im VPN erreichen Drucker, NAS usw. im Netz dieses Servers (auch mit Namen). Aus = nur Internet", onoff(cfg.lan_access).to_string()),
+            ("admin_vpn", "Admin-Seite im VPN", "Webseite mit Live-Werten, Geraeten und allen Einstellungen – nur aus dem VPN erreichbar, mit Passwort. Empfohlen: an", onoff(cfg.admin_vpn).to_string()),
+            ("backup", "Taegliche Sicherung", "sichert Schluessel, Geraete, Benutzer und Einstellungen jeden Tag (die letzten 14). Empfohlen: an", onoff(cfg.backup).to_string()),
+            ("geo", "Standort der Geraete", "ungefaehrer Ort auf der Admin-Seite (aus der IP; genauer, wenn in der App erlaubt). Fragt dafuer ipwho.is", onoff(cfg.geo).to_string()),
+            ("performance", "Leistungsmodus", "nutzt alle CPU-Kerne: mehr Durchsatz bei vielen Geraeten, aber mehr Last. Fuer zu Hause meist: aus", onoff(cfg.performance).to_string()),
+            ("aes256", "AES-256 fuer alte Apps", "nur fuer Apps bis 1.0.13 (neuere waehlen selbst). Normal: aus", onoff(cfg.aes256).to_string()),
+            ("max_devices", "Hoechstzahl Geraete", "so viele Geraete duerfen angelegt sein (Handys, PCs, Gaeste)", cfg.max_devices.to_string()),
         ] {
+            println!("  \x1b[1m{q}\x1b[0m – {info}");
             loop {
-                let a = ask(q, &cur);
+                let a = ask("  →", &cur);
                 if a.is_empty() {
                     break;
                 }

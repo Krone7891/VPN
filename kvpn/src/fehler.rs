@@ -8,6 +8,10 @@ pub fn klartext(roh: &str) -> String {
     let hat = |w: &[&str]| w.iter().any(|x| r.contains(x));
     let k = |t: &str| t.to_string();
 
+    // vom Server abgelehnt – mit Grund (Zeitfenster, gesperrt, abgelaufen): der Text des Servers ist schon Klartext
+    if let Some(g) = roh.strip_prefix("Server lehnt ab: ") {
+        return g.to_string();
+    }
     // vom Server abgelehnt / Schluessel
     if hat(&["handshake abgelehnt"]) {
         return k("Der Server kennt dieses Gerät nicht (mehr) – entfernt, gesperrt, abgelaufen oder alle Plätze belegt. Beim Admin melden bzw. einen neuen Verbindungscode holen.");
@@ -114,6 +118,7 @@ mod tests {
         assert!(f("WebSocket-Aufbau fehlgeschlagen: HTTP error: 502 Bad Gateway").contains("502"));
         assert!(f("WebSocket-Aufbau fehlgeschlagen: HTTP error: 404 Not Found").contains("404"));
         assert!(f("Server hat den Handshake abgelehnt (Geraet entfernt, Code veraltet oder alle 8 Plaetze belegt)").contains("kennt dieses Gerät nicht"));
+        assert_eq!(f("Server lehnt ab: VPN nur Mo-Fr 07:00-16:00 – wieder ab Mo 07:00"), "VPN nur Mo-Fr 07:00-16:00 – wieder ab Mo 07:00");
         assert!(f("Proxy lehnt ab: 407 Proxy Authentication Required").contains("Anmeldung"));
         assert!(f("connect: Network is unreachable (os error 101)").contains("Kein Netzwerk"));
         assert!(f("keine Antwort vom Server seit 35 s – verbinde neu").contains("eingeschlafen"));

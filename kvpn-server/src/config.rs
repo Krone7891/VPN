@@ -137,6 +137,9 @@ pub struct Config {
     /// so viele taegliche Sicherungen aufheben
     #[serde(default = "d_keep")]
     pub backup_keep: u32,
+    /// Zeitzone fuer Zeitfenster und Berichte, z. B. "Europe/Berlin" (leer = die des Systems)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zeitzone: String,
     /// Ausfall-Alarm (Server 1.4.0): diese Geraete melden, wenn sie laenger als `ausfall_stunden` nicht verbunden waren
     #[serde(default)]
     pub ausfall_geraete: Vec<String>,
@@ -148,6 +151,9 @@ pub struct Config {
     /// gesperrte/abgelaufene Geraete (nur Benutzerverwaltung; belegen Plaetze und Adressen)
     #[serde(skip)]
     pub inactive: Vec<Peer>,
+    /// warum ein Geraet gerade nicht darf (oeffentlicher Schluessel -> Text fuer die App)
+    #[serde(skip)]
+    pub inactive_grund: std::collections::HashMap<String, String>,
     /// hoechstens so viele Geraete (einstellbar: kvpn-server max <n>, bis zu LIMIT bzw. so viele, wie in net4 passen)
     #[serde(default = "d_max")]
     pub max_devices: usize,
@@ -260,6 +266,7 @@ impl Config {
         let s = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e} (zuerst 'kvpn-server init' ausfuehren)"))?;
         let mut c: Config = toml::from_str(&s).map_err(|e| format!("{path}: {e}"))?;
         c.notify_neue_ereignisse();
+        crate::zeitplan::zeitzone(&c.zeitzone);
         if c.users {
             // Geraete aus der Datenbank; noch in server.toml stehende (z. B. nach dem Einschalten) werden uebernommen
             let db = crate::users::open(path)?;
@@ -268,7 +275,7 @@ impl Config {
                 crate::users::import(&db, &old)?;
                 c.save(path)?;
             }
-            (c.peers, c.inactive) = crate::users::peers(&db)?;
+            (c.peers, c.inactive, c.inactive_grund) = crate::users::peers(&db)?;
         }
         c.check()?;
         Ok(c)
@@ -484,8 +491,15 @@ impl Config {
             }
             "ausfall_stunden" => self.ausfall_stunden = val.trim().parse().ok().filter(|n| (1..=24 * 60).contains(n)).ok_or("ausfall_stunden: Zahl 1 bis 1440")?,
             "ausfall_extern" | "erreichbarkeit" => self.ausfall_extern = on_off(val)?,
+            "zeitzone" | "timezone" | "tz" => {
+                let v = val.trim();
+                if !v.is_empty() && (v.contains("..") || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b)) || (v.contains('/') && !std::path::Path::new("/usr/share/zoneinfo").join(v).exists() && std::path::Path::new("/usr/share/zoneinfo").exists())) {
+                    return Err("zeitzone: z. B. Europe/Berlin (leer = die des Systems)".into());
+                }
+                self.zeitzone = v.into()
+            }
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api, dns_proxy, adblock, adblock_lists, dns_block, dns_allow, lan_access, notify_ntfy, notify_ntfy_token, notify_telegram_token, notify_telegram_chat, notify_on, backup, backup_dir, backup_keep, ausfall_geraete, ausfall_stunden, ausfall_extern)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api, dns_proxy, adblock, adblock_lists, dns_block, dns_allow, lan_access, notify_ntfy, notify_ntfy_token, notify_telegram_token, notify_telegram_chat, notify_on, backup, backup_dir, backup_keep, ausfall_geraete, ausfall_stunden, ausfall_extern, zeitzone)")),
         }
         self.check()
     }
