@@ -82,6 +82,10 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 | Windows | Programmfenster, Symbol neben der Uhr, läuft als Dienst im Hintergrund | KroneVPN.exe |
 | Linux | als Dienst (systemd) oder im Terminal | `sudo kronevpn-linux 'kronevpn://…' --hintergrund` |
 
+## Neu in PC-App 1.5.5
+
+- **Fenster passt sich automatisch an:** Die Höhe richtet sich nach dem Inhalt – alles ist sichtbar, ohne Scrollen. Höchstens so hoch wie der Bildschirm (ragt es unten heraus, rutscht es nach oben). Ziehst du das Fenster selbst größer oder kleiner, bleibt es so, bis sich der Inhalt ändert; maximiert bleibt maximiert.
+
 ## Neu in Apps 1.5.4 (Server bleibt 1.5.0)
 
 - **Weniger Anlass für Google Play Protect:** Die Android-App fragt nicht mehr nach „Standort im Hintergrund“ („Immer zulassen“). Der Standort wird nur noch gelesen, solange die App offen ist oder das VPN mit sichtbarer Benachrichtigung läuft – nie heimlich. Orten über die Admin-Seite geht weiter (das VPN ist dafür ohnehin an).

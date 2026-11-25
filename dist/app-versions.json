@@ -4,12 +4,12 @@
   "fp2": "1ba81e52f6a9b5f72e93ab3d8697879bb24529f4c5c3b073c90dd2141be41271"
  },
  "windows": {
-  "version": "1.5.3",
-  "fp2": "69e192cd6b4daba83d617dfe2f6d5f183a5540963b12827c9eb92e255d093fa5"
+  "version": "1.5.5",
+  "fp2": "32c2dfb2297a231f7b1de0894f08fde402094cbfd9651b5ed21fd2d271510227"
  },
  "linux": {
-  "version": "1.5.3",
-  "fp2": "69e192cd6b4daba83d617dfe2f6d5f183a5540963b12827c9eb92e255d093fa5"
+  "version": "1.5.5",
+  "fp2": "32c2dfb2297a231f7b1de0894f08fde402094cbfd9651b5ed21fd2d271510227"
  },
  "server": {
   "version": "1.5.0",

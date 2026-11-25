@@ -155,6 +155,8 @@ struct App {
     /// freie Teilchen im Wirbel: Abstand, Winkel, eigenes Tempo, eigene Phase (Schlingern); Zufall
     teilchen: Vec<[f32; 4]>,
     zufall: u32,
+    /// Hoehe, auf die das Fenster zuletzt an den Inhalt angepasst wurde
+    fenster_h: f32,
 }
 
 /// weiches Ein-/Ausblenden (0..1 -> 0..1)
@@ -390,6 +392,7 @@ impl App {
             wirbel_t: Instant::now(),
             teilchen: Vec::new(),
             zufall: 0x9e37_79b9,
+            fenster_h: 0.0,
         };
         app.wahl = app.st.verschluesselung();
         // Profile: das aktive gehoert immer dazu (z. B. Code aus einer aelteren Version)
@@ -548,6 +551,39 @@ impl App {
         self.wahl_arbeit = Some(rx);
     }
 
+    /// Fensterhoehe an den Inhalt anpassen (alles sichtbar, ohne Scrollen) – hoechstens so hoch wie der Bildschirm.
+    /// Nur wenn sich der Inhalt aendert: zieht man das Fenster selbst groesser/kleiner, bleibt es so. Maximiert: nichts tun.
+    fn fenster_anpassen(&mut self, ctx: &egui::Context, soll: f32) {
+        let soll = soll.ceil().max(520.0);
+        if (soll - self.fenster_h).abs() < 2.0 {
+            return;
+        }
+        self.fenster_h = soll;
+        let (innen, aussen, maximiert, bildschirm) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.inner_rect, v.outer_rect, v.maximized.unwrap_or(false) || v.fullscreen.unwrap_or(false), v.monitor_size)
+        });
+        let Some(innen) = innen else { return };
+        if maximiert {
+            return;
+        }
+        // Platz fuer Taskleiste und Titelleiste lassen
+        let rahmen = aussen.map(|a| (a.height() - innen.height()).max(0.0)).unwrap_or(32.0);
+        let frei = bildschirm.map(|b| b.y - 56.0).unwrap_or(f32::MAX);
+        let h = soll.min(frei - rahmen).max(520.0);
+        if (innen.height() - h).abs() < 2.0 {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(innen.width(), h)));
+        // ragt das Fenster unten aus dem Bildschirm: nach oben schieben
+        if let (Some(a), Some(_)) = (aussen, bildschirm) {
+            let unten = a.min.y + h + rahmen;
+            if unten > frei {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(a.min.x, (frei - h - rahmen).max(0.0))));
+            }
+        }
+    }
+
     fn ist_aktiv(&self, c: &ClientConfig) -> bool {
         self.cfg.as_ref().is_some_and(|x| crate::same_profile(x, c))
     }
@@ -574,17 +610,22 @@ impl eframe::App for App {
         let fokus = ctx.input(|i| i.viewport().focused.unwrap_or(false)) || (cfg!(feature = "vorschau") && std::env::var_os("KVPN_VORSCHAU_FOKUS").is_some());
         self.lebhaft = fokus && !eingabe;
 
+        let mut fuss_h = 0.0;
         if !eingabe {
-            egui::TopBottomPanel::bottom("fuss")
+            fuss_h = egui::TopBottomPanel::bottom("fuss")
                 .frame(egui::Frame::new().fill(BG).inner_margin(Margin { left: 18, right: 18, top: 10, bottom: 14 }))
                 .show_separator_line(false)
-                .show(ctx, |ui| self.fuss(ui));
+                .show(ctx, |ui| self.fuss(ui))
+                .response
+                .rect
+                .height();
         }
         // beim Oeffnen sanft einblenden
+        let mut inhalt_h = 0.0;
         let ein = sanft(self.start.elapsed().as_secs_f32() / 0.45);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(BG).inner_margin(Margin { left: 18, right: 18, top: 16, bottom: 4 })).show(ctx, |ui| {
             ui.multiply_opacity(ein);
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let aus = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 self.kopf(ui);
                 ui.add_space(6.0);
                 if eingabe {
@@ -593,8 +634,10 @@ impl eframe::App for App {
                     self.haupt(ui, anz);
                 }
             });
+            inhalt_h = aus.content_size.y;
         });
         self.dialoge(ctx);
+        self.fenster_anpassen(ctx, inhalt_h + 16.0 + 4.0 + fuss_h);
 
         let animiert = ein < 1.0 || self.farbe.2.elapsed() < Duration::from_millis(400) || self.plopp.is_some_and(|t| t.elapsed() < Duration::from_millis(700)) || self.klick.is_some_and(|t| t.elapsed() < Duration::from_millis(700)) || self.wirbel[3] > 0.01;
         if animiert || self.lebhaft || matches!(anz, Anzeige::Verbinde | Anzeige::Trenne) {
