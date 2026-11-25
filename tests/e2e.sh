@@ -87,7 +87,13 @@ echo "== Dienste: Internet (HTTP, iperf3), nginx TLS 443, kvpn-server, tinyproxy
 mkdir -p "$W/www"; echo "hallo aus dem internet" > "$W/www/index.html"
 bg ns kv-net python3 -m http.server 80 --directory "$W/www"
 bg ns kv-net iperf3 -s
-bg ns kv-net dnsmasq --no-daemon --no-resolv --no-hosts --listen-address=10.201.0.2 --bind-interfaces --address=/vpn.test/10.200.1.1 --user=root
+bg ns kv-net dnsmasq --no-daemon --no-resolv --no-hosts --listen-address=10.201.0.2 --bind-interfaces --address=/vpn.test/10.200.1.1 --user=root \
+  --address=/nas.heim.test/192.168.50.20 --address=/erlaubt.test/10.201.0.2 --address=/werbung.test/10.201.0.2 --address=/tracker.test/10.201.0.2
+# eigener DNS des VPN-Servers: fragt beim DNS im "Heimnetz" nach (wie beim Router), Such-Domaene heim.test
+printf 'nameserver 10.201.0.2\nsearch heim.test\n' > /etc/netns/kv-srv/resolv.conf
+# Sperrliste fuer den Werbe-Blocker (Hosts-Format), liegt auf dem Web-Server im "Internet"
+{ echo "# Test-Sperrliste"; echo "0.0.0.0 werbung.test"; echo "0.0.0.0 tracker.test"; for i in $(seq 1 20); do echo "0.0.0.0 ads$i.example.com"; done; } > "$W/www/hosts.txt"
+export KVPN_ALLOW_HTTP=1
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=vpn.test" -addext "subjectAltName=DNS:vpn.test" \
   -keyout "$W/key.pem" -out "$W/cert.pem" 2>/dev/null
 cat > "$W/nginx.conf" <<EOF
@@ -114,6 +120,7 @@ grep -q '^state_dir' "$W/server.toml" || sed -i "1a state_dir = \"$W/state\"" "$
 for i in $(seq 1 8); do "$BIN/kvpn-server" add "geraet$i" | grep '^kronevpn://' > "$W/code$i"; done
 "$BIN/kvpn-server" add "neun" > "$W/add9.txt" 2>&1 && bad "9. Geraet haette abgelehnt werden muessen" || ok "9. Geraet wird abgelehnt (max. 8): $(tail -1 "$W/add9.txt")"
 "$BIN/kvpn-server" list | head -3
+"$BIN/kvpn-server" set adblock_lists http://10.201.0.2/hosts.txt >/dev/null
 bg ns kv-srv "$BIN/kvpn-server" run
 cat > "$W/tinyproxy.conf" <<EOF
 Port 3128
@@ -531,6 +538,100 @@ bg ns kv-cli9 "$BIN/kronevpn" --config "$W/lg/code" --kein-update
 for i in $(seq 1 20); do [ ! -f "$W/lg/logo/logo.id" ] && break; sleep 1; done
 [ ! -f "$W/lg/logo/logo.id" ] && [ ! -f "$W/lg/logo/logo.png" ] && ok "Logo auf dem Server entfernt -> App nimmt wieder die Krone" || bad "Logo nicht entfernt"
 pkill -f "lg/code --kein-update"; "$BIN/kvpn-server" remove logo-geraet >/dev/null
+
+echo "== Test 14: eigener DNS im Tunnel – Werbe-Blocker und Namen im Heimnetz"
+Q() { ns kv-cli1 python3 "$ROOTD/tests/dnsq.py" "$@" 2>&1 | head -1; }
+ns kv-srv iptables -t nat -S PREROUTING | grep -q "DNAT.*10.77.0.1:53" && ok "DNS-Anfragen der Geraete gehen an den Server (Umleitung aktiv)" || bad "keine DNS-Umleitung"
+for i in $(seq 1 15); do grep -q "Sperrliste geladen" "$W/log.kv-srv-kvpn-server" && break; sleep 1; done
+grep -q "Sperrliste geladen (22 Namen)" "$W/log.kv-srv-kvpn-server" && ok "Sperrliste geladen (22 Namen)" || bad "Sperrliste: $(grep -i sperrliste "$W/log.kv-srv-kvpn-server" | tail -1)"
+[ "$(Q 1.1.1.1 werbung.test)" = "0.0.0.0" ] && ok "Werbung geblockt – auch wenn das Geraet einen fremden DNS (1.1.1.1) fragt" || bad "werbung.test nicht geblockt: $(Q 1.1.1.1 werbung.test)"
+[ "$(Q 10.77.0.1 tracker.test AAAA)" = "::" ] && ok "Tracker geblockt (IPv6-Abfrage -> ::)" || bad "tracker.test AAAA: $(Q 10.77.0.1 tracker.test AAAA)"
+[ "$(Q 10.77.0.1 erlaubt.test)" = "10.201.0.2" ] && ok "normale Namen werden weitergefragt" || bad "erlaubt.test: $(Q 10.77.0.1 erlaubt.test)"
+[ "$(Q 1.1.1.1 nas.heim.test)" = "192.168.50.20" ] && ok "Name im Heimnetz (nas.heim.test)" || bad "nas.heim.test: $(Q 1.1.1.1 nas.heim.test)"
+[ "$(Q 10.77.0.1 nas)" = "192.168.50.20" ] && ok "kurzer Name im Heimnetz (nas -> nas.heim.test)" || bad "nas: $(Q 10.77.0.1 nas)"
+J=$(ns kv-srv curl -s -m 5 http://127.0.0.1:8180/data.json)
+echo "$J" | python3 -c 'import json,sys;d=json.load(sys.stdin)["dns"];t=[x[0] for x in d["top"]];sys.exit(0 if d["blocked"]>=2 and "werbung.test" in t and d["per"]["geraet1"][1]>=2 else 1)' \
+  && ok "Admin-Seite: Zaehler, meistgeblockte Namen und je Geraet" || bad "data.json dns: $(echo "$J" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("dns"))' 2>&1 | head -c 300)"
+"$BIN/kvpn-server" set dns_allow werbung.test >/dev/null; sleep 4
+[ "$(Q 10.77.0.1 werbung.test)" = "10.201.0.2" ] && ok "Ausnahme wirkt sofort" || bad "Ausnahme: $(Q 10.77.0.1 werbung.test)"
+"$BIN/kvpn-server" set dns_allow "" >/dev/null; "$BIN/kvpn-server" set dns_block erlaubt.test >/dev/null; sleep 4
+[ "$(Q 10.77.0.1 sub.erlaubt.test)" = "0.0.0.0" ] && ok "eigene Sperre gilt auch fuer Unter-Namen" || bad "eigene Sperre: $(Q 10.77.0.1 sub.erlaubt.test)"
+"$BIN/kvpn-server" set dns_block "" >/dev/null; "$BIN/kvpn-server" einstellungen --werbeblocker aus >/dev/null; sleep 4
+[ "$(Q 10.77.0.1 werbung.test)" = "10.201.0.2" ] && ok "Werbe-Blocker aus -> nichts mehr geblockt" || bad "Blocker aus: $(Q 10.77.0.1 werbung.test)"
+"$BIN/kvpn-server" einstellungen --werbeblocker an >/dev/null
+"$BIN/kvpn-server" einstellungen --heimnetz aus >/dev/null; sleep 4
+ns kv-cli1 curl -s -m 3 http://10.201.0.2/ >/dev/null && bad "Heimnetz aus, aber 10.201.0.2 (privates Netz) erreichbar" || ok "Heimnetz gesperrt -> private Netze nicht mehr erreichbar"
+ns kv-cli1 ping -c 1 -W 2 10.77.0.1 >/dev/null && ok "Server im Tunnel bleibt erreichbar" || bad "10.77.0.1 bei gesperrtem Heimnetz nicht erreichbar"
+"$BIN/kvpn-server" einstellungen --heimnetz an >/dev/null; sleep 4
+[ "$(ns kv-cli1 curl -s -m 5 http://10.201.0.2/)" = "hallo aus dem internet" ] && ok "Heimnetz wieder frei" || bad "Heimnetz nicht wieder frei"
+"$BIN/kvpn-server" autostart > "$W/autostart.txt" 2>&1; ok "kvpn-server autostart: $(head -1 "$W/autostart.txt")"
+
+echo "== Test 15: Benachrichtigungen (ntfy/Telegram), zweiter Schritt (Authenticator-Code), Monatsbericht"
+bg ns kv-srv python3 "$ROOTD/tests/notify_stub.py" 8996 "$W/notify.txt"; sleep 1
+ns kv-srv "$BIN/kvpn-server" benachrichtigung ntfy http://127.0.0.1:8996/mein-thema >/dev/null
+ns kv-srv "$BIN/kvpn-server" benachrichtigung test > "$W/ntest.txt" 2>&1 && grep -q "Benachrichtigungen funktionieren" "$W/notify.txt" && grep -q "^/mein-thema?title=" "$W/notify.txt" \
+  && ok "Testnachricht ueber ntfy: $(cat "$W/ntest.txt")" || bad "ntfy-Test: $(cat "$W/ntest.txt") / $(cat "$W/notify.txt" 2>/dev/null)"
+ns kv-srv env KVPN_TELEGRAM_URL=http://127.0.0.1:8996/telegram "$BIN/kvpn-server" benachrichtigung telegram 123456789:AAHtestschluesselABCDEFG 4711 >/dev/null
+ns kv-srv env KVPN_TELEGRAM_URL=http://127.0.0.1:8996/telegram "$BIN/kvpn-server" benachrichtigung test >/dev/null 2>&1
+grep -q "^/telegram | chat_id=4711&text=" "$W/notify.txt" && ok "Telegram-Bot bekommt die Nachricht (chat_id + Text)" || bad "Telegram: $(tail -2 "$W/notify.txt")"
+ns kv-srv "$BIN/kvpn-server" benachrichtigung telegram aus aus >/dev/null 2>&1; sleep 4
+mkdir -p "$W/nd"; "$BIN/kvpn-server" add "neues-handy" | grep '^kronevpn://' > "$W/nd/code"; sleep 4
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/nd/code" --kein-update
+for i in $(seq 1 15); do grep -q "neues-handy" "$W/notify.txt" 2>/dev/null && break; sleep 1; done
+grep -q "neues Gerät verbunden.*„neues-handy“" "$W/notify.txt" && ok "Meldung: neues Geraet hat sich zum ersten Mal verbunden" || bad "keine Meldung fuer neues Geraet: $(tail -2 "$W/notify.txt")"
+pkill -f "nd/code --kein-update"; sleep 2; bg ns kv-cli9 "$BIN/kronevpn" --config "$W/nd/code" --kein-update; sleep 6
+[ "$(grep -c "neues-handy" "$W/notify.txt")" = 1 ] && ok "zweites Verbinden: keine erneute Meldung" || bad "neues Geraet doppelt gemeldet"
+pkill -f "nd/code --kein-update"; "$BIN/kvpn-server" remove neues-handy >/dev/null
+A=http://10.77.0.1:8180
+ns kv-cli1 curl -s -m 5 -X POST -H 'Content-Type: application/json' -d '{"pw":"ganz-falsch-123"}' "$A/login" >/dev/null; sleep 2
+grep -q "falsches Admin-Passwort" "$W/notify.txt" && ok "Meldung: falsches Admin-Passwort" || bad "keine Meldung bei falschem Passwort"
+# zweiter Schritt: festes Test-Geheimnis (RFC-6238-Testschluessel), Code wird hier ausgerechnet
+"$BIN/kvpn-server" admin-passwort Admin-Test-2468 >/dev/null
+sed -i '1a admin_totp = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"' "$W/server.toml"; sleep 4
+TOTP() { python3 -c 'import hmac,hashlib,struct,time,base64;k=base64.b32decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");h=hmac.new(k,struct.pack(">Q",int(time.time())//30),hashlib.sha1).digest();o=h[19]&15;print("%06d"%((struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%1000000))'; }
+L1=$(ns kv-cli1 curl -s -m 5 -X POST -H 'Content-Type: application/json' -d '{"pw":"Admin-Test-2468"}' "$A/login")
+echo "$L1" | grep -q '"need_code":true' && ok "Anmeldung: richtiges Passwort allein reicht nicht – Code wird verlangt" || bad "ohne Code angemeldet: $L1"
+L2=$(ns kv-cli1 curl -s -m 5 -c "$W/adm-totp" -X POST -H 'Content-Type: application/json' -d '{"pw":"Admin-Test-2468","code":"000000"}' "$A/login")
+echo "$L2" | grep -q '"ok":false' && ok "falscher Code abgelehnt" || bad "falscher Code: $L2"
+sleep 2; C=$(TOTP)
+L3=$(ns kv-cli1 curl -s -m 5 -c "$W/adm-totp" -X POST -H 'Content-Type: application/json' -d "{\"pw\":\"Admin-Test-2468\",\"code\":\"$C\"}" "$A/login")
+echo "$L3" | grep -q '"ok":true' && ns kv-cli1 curl -s -m 5 -b "$W/adm-totp" "$A/data.json" | grep -q '"peers"' && ok "Passwort + Code aus der App: angemeldet" || bad "Anmeldung mit Code: $L3"
+L4=$(ns kv-cli1 curl -s -m 5 -X POST -H 'Content-Type: application/json' -d "{\"pw\":\"Admin-Test-2468\",\"code\":\"$C\"}" "$A/login")
+echo "$L4" | grep -q '"ok":false' && ok "derselbe Code geht kein zweites Mal" || bad "Code doppelt benutzbar: $L4"
+"$BIN/kvpn-server" zwei-faktor aus >/dev/null; sleep 4
+ns kv-cli1 curl -s -m 5 -b "$W/adm-totp" "$A/data.json" | grep -q '"login":true' && ok "zwei-faktor aus: Browser abgemeldet (neu anmelden)" || bad "nach zwei-faktor aus noch angemeldet"
+"$BIN/kvpn-server" bericht > "$W/bericht.txt" 2>&1; grep -q "Server lief" "$W/bericht.txt" && grep -q "geraet1" "$W/bericht.txt" \
+  && ok "Monatsbericht: $(sed -n 2p "$W/bericht.txt")" || bad "Monatsbericht: $(cat "$W/bericht.txt")"
+ns kv-srv curl -s -m 5 http://127.0.0.1:8180/data.json | python3 -c 'import json,sys;b=json.load(sys.stdin)["berichte"][0];p=b["per"]["geraet1"];sys.exit(0 if p[2]>30 and p[3]>=1 and b["uptime"]>30 and b["dns"][1]>=2 else 1)' \
+  && ok "Admin-Seite: Monatsbericht mit Online-Zeit, Verbindungen, Laufzeit" || bad "berichte in data.json"
+ns kv-srv curl -s -m 5 http://127.0.0.1:8101/stats/data.json | grep -q '"berichte":\[\]' && ok "oeffentliche Statistik ohne Monatsbericht/DNS-Details" || bad "Monatsbericht auf der oeffentlichen Statistik"
+# HomeServer: eigenes Thema "VPN" auf dem ntfy des HomeServers, mit dessen Zugang (/etc/hs-notify.conf)
+printf 'URL=http://127.0.0.1:8996\nTOPIC=homeserver\nTOKEN=tk_testzugang123\n' > "$W/hs-notify.conf"
+ns kv-srv env KVPN_HS_NOTIFY="$W/hs-notify.conf" "$BIN/kvpn-server" benachrichtigung homeserver >/dev/null
+ns kv-srv "$BIN/kvpn-server" benachrichtigung test >/dev/null 2>&1
+grep -q "^/VPN?title=.*Bearer tk_testzugang123$" "$W/notify.txt" && ok "HomeServer-ntfy: Thema VPN mit Zugang (Token)" || bad "HomeServer-ntfy: $(tail -1 "$W/notify.txt")"
+ns kv-srv "$BIN/kvpn-server" benachrichtigung aus >/dev/null
+
+echo "== Test 16: Notbremse (Kill-Switch) und Ausnahmen am VPN vorbei (Linux-Client)"
+mkdir -p "$W/nb"; "$BIN/kvpn-server" add "nb-geraet" | grep '^kronevpn://' > "$W/nb/code"; sleep 4
+"$BIN/kronevpn" --config "$W/nb/code" --notbremse an --lokales-netz aus --ausnahmen "203.0.113.0/24, ausnahme.test" > "$W/nb/set.txt" 2>&1 \
+  && grep -q "Notbremse an" "$W/nb/set.txt" && python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));sys.exit(0 if r["notbremse"] and r["ziele"]==["203.0.113.0/24","ausnahme.test"] else 1)' "$W/nb/regeln.json" \
+  && ok "Schutz-Regeln gespeichert: $(tail -1 "$W/nb/set.txt")" || bad "Regeln: $(cat "$W/nb/set.txt")"
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/nb/code" --kein-update; sleep 7
+[ "$(ns kv-cli9 curl -s -m 5 http://10.201.0.2/)" = "hallo aus dem internet" ] && ok "mit Notbremse: Internet durch den Tunnel geht" || bad "mit Notbremse kein Internet durch den Tunnel"
+ns kv-cli9 ip route get 203.0.113.5 | grep -q "dev c0" && ok "Ausnahme 203.0.113.0/24 geht am VPN vorbei (Route ueber das normale Netz)" || bad "Ausnahme-Route: $(ns kv-cli9 ip route get 203.0.113.5)"
+ns kv-cli9 iptables -S KVPN-NB > "$W/nb/ipt.txt" 2>&1; grep -q "REJECT --reject-with icmp-admin-prohibited" "$W/nb/ipt.txt" && grep -q "10.200.9.1/32 -j RETURN" "$W/nb/ipt.txt" && grep -q "203.0.113.0/24 -j RETURN" "$W/nb/ipt.txt" \
+  && ok "Notbremse-Regeln: Server und Ausnahme frei, Rest gesperrt" || bad "iptables: $(cat "$W/nb/ipt.txt")"
+ns kv-cli9 ip link set kvpn-c0 down; T0=$(date +%s%N)
+ns kv-cli9 curl -s -m 4 http://10.201.0.2/ >/dev/null 2>&1; RC=$?; MS=$(( ($(date +%s%N)-T0)/1000000 ))
+[ $RC = 7 ] && [ $MS -lt 2500 ] && ok "Tunnel weg -> Notbremse blockiert sofort (nichts geht unverschluesselt hinaus, ${MS} ms)" || bad "Tunnel weg: curl rc=$RC nach $MS ms"
+pkill -9 -f "nb/code --kein-update"; sleep 1
+ns kv-cli9 iptables -S KVPN-NB >/dev/null 2>&1 && ok "Absturz des VPN: Notbremse bleibt bestehen" || bad "Notbremse nach Absturz weg"
+ns kv-cli9 "$BIN/kronevpn" --config "$W/nb/code" --notbremse aus >/dev/null 2>&1
+ns kv-cli9 iptables -S KVPN-NB >/dev/null 2>&1 && bad "--notbremse aus hat die Sperre nicht geloest" || ok "--notbremse aus: Sperre geloest"
+bg ns kv-cli9 "$BIN/kronevpn" --config "$W/nb/code" --kein-update; sleep 6; pkill -f "nb/code --kein-update"; sleep 2
+ns kv-cli9 iptables -S KVPN-NB >/dev/null 2>&1 && bad "Notbremse aus, aber Kette vorhanden" || ok "ohne Notbremse: keine Sperre, nach dem Trennen alles sauber"
+"$BIN/kvpn-server" remove nb-geraet >/dev/null
 
 echo
 grep -h "verbunden von\|abgelehnt\|Inspektion" "$W"/log.kv-srv-kvpn-server 2>/dev/null | tail -5

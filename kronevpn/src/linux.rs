@@ -49,6 +49,103 @@ fn uplink(v6: bool) -> Option<(Option<String>, String)> {
     Some((via, dev))
 }
 
+// ------------------------------------------------------------------------------------------------ Notbremse
+
+const NB: &str = "KVPN-NB";
+
+fn ipt(tool: &str, args: &[&str]) -> bool {
+    Command::new(tool).arg("-w").args(args).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Notbremse (Kill-Switch) unter Linux: eigene iptables-Kette vor allem anderen. Hinaus darf nur, was durch den
+/// Tunnel geht, zum Server, localhost, DHCP/IPv6-Nachbarsuche, auf Wunsch das lokale Netz (ohne DNS) und die
+/// Ausnahmen. Bleibt bei einem Absturz bestehen (dann kommt nichts unverschluesselt hinaus) – loesen:
+/// kronevpn --notbremse aus
+pub fn notbremse_an(tun: &str, lokal: bool, ziele: &[(std::net::IpAddr, u8)]) -> bool {
+    let mut ok = true;
+    for (tool, v6) in [("iptables", false), ("ip6tables", true)] {
+        if !ipt(tool, &["-N", NB]) {
+            ipt(tool, &["-F", NB]);
+        }
+        let mut r: Vec<Vec<String>> = vec![
+            vec!["-o".into(), "lo".into()],
+            vec!["-o".into(), tun.into()],
+        ];
+        if v6 {
+            r.push(vec!["-p".into(), "ipv6-icmp".into()]);
+            r.push(vec!["-p".into(), "udp".into(), "--sport".into(), "546".into(), "--dport".into(), "547".into()]);
+        } else {
+            r.push(vec!["-p".into(), "udp".into(), "--sport".into(), "68".into(), "--dport".into(), "67".into()]);
+            // eigene Rueckfrage nach der Server-Adresse (kvpn::transport::direct_lookup)
+            for d in ["1.1.1.1", "9.9.9.9", "8.8.8.8"] {
+                r.push(vec!["-d".into(), d.into(), "-p".into(), "udp".into(), "--dport".into(), "53".into()]);
+            }
+        }
+        for x in &r {
+            let mut a: Vec<&str> = vec!["-A", NB];
+            a.extend(x.iter().map(|s| s.as_str()));
+            a.extend(["-j", "RETURN"]);
+            ok &= ipt(tool, &a);
+        }
+        // DNS nie am Tunnel vorbei (auch nicht an den Router im lokalen Netz)
+        for p in ["udp", "tcp"] {
+            ipt(tool, &["-A", NB, "-p", p, "--dport", "53", "-j", "REJECT"]);
+        }
+        if lokal {
+            let nets: &[&str] = if v6 { &["fe80::/10", "fc00::/7", "ff00::/8"] } else { &["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32"] };
+            for n in nets {
+                ipt(tool, &["-A", NB, "-d", n, "-j", "RETURN"]);
+            }
+        }
+        for (a, p) in ziele.iter().filter(|(a, _)| a.is_ipv6() == v6) {
+            ipt(tool, &["-A", NB, "-d", &format!("{a}/{p}"), "-j", "RETURN"]);
+        }
+        ok &= ipt(tool, &["-A", NB, "-j", "REJECT", "--reject-with", if v6 { "icmp6-adm-prohibited" } else { "icmp-admin-prohibited" }]);
+        if !ipt(tool, &["-C", "OUTPUT", "-j", NB]) {
+            ok &= ipt(tool, &["-I", "OUTPUT", "1", "-j", NB]);
+        }
+    }
+    ok
+}
+
+/// Server-Adresse durch die Notbremse lassen
+fn notbremse_server(a: std::net::IpAddr) {
+    let tool = if a.is_ipv4() { "iptables" } else { "ip6tables" };
+    let d = a.to_string();
+    if !ipt(tool, &["-C", NB, "-d", &d, "-j", "RETURN"]) {
+        ipt(tool, &["-I", NB, "1", "-d", &d, "-j", "RETURN"]);
+    }
+}
+
+/// Notbremse loesen (VPN beendet oder Notbremse ausgeschaltet)
+pub fn notbremse_aus() {
+    for tool in ["iptables", "ip6tables"] {
+        while ipt(tool, &["-D", "OUTPUT", "-j", NB]) {}
+        ipt(tool, &["-F", NB]);
+        ipt(tool, &["-X", NB]);
+    }
+}
+
+/// Namen der Ausnahmen aufloesen (vor dem Einrichten der Routen)
+fn ziele_aufloesen(names: &[String]) -> Vec<(std::net::IpAddr, u8)> {
+    use std::net::ToSocketAddrs;
+    let mut v = Vec::new();
+    for n in names {
+        match (n.as_str(), 443).to_socket_addrs() {
+            Ok(it) => {
+                for x in it {
+                    let e = (x.ip(), if x.is_ipv4() { 32 } else { 128 });
+                    if !v.contains(&e) {
+                        v.push(e);
+                    }
+                }
+            }
+            Err(e) => crate::say(&format!("Ausnahme {n}: {e}")),
+        }
+    }
+    v
+}
+
 pub struct Platform {
     tun: Arc<FdTun>,
     reader: Mutex<Option<mpsc::Receiver<Vec<u8>>>>,
@@ -57,6 +154,7 @@ pub struct Platform {
     up4: Option<(Option<String>, String)>,
     up6: Option<(Option<String>, String)>,
     bypass: Arc<Mutex<Vec<String>>>,
+    notbremse: bool,
 }
 
 impl Platform {
@@ -65,6 +163,9 @@ impl Platform {
         // Weg ins Internet merken, bevor der Tunnel die Standardroute uebernimmt
         let up4 = uplink(false);
         let up6 = uplink(true);
+        let regeln = crate::regeln(a);
+        let (mut ziele, namen) = regeln.ziele_aufteilen();
+        ziele.extend(ziele_aufloesen(&namen));
         let fd = fdtun::open_linux_tun(&name, false).map_err(|e| format!("TUN anlegen: {e} (als root starten)"))?;
         let tun = Arc::new(FdTun::new(fd).map_err(|e| e.to_string())?);
         ip(&["link", "set", "dev", &name, "mtu", &cfg.mtu.to_string(), "up"])?;
@@ -104,9 +205,40 @@ impl Platform {
             let _ = Command::new("resolvectl").args(["domain", &name, "~."]).output();
         }
         crate::say(&format!("Tunnel {name}: {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", ")));
+        // Ausnahmen: am Tunnel vorbei ueber den bisherigen Weg
+        let bypass = Arc::new(Mutex::new(Vec::new()));
+        if full {
+            for (a, p) in &ziele {
+                let (up, fam) = if a.is_ipv4() { (&up4, "-4") } else { (&up6, "-6") };
+                let Some((via, dev)) = up else { continue };
+                let net = format!("{a}/{p}");
+                let mut args = vec![fam, "route", "replace", net.as_str()];
+                if let Some(v) = via {
+                    args.extend(["via", v.as_str()]);
+                }
+                args.extend(["dev", dev.as_str()]);
+                match ip(&args) {
+                    Ok(_) => {
+                        crate::say(&format!("Ausnahme am VPN vorbei: {net}"));
+                        bypass.lock().unwrap().push(net);
+                    }
+                    Err(e) => crate::say(&format!("Ausnahme {net}: {e}")),
+                }
+            }
+        }
+        let notbremse = regeln.notbremse && full;
+        if notbremse {
+            if notbremse_an(&name, regeln.lokal_erlaubt, &ziele) {
+                crate::say(&format!("Notbremse an: ohne VPN kein Internet{}", if regeln.lokal_erlaubt { " (lokales Netz erlaubt)" } else { "" }));
+            } else {
+                crate::say("Notbremse: iptables-Regeln nicht vollstaendig gesetzt (iptables/ip6tables installiert?)");
+            }
+        } else {
+            notbremse_aus();
+        }
         let (tx, rx) = mpsc::channel(4096);
         fdtun::spawn_reader(tun.clone(), tx);
-        Ok(Platform { tun, reader: Mutex::new(Some(rx)), name, full, up4, up6, bypass: Arc::new(Mutex::new(Vec::new())) })
+        Ok(Platform { tun, reader: Mutex::new(Some(rx)), name, full, up4, up6, bypass, notbremse })
     }
 
     pub fn writer(&self) -> Arc<dyn TunWriter> {
@@ -122,8 +254,11 @@ impl Platform {
         if !self.full {
             return None;
         }
-        let (up4, up6, bypass) = (self.up4.clone(), self.up6.clone(), self.bypass.clone());
+        let (up4, up6, bypass, nb) = (self.up4.clone(), self.up6.clone(), self.bypass.clone(), self.notbremse);
         Some(Arc::new(move |addr: std::net::IpAddr| {
+            if nb {
+                notbremse_server(addr);
+            }
             let (up, host, fam) = if addr.is_ipv4() { (&up4, format!("{addr}/32"), "-4") } else { (&up6, format!("{addr}/128"), "-6") };
             let Some((via, dev)) = up else { return };
             let mut args = vec![fam, "route", "replace", host.as_str()];
@@ -145,6 +280,11 @@ impl Platform {
     pub fn cleanup(&self) {
         for h in self.bypass.lock().unwrap().iter() {
             let _ = ip(&[if h.contains(':') { "-6" } else { "-4" }, "route", "del", h]);
+        }
+        // VPN bewusst beendet: Internet wieder frei
+        if self.notbremse {
+            notbremse_aus();
+            crate::say("Notbremse geloest");
         }
         let _ = ip(&["link", "set", "dev", &self.name, "down"]);
     }

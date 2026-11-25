@@ -115,6 +115,12 @@ fn benutzer_rechte(cfg: &ClientConfig) {
     let ad = data_dir().join("absturz");
     let _ = std::fs::create_dir_all(&ad);
     allow_users(&ad, true);
+    // Schutz-Regeln: das Fenster (als Benutzer) darf sie aendern
+    let rf = data_dir().join("regeln.json");
+    if !rf.exists() {
+        let _ = kvpn::regeln::Regeln::default().save(&rf);
+    }
+    allow_users(&rf, false);
 }
 
 /// laeuft dieses Programm mit Administratorrechten?
@@ -327,6 +333,11 @@ fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
         });
     }
     loop {
+        // automatisch schuetzen: im vertrauten Netz (z. B. Heim-WLAN) pausieren, sonst verbinden
+        if !pausieren_solange_vertraut(&a, &rt, &stop_rx, &cfg) {
+            super::notbremse_aus();
+            return ServiceExitCode::NO_ERROR;
+        }
         // Wege: Proxy aus Code/Aufruf fest – sonst Systemproxy des Benutzers (beim Einrichten gemerkt) zuerst, dann direkt
         let forced = a.proxy.clone().or_else(|| (!cfg.proxy.is_empty()).then(|| cfg.proxy.clone()));
         let ways = match forced {
@@ -336,9 +347,20 @@ fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
                 None => vec![None],
             },
         };
-        let r = rt.block_on(crate::run_vpn(cfg.clone(), &a, ways, Ui::Datei(status_file()), stopped(stop_rx.clone())));
+        // Ende auch, wenn das Netz vertraut wird (dann pausieren statt beenden)
+        let pause = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (p2, a2, srx) = (pause.clone(), a.clone(), stop_rx.clone());
+        let ende = async move {
+            tokio::select! {
+                _ = stopped(srx) => {}
+                _ = wird_vertraut(a2) => p2.store(true, std::sync::atomic::Ordering::Relaxed),
+            }
+        };
+        let r = rt.block_on(crate::run_vpn(cfg.clone(), &a, ways, Ui::Datei(status_file()), ende));
         match r {
+            Ok(Ende::Stopp) if pause.load(std::sync::atomic::Ordering::Relaxed) => continue,
             Ok(Ende::Stopp) => {
+                super::notbremse_aus();
                 say("Dienst beendet");
                 return ServiceExitCode::NO_ERROR;
             }
@@ -353,6 +375,61 @@ fn serve(stop_rx: tokio::sync::watch::Receiver<bool>) -> ServiceExitCode {
         }
         if rt.block_on(async { tokio::time::timeout(Duration::from_secs(10), stopped(stop_rx.clone())).await.is_ok() }) {
             return ServiceExitCode::NO_ERROR;
+        }
+    }
+}
+
+/// wird erfuellt, sobald das Netz vertraut ist und "automatisch schuetzen" an ist (alle 5 s nachsehen)
+async fn wird_vertraut(a: crate::Args) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        let r = crate::regeln(&a);
+        if r.auto {
+            let n = tokio::task::spawn_blocking(super::netz_jetzt).await.unwrap_or_default();
+            if n.online && !r.soll_schuetzen(&n) {
+                say(&format!("Vertrautes Netz ({}) – VPN pausiert", n.anzeige()));
+                return;
+            }
+        }
+    }
+}
+
+/// im vertrauten Netz warten, bis es ein fremdes Netz ist (oder "automatisch schuetzen" aus). false = Dienst soll enden
+fn pausieren_solange_vertraut(a: &crate::Args, rt: &tokio::runtime::Runtime, stop_rx: &tokio::sync::watch::Receiver<bool>, cfg: &ClientConfig) -> bool {
+    let mut gemeldet = false;
+    loop {
+        let r = crate::regeln(a);
+        let n = super::netz_jetzt();
+        if !r.auto || !n.online || r.soll_schuetzen(&n) {
+            if gemeldet {
+                say(&format!("{} – verbinde", if r.auto { format!("Fremdes Netz ({})", n.anzeige()) } else { "Automatik aus".into() }));
+                let _ = std::fs::remove_file(status_file());
+            }
+            return true;
+        }
+        if !gemeldet {
+            super::notbremse_aus();
+            say(&format!("Vertrautes Netz ({}) – VPN pausiert, verbindet in fremden Netzen von selbst", n.anzeige()));
+            gemeldet = true;
+        }
+        // Zustand fuers Fenster: pausiert
+        let z = crate::Zustand {
+            state: "paused".into(),
+            title: cfg.display_name().to_string(),
+            name: cfg.name.clone(),
+            version: kvpn::VERSION.to_string(),
+            error: format!("Vertrautes Netz: {} – in fremden Netzen verbindet es sich von selbst", n.anzeige()),
+            ts: kvpn::util::now_secs(),
+            ..Default::default()
+        };
+        let f = status_file();
+        let tmp = f.with_extension("tmp");
+        if std::fs::write(&tmp, serde_json::to_vec(&z).unwrap_or_default()).is_ok() {
+            let _ = std::fs::rename(&tmp, &f);
+        }
+        if rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), stopped(stop_rx.clone())).await.is_ok() }) {
+            let _ = std::fs::remove_file(status_file());
+            return false;
         }
     }
 }
@@ -1063,6 +1140,23 @@ impl crate::gui::Steuerung for Fenster {
 
     fn logo_ordner(&self) -> Option<PathBuf> {
         Some(data_dir().join("logo"))
+    }
+
+    fn regeln(&self) -> kvpn::regeln::Regeln {
+        crate::regeln(&self.a)
+    }
+
+    fn regeln_speichern(&self, r: &kvpn::regeln::Regeln) -> Result<(), String> {
+        r.save(&crate::regeln_path(&self.a)).map_err(|e| format!("Speichern nicht möglich ({e}) – KroneVPN einmal verbinden, dann geht es"))?;
+        // laufendes VPN: neu starten, damit Notbremse/Ausnahmen gelten (geht ohne Admin)
+        if open_service(ServiceAccess::QUERY_STATUS).and_then(|s| s.query_status().ok()).map(|s| s.current_state == ServiceState::Running).unwrap_or(false) {
+            restart_service()?;
+        }
+        Ok(())
+    }
+
+    fn netz(&self) -> kvpn::regeln::Netz {
+        super::netz_jetzt()
     }
 
     fn verschluesselung_setzen(&self, wahl: &str) -> Result<(), String> {

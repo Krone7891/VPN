@@ -97,7 +97,10 @@ input.sw:checked{background:var(--acc)}input.sw:checked::after{left:21px}input.s
 .tag{font-size:11.5px;padding:1px 7px;border-radius:99px;background:var(--soft);color:var(--mute);margin-left:6px;font-weight:500;vertical-align:1px}
 .setfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
 #setrs{margin-top:12px;padding:12px 14px;border-radius:12px;border:1px solid var(--warn);display:flex;gap:12px;align-items:center;flex-wrap:wrap}#setrs[hidden]{display:none}
-@media (max-width:620px){.set{flex-wrap:wrap}.set input[type=text]{width:100%}.set .pw,.set .pw input{width:100%}}
+.set textarea{width:16em;min-height:4.2em;box-sizing:border-box;font:12.5px ui-monospace,monospace;background:var(--soft);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px;resize:vertical}
+.dnsg{display:grid;grid-template-columns:repeat(auto-fit,minmax(15em,1fr));gap:14px}.dnsg ol{margin:4px 0 0;padding-left:1.4em;font-size:13px}.dnsg li{overflow-wrap:anywhere}
+.warn{color:#c0392b}
+@media (max-width:620px){.set{flex-wrap:wrap}.set textarea{width:100%}.set input[type=text]{width:100%}.set .pw,.set .pw input{width:100%}}
 .upl{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.upl img{width:56px;height:56px;border-radius:12px;object-fit:cover;background:var(--soft)}
 .upl label,.upl button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--ink);cursor:pointer}
 .pbtns{display:flex;flex-wrap:wrap;gap:0 8px}
@@ -172,6 +175,9 @@ function build(){
    '<div id="mgmtu"></div><div id="mgmtd" style="margin-top:14px"></div></div></div>'+
    '<h2>Verlauf je Tag</h2><div class="card"><div class="legend"><span><i class="rect" style="background:var(--s1)"></i>Download</span><span><i class="rect" style="background:var(--s2)"></i>Upload</span></div><div class="chart" id="days"></div>'+
    '<details><summary>Tabelle anzeigen</summary><div class="tw" id="dtable"></div></details></div>'+
+   '<div id="berbox" hidden><h2>Monatsbericht</h2><div class="card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><select id="bermon"></select>'+
+   '<button type="button" class="btn2" id="bercsv" style="margin:0">Als Tabelle speichern (CSV)</button><span class="mute" id="bersum"></span></div><div class="tw" id="bertab" style="margin-top:10px"></div></div></div>'+
+   '<h2>Werbe-Blocker &amp; Heimnetz</h2><div class="card" id="dnsbox"><div class="mute">lädt …</div></div>'+
    '<div id="setbox" hidden><h2>Einstellungen</h2><form class="card" id="setf" autocomplete="off">'+
    '<div class="set"><div class="t"><b>Name des VPN</b><span>erscheint in den Apps, auf den Webseiten und in neuen Codes</span></div><input type="text" id="s_name" maxlength="40"></div>'+
    '<div class="set"><div class="t"><b>Höchstzahl Geräte</b><span id="s_maxi"></span></div><input type="number" id="s_max" min="1"></div>'+
@@ -180,10 +186,24 @@ function build(){
    '<div class="set"><div class="t"><b>Leistungsmodus <span class="tag">Neustart</span></b><span>alle CPU-Kerne, mehr Durchsatz, mehr Last</span></div><input type="checkbox" class="sw" id="s_perf"></div>'+
    '<div class="set"><div class="t"><b>Admin-Seite im VPN <span class="tag">Neustart</span></b><span id="s_admi"></span></div><input type="checkbox" class="sw" id="s_admin"></div>'+
    '<div class="set"><div class="t"><b>Standort der Geräte</b><span>aus GPS des Handys, WLAN-Netzen und IP-Adresse – nur hier auf der Admin-Seite. Für die IP fragt der Server ipwho.is.</span></div><input type="checkbox" class="sw" id="s_geo"></div>'+
+   '<div class="set"><div class="t"><b>Eigener DNS im Tunnel <span class="tag">Neustart</span></b><span>der Server beantwortet die Namens-Anfragen der Geräte selbst – nötig für Werbe-Blocker und Namen im Heimnetz (z. B. nas.fritz.box)</span></div><input type="checkbox" class="sw" id="s_dns"></div>'+
+   '<div class="set"><div class="t"><b>Werbe- &amp; Tracker-Blocker</b><span>Werbung, Tracker und bekannte Schadseiten werden für alle Geräte im VPN gar nicht erst geladen (wie Pi-hole)</span></div><input type="checkbox" class="sw" id="s_ab"></div>'+
+   '<div class="set"><div class="t"><b>Eigene Sperren / Ausnahmen</b><span>ein Name pro Zeile, gilt auch für Unter-Namen. Ausnahmen gehen vor (z. B. wenn eine Seite wegen des Blockers nicht geht)</span></div><div class="pw">'+
+   '<textarea id="s_blk" placeholder="Sperren, z. B.&#10;tiktok.com" spellcheck="false"></textarea><textarea id="s_alw" placeholder="Ausnahmen, z. B.&#10;ads.example.com" spellcheck="false"></textarea></div></div>'+
+   '<div class="set"><div class="t"><b>Sperrlisten</b><span>Adressen von Listen im Hosts-Format, eine pro Zeile – werden täglich neu geladen</span></div><textarea id="s_lists" spellcheck="false"></textarea></div>'+
+   '<div class="set"><div class="t"><b>Zugriff aufs Heimnetz</b><span id="s_lani">Geräte im VPN erreichen Drucker, NAS usw. im Netz des Servers</span></div><input type="checkbox" class="sw" id="s_lan"></div>'+
+   '<div class="set"><div class="t"><b>Start beim Hochfahren</b><span id="s_auto">…</span></div></div>'+
    '<div class="set"><div class="t"><b>Ortung über WLAN</b><span id="s_wli">Google Geolocation API (Schlüssel aus der Google Cloud Console) und/oder WiGLE (wigle.net → Account → API-Name:Token). Leer lassen = bleibt, „aus“ = entfernen.</span></div><div class="pw">'+
    '<input type="password" id="s_gk" placeholder="Google-Schlüssel" autocomplete="off"><input type="password" id="s_wk" placeholder="WiGLE Name:Token" autocomplete="off"></div></div>'+
    '<div class="set"><div class="t"><b>Admin-Passwort ändern</b><span id="s_pwi">mindestens 8 Zeichen · leer lassen = bleibt</span></div><div class="pw">'+
    '<input type="password" id="s_pwold" placeholder="Bisheriges Passwort" autocomplete="current-password"><input type="password" id="s_pw" placeholder="Neues Passwort" autocomplete="new-password"><input type="password" id="s_pw2" placeholder="Wiederholen" autocomplete="new-password"></div></div>'+
+   '<div class="set"><div class="t"><b>Zweiter Schritt bei der Anmeldung</b><span id="s_totpi">zusätzlich zum Passwort ein Code aus einer Authenticator-App (Google/Microsoft Authenticator, Aegis, 2FAS …) – gilt für die Admin-Seite im VPN</span>'+
+   '<div id="s_totpnew" hidden style="margin-top:8px"><div id="s_totpqr" style="width:200px;background:#fff;border-radius:8px"></div><div class="mute" style="margin-top:6px">oder von Hand: <code id="s_totpsec"></code></div></div></div>'+
+   '<div class="pw"><input type="text" id="s_totpc" inputmode="numeric" maxlength="7" placeholder="Code" autocomplete="one-time-code" hidden><button type="button" class="btn2" id="s_totpb" style="margin:0">Einrichten</button></div></div>'+
+   '<div class="set"><div class="t"><b>Benachrichtigungen aufs Handy</b><span>über die App <b>ntfy</b> (Thema abonnieren, z. B. https://ntfy.sh/ein-langes-geheimes-wort) und/oder einen eigenen <b>Telegram</b>-Bot (Schlüssel von @BotFather, Chat-ID z. B. von @userinfobot)</span>'+
+   '<div class="chk" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px"><label><input type="checkbox" data-n="geraet"> neues Gerät</label><label><input type="checkbox" data-n="passwort"> falsches Passwort</label><label><input type="checkbox" data-n="start"> Server gestartet</label><label><input type="checkbox" data-n="update"> neue App-Version</label><label><input type="checkbox" data-n="bericht"> Monatsbericht</label></div></div>'+
+   '<div class="pw"><input type="text" id="s_ntfy" placeholder="ntfy-Adresse" autocomplete="off" spellcheck="false"><input type="password" id="s_ntok" placeholder="ntfy-Zugang (Token)" autocomplete="off"><input type="password" id="s_tgt" placeholder="Telegram-Bot-Schlüssel" autocomplete="off"><input type="text" id="s_tgc" placeholder="Telegram-Chat-ID" autocomplete="off">'+
+   '<button type="button" class="btn2" id="s_ntest" style="margin:0">Testnachricht</button></div></div>'+
    '<div class="set"><div class="t"><b>Update-Quelle (GitHub)</b><span id="s_upi">Repo, aus dem der Server neue Apps holt. Ändern nur mit dem Admin-Passwort; im neuen Repo muss dist/update.json mit gültiger Signatur liegen.</span></div><div class="pw">'+
    '<input type="text" id="s_repo" placeholder="besitzer/name" autocomplete="off" spellcheck="false"><input type="text" id="s_branch" placeholder="Zweig (main)" autocomplete="off" spellcheck="false"><input type="password" id="s_upw" placeholder="Admin-Passwort zum Bestätigen" autocomplete="current-password"></div></div>'+
    '<div class="setfoot"><button class="btn" id="s_ok">Speichern</button><span class="mute" id="s_msg"></span></div>'+
@@ -203,6 +223,42 @@ function build(){
   $('#upldel').onclick=async()=>{await fetch(BASE+'logo',{method:'DELETE'}).catch(()=>{});$('#uplmsg').textContent='Bild entfernt.';load()};
 }
 
+let BERM='';
+function hrs(s){return (s/3600).toLocaleString('de-DE',{maximumFractionDigits:1})+' h'}
+function berichtBox(d){
+  const box=$('#berbox'),L=d.berichte||[];if(!box)return;box.hidden=!L.length;if(!L.length)return;
+  const sel=$('#bermon');
+  if(sel.dataset.k!==L.map(b=>b.month).join()){sel.dataset.k=L.map(b=>b.month).join();
+    sel.innerHTML=L.map(b=>{const [y,m]=b.month.split('-');return '<option value="'+b.month+'">'+new Date(+y,+m-1,1).toLocaleDateString('de-DE',{month:'long',year:'numeric'})+'</option>'}).join('');
+    if(BERM&&L.some(b=>b.month===BERM))sel.value=BERM;sel.onchange=()=>{BERM=sel.value;berichtBox(LAST)};
+    $('#bercsv').onclick=()=>{const b=(LAST.berichte||[]).find(x=>x.month===sel.value);if(!b)return;
+      const rows=[['Gerät','Download (Bytes)','Upload (Bytes)','online (Stunden)','Verbindungen']].concat(Object.entries(b.per).map(([n,v])=>[n,v[1],v[0],(v[2]/3600).toFixed(2),v[3]]));
+      rows.push([],['Server lief (Stunden)',(b.uptime/3600).toFixed(2)],['Zeitraum (Stunden)',(b.span/3600).toFixed(2)],['DNS-Anfragen',b.dns[0]],['davon geblockt',b.dns[1]]);
+      const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+rows.map(r=>r.map(x=>'"'+String(x??'').replace(/"/g,'""')+'"').join(';')).join('\r\n')],{type:'text/csv'}));
+      a.download='monatsbericht-'+b.month+'.csv';a.click()}}
+  const b=L.find(x=>x.month===(BERM||sel.value))||L[0];
+  const key=JSON.stringify(b);if(box.dataset.k===key)return;box.dataset.k=key;
+  const up=b.span?Math.min(100,b.uptime/b.span*100):0;
+  setT($('#bersum'),bytes(b.rx+b.tx)+' gesamt · Server lief '+up.toLocaleString('de-DE',{maximumFractionDigits:1})+' % der Zeit'+(b.dns[0]?' · Blocker: '+b.dns[1].toLocaleString('de-DE')+' von '+b.dns[0].toLocaleString('de-DE')+' Anfragen':''));
+  const per=Object.entries(b.per).sort((x,y)=>(y[1][0]+y[1][1])-(x[1][0]+x[1][1]));
+  $('#bertab').innerHTML='<table><tr><th>Gerät</th><th>Download</th><th>Upload</th><th>online</th><th>Verbindungen</th></tr>'+
+    per.map(([n,v])=>'<tr><td>'+esc(n)+'</td><td>'+bytes(v[1])+'</td><td>'+bytes(v[0])+'</td><td>'+hrs(v[2])+'</td><td>'+v[3]+'</td></tr>').join('')+
+    '<tr><td><b>Summe</b></td><td><b>'+bytes(b.tx)+'</b></td><td><b>'+bytes(b.rx)+'</b></td><td>Server: '+hrs(b.uptime)+'</td><td>'+per.reduce((a,x)=>a+x[1][3],0)+'</td></tr></table>';
+}
+function dnsBox(d){
+  const x=d.dns,el=$('#dnsbox');if(!el)return;
+  if(!x){el.innerHTML='<div class="mute">Server zu alt</div>';return}
+  const pct=x.queries?(x.blocked/x.queries*100).toFixed(1):'0';
+  const per=Object.entries(x.per||{}).filter(([,v])=>v[0]).sort((a,b)=>b[1][1]-a[1][1]);
+  const key=JSON.stringify([x.queries,x.blocked,x.list,x.lan,x.lan_access,x.running,x.adblock]);if(el.dataset.k===key)return;el.dataset.k=key;
+  el.innerHTML='<div class="dnsg"><div><b>'+(x.running?(x.adblock?'🛡️ Blocker an':'Blocker aus'):'eigener DNS aus')+'</b><div class="mute">'+
+    (x.running?esc(x.queries.toLocaleString('de-DE'))+' Anfragen seit dem Start · '+esc(x.blocked.toLocaleString('de-DE'))+' geblockt ('+pct+' %)':'Geräte fragen direkt bei '+esc((d.server.dns||[]).join(', ')||'ihrem DNS'))+
+    '</div><div class="mute" style="margin-top:4px">Sperrliste: '+esc(x.list||'noch nicht geladen')+'</div>'+
+    (per.length?'<div style="margin-top:8px"><b>Je Gerät</b><ol>'+per.map(([n,v])=>'<li>'+esc(n)+': '+v[1]+' von '+v[0]+' geblockt</li>').join('')+'</ol></div>':'')+'</div>'+
+    '<div><b>Meistgeblockt</b>'+(x.top&&x.top.length?'<ol>'+x.top.map(t=>'<li>'+esc(t[0])+' <span class="mute">('+t[1]+')</span></li>').join('')+'</ol>':'<div class="mute">noch nichts</div>')+'</div>'+
+    '<div><b>Heimnetz '+(x.lan_access?'erreichbar':'gesperrt')+'</b><div class="mute">'+(x.lan_access?(x.lan&&x.lan.length?'Geräte im VPN erreichen '+esc(x.lan.join(', '))+' – auch mit Namen, z. B. http://nas.fritz.box oder kurz http://nas':'Netz des Servers'):'Geräte im VPN kommen nur ins Internet')+
+    '</div><div class="mute" style="margin-top:4px">Geht nicht, wenn das Netz unterwegs dieselben Adressen hat (z. B. zwei FRITZ!Boxen mit 192.168.178.x).</div></div></div>';
+}
 function render(d){
   if(!BUILT)build();
   const on=d.peers.filter(p=>p.online), now=d.now, s=d.server;
@@ -232,6 +288,8 @@ function render(d){
   lineChart($('#chart'),RANGE==='sec'?d.sec:d.min,RANGE==='sec'?1:60,now);
   peers(d.peers,now);
   dayChart($('#days'),d.days.slice().reverse());
+  dnsBox(d);
+  berichtBox(d);
   daysTable($('#dtable'),d);
   setT($('#foot'),(s.name||'KroneVPN')+' '+s.version+' · läuft seit '+dur(now-s.started)+' · Tunnel '+s.net4+(s.net6?' / '+s.net6:'')+' · MTU '+s.mtu+' · Last '+s.load+
    (s.tun_drops?' · '+s.tun_drops+' Pakete verworfen (Gerät zu langsam)':'')+' · '+s.url+
@@ -366,9 +424,20 @@ async function loadSettings(force){
 function showSettings(r){
   SET=r;const f=$('#setf');
   if(!f.dataset.init){f.dataset.init=1;f.onsubmit=e=>{e.preventDefault();saveSettings()};
-    f.addEventListener('input',()=>{SET_DIRTY=true});$('#s_rs').onclick=restartServer}
+    f.addEventListener('input',e=>{if(!['s_totpc'].includes(e.target.id))SET_DIRTY=true});$('#s_rs').onclick=restartServer;
+    $('#s_totpb').onclick=totpClick;$('#s_ntest').onclick=async()=>{const m=$('#s_msg');setT(m,'sendet …');
+      try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({notify_test:true})})).json();setT(m,r.ok?r.msg:(r.err||'Fehler'))}catch(e){setT(m,'Fehler: '+e.message)}}}
   if(!SET_DIRTY){$('#s_name').value=r.vpn_name;$('#s_max').value=r.max_devices;$('#s_max').max=r.max_possible||250;
-    $('#s_repo').value=r.update_repo||'';$('#s_branch').value=r.update_branch||'';$('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo}
+    $('#s_repo').value=r.update_repo||'';$('#s_branch').value=r.update_branch||'';$('#s_users').checked=r.users;$('#s_aes').checked=r.aes256;$('#s_perf').checked=r.performance;$('#s_admin').checked=r.admin_vpn;$('#s_geo').checked=!!r.geo;
+    $('#s_dns').checked=!!r.dns_proxy;$('#s_ab').checked=!!r.adblock;$('#s_lan').checked=!!r.lan_access;$('#s_blk').value=r.dns_block||'';$('#s_alw').value=r.dns_allow||'';$('#s_lists').value=r.adblock_lists||''}
+  setT($('#s_lani'),'Geräte im VPN erreichen Drucker, NAS usw. im Netz des Servers'+((r.lan_nets||[]).length?' ('+r.lan_nets.join(', ')+')':'')+' · aus = nur Internet');
+  if(!SET_DIRTY){$('#s_ntfy').value=r.notify_ntfy||'';$('#s_tgc').value=r.notify_telegram_chat||'';
+    document.querySelectorAll('.chk input[data-n]').forEach(x=>x.checked=(r.notify_on||[]).includes(x.dataset.n))}
+  $('#s_ntok').placeholder=r.notify_ntfy_token?'ntfy-Zugang: eingetragen ✓':'ntfy-Zugang (Token, falls nötig)';
+  $('#s_tgt').placeholder=r.notify_telegram?'Telegram-Bot: eingetragen ✓':'Telegram-Bot-Schlüssel';
+  if(!TOTP_SETUP){setT($('#s_totpb'),r.totp?'Ausschalten':'Einrichten');$('#s_totpc').hidden=!r.totp;$('#s_totpc').placeholder=r.totp?'Code zum Ausschalten':'Code';
+    $('#s_totpnew').hidden=true;setT($('#s_totpi'),(r.totp?'✓ an – Anmeldung im VPN mit Passwort + Code aus der Authenticator-App':'aus – zusätzlich zum Passwort ein Code aus einer Authenticator-App (Google/Microsoft Authenticator, Aegis, 2FAS …)'))}
+  const au=r.autostart||{};setT($('#s_auto'),(au.ok?'✓ ':'⚠ ')+(au.text||'?')+(au.ok?'':' – einschalten auf dem Server: kvpn-server autostart an'));$('#s_auto').classList.toggle('warn',!au.ok);
   setT($('#s_maxi'),r.devices+' angelegt, möglich bis '+(r.max_possible||250));
   $('#s_gk').placeholder=r.google_geo_key?'Google: eingetragen ✓':'Google-Schlüssel';$('#s_wk').placeholder=r.wigle_api?'WiGLE: eingetragen ✓':'WiGLE Name:Token';
   setT($('#s_admi'),r.admin_vpn?(r.admin_url?'erreichbar unter '+r.admin_url+' (mit Passwort)':'an'):'aus – dann nur noch lokal auf dem Server');
@@ -378,12 +447,32 @@ function showSettings(r){
   $('#setrs').hidden=!r.restart_needed;$('#s_rs').hidden=!r.can_restart;
   if(r.restart_needed&&!r.can_restart)setT($('#setrs').firstChild,'Neustart nötig – bitte auf dem Server: systemctl restart krone-vpn (Docker: docker restart krone-vpn)');
 }
+let TOTP_SETUP=false;
+async function totpPost(b){const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();return r}
+async function totpClick(){
+  const m=$('#s_msg'),c=$('#s_totpc');
+  try{
+    if(SET.totp&&!TOTP_SETUP){if(!c.value.trim()){setT(m,'Zum Ausschalten den aktuellen Code aus der App eingeben');c.focus();return}
+      const r=await totpPost({totp_disable:true,totp_code:c.value.trim()});c.value='';if(r.ok){showSettings(r);setT(m,r.msg)}else setT(m,r.err||'Fehler');return}
+    if(!TOTP_SETUP){const r=await totpPost({totp_setup:true});if(!r.ok){setT(m,r.err||'Fehler');return}
+      TOTP_SETUP=true;$('#s_totpqr').innerHTML=r.totp_new.svg;setT($('#s_totpsec'),r.totp_new.secret.replace(/(.{4})/g,'$1 ').trim());$('#s_totpnew').hidden=false;
+      c.hidden=false;c.value='';c.placeholder='angezeigter Code';setT($('#s_totpb'),'Bestätigen');setT($('#s_totpi'),'1. QR-Code mit der Authenticator-App scannen  2. angezeigten Code eingeben  3. Bestätigen');setT(m,r.msg);c.focus();return}
+    if(!c.value.trim()){setT(m,'Bitte den Code aus der App eingeben');return}
+    const r=await totpPost({totp_enable:c.value.trim()});
+    if(r.ok){TOTP_SETUP=false;c.value='';showSettings(r);setT(m,r.msg)}else setT(m,r.err||'Fehler');
+  }catch(e){setT(m,'Fehler: '+e.message)}
+}
 function viaVpn(){return !/^(localhost|127\.|\[?::1)/.test(location.hostname)}
 async function saveSettings(){
   if(!SET)return;const m=$('#s_msg'),b={};
   const name=$('#s_name').value.trim(),max=+$('#s_max').value,pw=$('#s_pw').value,pw2=$('#s_pw2').value;
   if(name!==SET.vpn_name)b.vpn_name=name;if(max!==SET.max_devices)b.max_devices=max;
-  [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin'],['geo','#s_geo']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
+  [['users','#s_users'],['aes256','#s_aes'],['performance','#s_perf'],['admin_vpn','#s_admin'],['geo','#s_geo'],['dns_proxy','#s_dns'],['adblock','#s_ab'],['lan_access','#s_lan']].forEach(([k,id])=>{if($(id).checked!==SET[k])b[k]=$(id).checked});
+  [['notify_ntfy','#s_ntfy'],['notify_telegram_chat','#s_tgc']].forEach(([k,id])=>{const v=$(id).value.trim();if(v!==(SET[k]||''))b[k]=v});
+  if($('#s_tgt').value.trim())b.notify_telegram_token=$('#s_tgt').value.trim();
+  if($('#s_ntok').value.trim())b.notify_ntfy_token=$('#s_ntok').value.trim();
+  {const on=[...document.querySelectorAll('.chk input[data-n]')].filter(x=>x.checked).map(x=>x.dataset.n);if(on.join()!==(SET.notify_on||[]).join())b.notify_on=on}
+  [['dns_block','#s_blk'],['dns_allow','#s_alw'],['adblock_lists','#s_lists']].forEach(([k,id])=>{const v=$(id).value.trim();if(v!==(SET[k]||''))b[k]=v});
   const gk=$('#s_gk').value.trim(),wk=$('#s_wk').value.trim();if(gk)b.google_geo_key=gk;if(wk)b.wigle_api=wk;
   if(pw||pw2){if(pw!==pw2){setT(m,'Die Passwörter sind verschieden');return}if(pw.length<8){setT(m,'Das Passwort braucht mindestens 8 Zeichen');return}
     if(SET.admin_password_set&&!$('#s_pwold').value){setT(m,'Bitte das bisherige Admin-Passwort eingeben');return}b.admin_password=pw;if(SET.admin_password_set)b.admin_password_old=$('#s_pwold').value}
@@ -398,7 +487,7 @@ async function saveSettings(){
   if(b.users===false&&!confirm('Benutzerverwaltung ausschalten? Aktive Geräte bleiben, gesperrte und abgelaufene Geräte bleiben gesperrt (nur in der Datenbank).'))return;
   const btn=$('#s_ok');btn.disabled=true;setT(m,'Speichert …');
   try{const r=await (await fetch(BASE+'settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})).json();
-    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value=$('#s_pwold').value=$('#s_upw').value=$('#s_gk').value=$('#s_wk').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
+    if(r.ok){SET_DIRTY=false;$('#s_pw').value=$('#s_pw2').value=$('#s_pwold').value=$('#s_upw').value=$('#s_gk').value=$('#s_wk').value=$('#s_tgt').value=$('#s_ntok').value='';showSettings(r);setT(m,r.msg+' ✓');SET_T=Date.now();clearTimeout(T);load()}
     else setT(m,r.err||'Fehler')}
   catch(e){setT(m,'Fehler: '+e.message)}
   btn.disabled=false;
@@ -599,12 +688,14 @@ function showLogin(j){
     $('#main').innerHTML='<form class="card login" id="lf"><div class="ttl">🔒 '+(j.setup?'Admin-Passwort festlegen':'Admin-Anmeldung')+'</div>'+
      (j.setup?'<div class="mute">Erster Aufruf: lege jetzt ein Passwort fest (mindestens 8 Zeichen). Danach meldest du dich damit von jedem Gerät im VPN an; der Browser bleibt angemeldet.</div>'+
        '<input id="pw" type="password" placeholder="Neues Passwort" autocomplete="new-password" minlength="8" required><input id="pw2" type="password" placeholder="Passwort wiederholen" autocomplete="new-password" minlength="8" required>'
-      :'<input id="pw" type="password" placeholder="Admin-Passwort" autocomplete="current-password" required><div class="mute">Passwort vergessen? Auf dem Server: <code>kvpn-server admin-passwort --loeschen</code></div>')+
+      :'<input id="pw" type="password" placeholder="Admin-Passwort" autocomplete="current-password" required>'+
+       '<input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="Code aus der Authenticator-App"'+(j.totp?'':' hidden')+'>'+
+       '<div class="mute">Passwort vergessen? Auf dem Server: <code>kvpn-server admin-passwort --loeschen</code>'+(j.totp?' · Handy weg? <code>kvpn-server zwei-faktor aus</code>':'')+'</div>')+
      '<div class="err" id="le"></div><button class="btn">'+(j.setup?'Festlegen und anmelden':'Anmelden')+'</button></form>';
     $('#lf').onsubmit=async e=>{e.preventDefault();$('#le').textContent='';
       if(j.setup&&$('#pw').value!==$('#pw2').value){$('#le').textContent='Die Passwörter sind nicht gleich';return}
-      try{const r=await fetch(BASE+(j.setup?'admin-setup':'login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw:$('#pw').value})});const k=await r.json();
-        if(k.ok)load();else $('#le').textContent=k.err||'Fehler';}catch(er){$('#le').textContent=er.message}};
+      try{const r=await fetch(BASE+(j.setup?'admin-setup':'login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pw:$('#pw').value,code:($('#code')||{}).value||''})});const k=await r.json();
+        if(k.ok)load();else{$('#le').textContent=k.err||'Fehler';if(k.need_code&&$('#code')){$('#code').hidden=false;$('#code').value='';$('#code').focus()}}}catch(er){$('#le').textContent=er.message}};
     return;
   }
   $('#sub').textContent='Von außerhalb des Heimnetzes nur mit Passwort';

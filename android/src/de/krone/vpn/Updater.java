@@ -129,6 +129,10 @@ final class Updater {
                         while ((n = in.read(b)) > 0) out.write(b, 0, n);
                         s.fsync(out);
                     }
+                    // war das VPN an? Dann nach dem Einspielen von selbst wieder verbinden – auch wenn Android das VPN
+                    // beim Austausch der App kurz entzieht (onRevoke setzt "on" auf aus)
+                    if (KroneVpnService.handle != 0 || KroneVpnService.prefs(app).getBoolean("on", false))
+                        KroneVpnService.prefs(app).edit().putLong("resume_after_update", System.currentTimeMillis()).apply();
                     Intent i = new Intent(app, Result.class).putExtra("version", version);
                     int fl = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
                     s.commit(PendingIntent.getBroadcast(app, 7, i, fl).getIntentSender());
@@ -247,8 +251,15 @@ final class Updater {
             if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(intent.getAction())) return;
             installing = "";
             ((NotificationManager) ctx.getSystemService(NotificationManager.class)).cancel(42);
-            if (!KroneVpnService.prefs(ctx).getBoolean("on", false)) return;
-            if (VpnService.prepare(ctx) != null) return;
+            long resume = KroneVpnService.prefs(ctx).getLong("resume_after_update", 0);
+            KroneVpnService.prefs(ctx).edit().remove("resume_after_update").apply();
+            boolean wasOn = KroneVpnService.prefs(ctx).getBoolean("on", false) || System.currentTimeMillis() - resume < 3600_000L;
+            if (!wasOn) return;
+            if (VpnService.prepare(ctx) != null) {
+                // Erlaubnis fehlt (sehr selten nach einem Update): Hinweis zum Antippen
+                notifyUser(ctx, "KroneVPN wurde aktualisiert", "Tippen, um wieder zu verbinden", false);
+                return;
+            }
             // App mit dem Patch neu starten: VPN-Dienst wieder an. Aus dem Hintergrund geht das nur als
             // Vordergrund-Dienst (nach MY_PACKAGE_REPLACED ausdruecklich erlaubt) – startService() wuerde Android blockieren
             try {

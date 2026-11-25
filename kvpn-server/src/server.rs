@@ -54,6 +54,10 @@ pub struct Shared {
     /// offene stille Pings: id -> Antwort
     pings: Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>,
     next_ping: std::sync::atomic::AtomicU32,
+    /// eigener DNS im Tunnel (Werbe-Blocker, Heimnetz-Namen)
+    pub dns: crate::dns::Shared,
+    /// eigener DNS beim Start an? (Aenderung gilt erst nach Neustart)
+    pub dns_boot: bool,
 }
 
 impl Shared {
@@ -79,7 +83,10 @@ impl Shared {
             ctrl: Mutex::new(HashMap::new()),
             pings: Mutex::new(HashMap::new()),
             next_ping: std::sync::atomic::AtomicU32::new(1),
+            dns: crate::dns::Dns::new(cfg.adblock),
+            dns_boot: cfg.dns_proxy,
         });
+        sh.dns.set_own(&cfg.dns_block, &cfg.dns_allow);
         sh.apply_peers(&cfg);
         sh
     }
@@ -171,6 +178,18 @@ impl Shared {
                 }
                 let changed = c.peers != old.peers || c.inactive != old.inactive;
                 self.apply_peers(&c);
+                self.dns.on.store(c.adblock, Relaxed);
+                self.dns.set_own(&c.dns_block, &c.dns_allow);
+                if c.adblock != old.adblock {
+                    log!("Werbe-Blocker {}", if c.adblock { "an" } else { "aus" });
+                }
+                if c.lan_access != old.lan_access && c.nat {
+                    crate::netsetup::lan_block(&c, !c.lan_access);
+                    log!("Heimnetz fuer die Geraete {}", if c.lan_access { "freigegeben" } else { "gesperrt (nur Internet)" });
+                }
+                if c.dns_proxy != old.dns_proxy {
+                    log!("Hinweis: eigener DNS geaendert – das gilt erst nach einem Neustart des Dienstes");
+                }
                 *self.cfg.write().unwrap() = Arc::new(c);
                 if !quiet || changed {
                     let cfg = self.cfg();
@@ -375,6 +394,7 @@ where
     drop(tx);
     let st = prt.stats.clone();
     st.handshakes.fetch_add(1, Relaxed);
+    sh.hist.lock().unwrap().add_connect(now_secs(), &prt.peer.name);
     st.connected_since.store(now_secs(), Relaxed);
     st.last_seen.store(now_secs(), Relaxed);
     // schon uebertragenes Update merken, bis das Geraet mit der neuen Version kommt
@@ -408,6 +428,11 @@ where
     // Ort der IP-Adresse in den Standort-Verlauf (Bewegungs-Karte)
     if cfg.geo {
         crate::geo::verlauf_ip(&cfg.state_dir, &prt.peer.name, &remote.to_string());
+    }
+    {
+        // erstes Verbinden eines Geraets -> Benachrichtigung (falls eingerichtet)
+        let (sh2, n, k, os, von) = (sh.clone(), prt.peer.name.clone(), prt.peer.public_key.clone(), hello.os.clone(), remote.to_string());
+        tokio::task::spawn_blocking(move || crate::notify::device_connected(&sh2, &n, &k, &os, &von));
     }
     if cfg.users {
         let (p, n, ev) = (sh.cfg_path.clone(), prt.peer.name.clone(), format!("verbunden von {remote} ({} {}){}", hello.os, hello.ver, if hello.via_proxy { " ueber Proxy" } else { "" }));
@@ -667,6 +692,7 @@ pub fn spawn_background(sh: &Arc<Shared>) {
                         crate::updates::remember(&cfg, &text, &sig);
                         if told != m.version {
                             log!("Neue App-Version {} auf GitHub ({}) – an die Geraete verteilen mit: kvpn-server update", m.version, cfg.update_repo);
+                            crate::notify::event_cfg(&cfg, crate::notify::Ereignis::Update { version: m.version.clone() });
                             told = m.version;
                         }
                     }
@@ -686,6 +712,8 @@ pub fn spawn_background(sh: &Arc<Shared>) {
         let mut db_mtime = std::fs::metadata(&db_file).and_then(|m| m.modified()).ok();
         let upd_file = |s: &Shared| crate::updates::dir(&s.cfg()).join("update.json");
         let mut upd_mtime = std::fs::metadata(upd_file(&s)).and_then(|m| m.modified()).ok();
+        let mut dns_last = (0u64, 0u64);
+        let mut month_seen = String::new();
         loop {
             tick.tick().await;
             n += 1;
@@ -701,8 +729,23 @@ pub fn spawn_background(sh: &Arc<Shared>) {
                 })
                 .collect();
             let path = format!("{}/stats.json", s.cfg().state_dir);
+            let online: Vec<String> =
+                s.peers.read().unwrap().values().filter(|p| p.stats.connected_since.load(Relaxed) > 0).map(|p| p.peer.name.clone()).collect();
+            let (dq, db) = (s.dns.total.queries.load(Relaxed), s.dns.total.blocked.load(Relaxed));
             let mut h = s.hist.lock().unwrap();
             h.add_second(now, &per);
+            h.add_online(now, &online);
+            h.add_dns(now, dq.saturating_sub(dns_last.0), db.saturating_sub(dns_last.1));
+            dns_last = (dq, db);
+            // Monatswechsel: Bericht des letzten Monats als Benachrichtigung
+            let month = crate::stats::local_date(now)[..7].to_string();
+            if month_seen.is_empty() {
+                month_seen = month.clone();
+            } else if month != month_seen {
+                let b = h.bericht(&month_seen, now);
+                crate::notify::event(&s, crate::notify::Ereignis::Bericht { text: crate::stats::bericht_text(&b, s.cfg().display_name()) });
+                month_seen = month;
+            }
             if n % 60 == 0 {
                 h.save(&path);
             }

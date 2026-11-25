@@ -25,6 +25,13 @@ import org.json.JSONObject;
  */
 public class KroneVpnService extends VpnService {
     static final String ACTION_STOP = "de.krone.vpn.STOP";
+    /** pausiert (vertrautes WLAN): trotzdem jetzt verbinden – bis zum naechsten Netzwechsel */
+    static final String ACTION_JETZT = "de.krone.vpn.JETZT";
+    /** Regeln geaendert (z. B. Apps am VPN vorbei): Tunnel neu aufbauen */
+    static final String ACTION_NEU = "de.krone.vpn.NEU";
+    /** automatisch schuetzen: im vertrauten Netz pausiert ("" = nicht pausiert, sonst Anzeige des Netzes) */
+    static volatile String paused = "";
+    private boolean override = false;
     /** nach einem App-Update aus dem Hintergrund gestartet (startForegroundService) */
     static final String EXTRA_AFTER_UPDATE = "nach_update";
     private static final int NOTIF_RESTART = 43;
@@ -44,7 +51,7 @@ public class KroneVpnService extends VpnService {
         Absturz.install(this);
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             prefs(this).edit().putBoolean("on", false).apply();
-            stopTunnel();
+            stopTunnel(false);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -63,7 +70,24 @@ public class KroneVpnService extends VpnService {
             } catch (Exception ignored) {
             }
         }
-        if (handle == 0) startTunnel(code);
+        if (intent != null && ACTION_JETZT.equals(intent.getAction())) override = true;
+        if (intent != null && ACTION_NEU.equals(intent.getAction()) && handle != 0) {
+            // neue Regeln (Apps am VPN vorbei): Tunnel neu aufbauen
+            stopTunnel(true);
+            if (handle == 0) startTunnel(code);
+            if (handle != 0) ongoing();
+            evaluateLater(1500);
+            return START_STICKY;
+        }
+        if (handle == 0) {
+            // automatisch schuetzen: im vertrauten WLAN gar nicht erst verbinden, sondern pausieren
+            if (!override && !Schutz.sollSchuetzen(this)) {
+                pause();
+                return START_STICKY;
+            }
+            paused = "";
+            startTunnel(code);
+        }
         // dauerhafte Benachrichtigung, solange das VPN laeuft: zeigt offen, dass verbunden ist und ob der Standort
         // geteilt wird (nichts laeuft versteckt im Hintergrund)
         if (handle != 0) ongoing();
@@ -104,6 +128,14 @@ public class KroneVpnService extends VpnService {
                 b.addDnsServer(d);
             }
             b.addDisallowedApplication(getPackageName());
+            // Apps am VPN vorbei (in der App unter „Schutz“ gewaehlt)
+            for (String pkg : Schutz.apps(this)) {
+                try {
+                    if (!pkg.equals(getPackageName())) b.addDisallowedApplication(pkg);
+                } catch (Exception ignored) {
+                    // App deinstalliert
+                }
+            }
             if (Build.VERSION.SDK_INT >= 29) b.setMetered(false);
             Intent open = new Intent(this, MainActivity.class);
             b.setConfigureIntent(PendingIntent.getActivity(this, 0, open, PendingIntent.FLAG_IMMUTABLE));
@@ -127,6 +159,15 @@ public class KroneVpnService extends VpnService {
             }
             lastError = "";
             prefs(this).edit().putBoolean("on", true).apply();
+            // Notbremse des Systems ("Durchgehend aktives VPN" + "Verbindungen ohne VPN blockieren") – fuer die Anzeige
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    Schutz.alwaysOn = isAlwaysOn();
+                    Schutz.lockdown = isLockdownEnabled();
+                    Schutz.bekannt = true;
+                } catch (Exception ignored) {
+                }
+            }
             watchNetwork();
             timer.removeCallbacks(checkUpdate);
             timer.postDelayed(checkUpdate, 5000);
@@ -206,12 +247,22 @@ public class KroneVpnService extends VpnService {
         netCb = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onAvailable(Network network) {
-                if (lastNet != null && !lastNet.equals(network) && handle != 0) {
-                    Native.reconnect(handle);
-                    // anderes Netz (z. B. anderes WLAN): Standort gleich neu melden
-                    timer.postDelayed(() -> Standort.report(KroneVpnService.this), 5000);
+                if (lastNet != null && !lastNet.equals(network)) {
+                    override = false;
+                    if (handle != 0) {
+                        Native.reconnect(handle);
+                        // anderes Netz (z. B. anderes WLAN): Standort gleich neu melden
+                        timer.postDelayed(() -> Standort.report(KroneVpnService.this), 5000);
+                    }
                 }
                 lastNet = network;
+                evaluateLater(2000);
+            }
+
+            @Override
+            public void onCapabilitiesChanged(Network network, android.net.NetworkCapabilities nc) {
+                // anderes WLAN ohne Netzwechsel-Meldung (z. B. Roaming): nachsehen
+                evaluateLater(2500);
             }
         };
         try {
@@ -258,15 +309,20 @@ public class KroneVpnService extends VpnService {
         }
     }
 
-    private synchronized void stopTunnel() {
-        try {
-            stopForeground(STOP_FOREGROUND_REMOVE);
-        } catch (Exception ignored) {
+    /** Tunnel beenden. `pausieren`: Dienst, Netz-Beobachtung und Benachrichtigung bleiben (automatisch schuetzen) */
+    private synchronized void stopTunnel(boolean pausieren) {
+        if (!pausieren) {
+            paused = "";
+            timer.removeCallbacks(evaluate);
+            try {
+                stopForeground(STOP_FOREGROUND_REMOVE);
+            } catch (Exception ignored) {
+            }
         }
         timer.removeCallbacks(checkUpdate);
         timer.removeCallbacks(reportLoc);
         Standort.listenPassive(this, false);
-        if (netCb != null) {
+        if (netCb != null && !pausieren) {
             try {
                 getSystemService(ConnectivityManager.class).unregisterNetworkCallback(netCb);
             } catch (Exception ignored) {
@@ -281,13 +337,70 @@ public class KroneVpnService extends VpnService {
     @Override
     public void onRevoke() {
         prefs(this).edit().putBoolean("on", false).apply();
-        stopTunnel();
+        stopTunnel(false);
         stopSelf();
     }
 
     @Override
     public void onDestroy() {
-        stopTunnel();
+        stopTunnel(false);
         super.onDestroy();
+    }
+
+    // ------------------------------------------------------------------------------------------ automatisch schuetzen
+
+    private void evaluateLater(long ms) {
+        timer.removeCallbacks(evaluate);
+        timer.postDelayed(evaluate, ms);
+    }
+
+    /** Netz geaendert: im vertrauten WLAN pausieren, sonst (wieder) verbinden */
+    private final Runnable evaluate = new Runnable() {
+        @Override
+        public void run() {
+            if (!prefs(KroneVpnService.this).getBoolean("on", false)) return;
+            boolean soll = override || Schutz.sollSchuetzen(KroneVpnService.this);
+            String code = prefs(KroneVpnService.this).getString("code", null);
+            if (soll && handle == 0 && !paused.isEmpty() && code != null) {
+                paused = "";
+                startTunnel(code);
+                if (handle != 0) ongoing();
+            } else if (!soll && handle != 0) {
+                stopTunnel(true);
+                pause();
+            } else if (!soll && !paused.isEmpty()) {
+                pause();
+            }
+        }
+    };
+
+    /** pausiert im vertrauten Netz: Dienst bleibt (sichtbar), verbindet von selbst in fremden Netzen */
+    private void pause() {
+        String w = Schutz.wlan(this);
+        paused = w.isEmpty() ? "vertrautes Netz" : "WLAN „" + w + "“";
+        prefs(this).edit().putBoolean("on", true).apply();
+        watchNetwork();
+        try {
+            android.app.NotificationManager nm = getSystemService(android.app.NotificationManager.class);
+            nm.createNotificationChannel(new android.app.NotificationChannel("vpn", "KroneVPN", android.app.NotificationManager.IMPORTANCE_LOW));
+            PendingIntent open = PendingIntent.getActivity(this, 10, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+            PendingIntent jetzt = PendingIntent.getService(this, 12, new Intent(this, KroneVpnService.class).setAction(ACTION_JETZT), PendingIntent.FLAG_IMMUTABLE);
+            PendingIntent stop = PendingIntent.getService(this, 11, new Intent(this, KroneVpnService.class).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE);
+            String text = "Vertrautes " + paused.replace("WLAN „", "WLAN „") + " – in fremden Netzen verbindet es sich von selbst";
+            android.app.Notification n = new android.app.Notification.Builder(this, "vpn")
+                    .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+                    .setContentTitle(vpnTitle() + " pausiert")
+                    .setContentText(text)
+                    .setLargeIcon(Logo.bitmap(this))
+                    .setStyle(new android.app.Notification.BigTextStyle().bigText(text))
+                    .setContentIntent(open)
+                    .addAction(new android.app.Notification.Action.Builder(null, "Jetzt verbinden", jetzt).build())
+                    .addAction(new android.app.Notification.Action.Builder(null, "Aus", stop).build())
+                    .setOngoing(true)
+                    .setShowWhen(false)
+                    .build();
+            startForeground(NOTIF_VPN, n);
+        } catch (Exception ignored) {
+        }
     }
 }

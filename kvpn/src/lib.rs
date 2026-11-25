@@ -9,6 +9,7 @@ pub mod code;
 pub mod crypto;
 pub mod fehler;
 pub mod logo;
+pub mod regeln;
 pub mod pipe;
 pub mod proto;
 pub mod tarn;

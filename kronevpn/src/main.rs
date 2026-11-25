@@ -72,10 +72,12 @@ pub struct Args {
     pub profile: Option<String>,
     /// Windows: Some(true) = alte Text-Ansicht, Some(false) = Programmfenster, None = wie zuletzt gewaehlt
     pub classic: Option<bool>,
+    /// Schutz-Regeln aendern: (Schluessel, Wert), z. B. ("notbremse", "an")
+    pub schutz: Vec<(String, String)>,
 }
 
 pub fn parse_args() -> Args {
-    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, cipher: None, setup: false, result_file: None, quiet: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None };
+    let mut a = Args { code: None, proxy: None, routes: None, test: false, reset: false, cipher: None, setup: false, result_file: None, quiet: false, no_update: false, foreground: false, background: false, service: false, disconnect: false, uninstall: false, config: None, tun: "kvpn-c0".into(), list_profiles: false, profile: None, classic: None, schutz: Vec::new() };
     let mut it = std::env::args().skip(1);
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -100,13 +102,18 @@ pub fn parse_args() -> Args {
             "--profil" => a.profile = it.next(),
             "--klassisch" | "--classic" | "--konsole" => a.classic = Some(true),
             "--fenster" | "--gui" => a.classic = Some(false),
+            "--notbremse" | "--killswitch" => a.schutz.push(("notbremse".into(), it.next().unwrap_or_default())),
+            "--lokales-netz" | "--lokal" => a.schutz.push(("lokal".into(), it.next().unwrap_or_default())),
+            "--automatisch" | "--auto" => a.schutz.push(("auto".into(), it.next().unwrap_or_default())),
+            "--vertrauen" => a.schutz.push(("vertrauen".into(), String::new())),
+            "--ausnahmen" | "--ausnahme" => a.schutz.push(("ausnahmen".into(), it.next().unwrap_or_default())),
             "--proxy" => a.proxy = it.next(),
             "--routes" => a.routes = it.next().map(|r| r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()),
             "--config" => a.config = it.next().map(PathBuf::from),
             "--tun" => a.tun = it.next().unwrap_or(a.tun),
             "-h" | "--help" => {
                 konsole(true);
-                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--verschluesselung auto|aes|chacha] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]", kvpn::VERSION);
+                println!("KroneVPN {} – Aufruf: kronevpn [code] [--test] [--proxy host:port] [--routes netz,...] [--reset] [--verschluesselung auto|aes|chacha] [--kein-update] [--vordergrund|--hintergrund] [--trennen] [--entfernen] [--profile] [--profil nr|name] [--klassisch|--fenster] [--config datei]\n  Schutz: [--notbremse an|aus] [--lokales-netz an|aus] [--automatisch an|aus] [--vertrauen] [--ausnahmen \"bank.de,203.0.113.0/24\"]", kvpn::VERSION);
                 std::process::exit(0);
             }
             c if c.starts_with("kronevpn://") => a.code = Some(c.to_string()),
@@ -372,6 +379,69 @@ pub fn crash_dir(a: &Args) -> PathBuf {
     config_path(a).with_file_name("absturz")
 }
 
+/// Schutz-Regeln auf der Kommandozeile aendern (--notbremse, --automatisch, --vertrauen, --ausnahmen ...)
+fn schutz_aendern(a: &Args) {
+    let mut r = regeln(a);
+    let an = |v: &str| match v.trim().to_lowercase().as_str() {
+        "an" | "ein" | "ja" | "on" | "1" | "true" => Some(true),
+        "aus" | "nein" | "off" | "0" | "false" => Some(false),
+        _ => None,
+    };
+    for (k, v) in &a.schutz {
+        match k.as_str() {
+            "notbremse" | "lokal" | "auto" => {
+                let Some(b) = an(v) else { die(format!("--{k}: bitte an oder aus")) };
+                match k.as_str() {
+                    "notbremse" => r.notbremse = b,
+                    "lokal" => r.lokal_erlaubt = b,
+                    _ => r.auto = b,
+                }
+            }
+            "vertrauen" => {
+                #[cfg(windows)]
+                {
+                    let n = plat::netz_jetzt();
+                    if r.vertrauen(&n) {
+                        say(&format!("Vertraut: {}", n.anzeige()));
+                    }
+                }
+                #[cfg(not(windows))]
+                die("--vertrauen geht nur unter Windows und Android".to_string());
+            }
+            "ausnahmen" => r.ziele = kvpn::regeln::ziele_pruefen(v).unwrap_or_else(|e| die(e)),
+            _ => {}
+        }
+    }
+    if let Err(e) = r.save(&regeln_path(a)) {
+        die(format!("Schutz-Regeln: {e}"));
+    }
+    #[cfg(target_os = "linux")]
+    if !r.notbremse {
+        plat::notbremse_aus();
+    }
+    say(&format!(
+        "Schutz: Notbremse {}{} · automatisch schuetzen {}{} · Ausnahmen: {}",
+        if r.notbremse { "an" } else { "aus" },
+        if r.notbremse && r.lokal_erlaubt { " (lokales Netz erlaubt)" } else { "" },
+        if r.auto { "an" } else { "aus" },
+        if r.vertraut.is_empty() { String::new() } else { format!(" (vertraut: {})", r.vertraut.join(", ")) },
+        if r.ziele.is_empty() { "keine".to_string() } else { r.ziele.join(", ") }
+    ));
+}
+
+/// Schutz-Regeln (Notbremse, automatisch schuetzen, Ausnahmen) – regeln.json neben dem Verbindungscode
+pub fn regeln_path(a: &Args) -> PathBuf {
+    #[cfg(windows)]
+    if a.config.is_none() {
+        return plat::dienst::data_dir().join("regeln.json");
+    }
+    config_path(a).with_file_name("regeln.json")
+}
+
+pub fn regeln(a: &Args) -> kvpn::regeln::Regeln {
+    kvpn::regeln::Regeln::load(&regeln_path(a))
+}
+
 /// Ordner fuer das Logo des Servers (logo.png, logo.id, Windows auch logo.ico)
 pub fn logo_dir(a: &Args) -> PathBuf {
     #[cfg(windows)]
@@ -477,6 +547,16 @@ fn main() {
     if let Ok(m) = std::env::var("KVPN_VORSCHAU") {
         gui::vorschau(&m);
         return;
+    }
+    // Schutz-Regeln aendern (ohne Fenster, ohne Admin); nur mit --vordergrund geht es danach weiter zum Verbinden
+    if !a.schutz.is_empty() {
+        konsole(true);
+        schutz_aendern(&a);
+        if !a.foreground {
+            #[cfg(windows)]
+            println!("Ein laufendes VPN uebernimmt das beim naechsten Verbinden (KroneVPN-Fenster: trennen und verbinden).");
+            std::process::exit(0);
+        }
     }
     if a.list_profiles {
         konsole(false);

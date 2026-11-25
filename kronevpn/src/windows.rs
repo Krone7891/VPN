@@ -13,6 +13,67 @@ use tokio::sync::mpsc;
 
 #[path = "dienst_windows.rs"]
 pub mod dienst;
+#[path = "notbremse_windows.rs"]
+mod notbremse;
+
+/// Notbremse (Kill-Switch) des Dienstes: bleibt ueber Neuverbindungen bestehen, bis sie ausgeschaltet wird oder das
+/// VPN pausiert (vertrautes Netz). (Adapter, Einstellung, Filter)
+static NB: Mutex<Option<(u64, String, notbremse::Notbremse)>> = Mutex::new(None);
+/// Index des KroneVPN-Adapters (fuer die Netz-Erkennung: der Tunnel zaehlt nicht als "Netz")
+static TUN_IDX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Notbremse aus (VPN pausiert bzw. ausgeschaltet)
+pub fn notbremse_aus() {
+    if NB.lock().unwrap().take().is_some() {
+        crate::say("Notbremse aus");
+    }
+}
+
+/// das Netz, in dem der PC gerade ist (fuer "automatisch schuetzen")
+pub fn netz_jetzt() -> kvpn::regeln::Netz {
+    let tun = TUN_IDX.load(std::sync::atomic::Ordering::Relaxed);
+    let wlan = cmd("netsh", &["wlan", "show", "interfaces"])
+        .ok()
+        .and_then(|o| {
+            // "    SSID                   : Heimnetz" (nicht "BSSID"); nur wenn verbunden
+            let connected = o.lines().any(|l| {
+                let t = l.trim().to_lowercase();
+                (t.starts_with("state") || t.starts_with("status")) && (t.ends_with(": connected") || t.ends_with(": verbunden"))
+            });
+            o.lines().find_map(|l| {
+                let t = l.trim_start();
+                t.strip_prefix("SSID").filter(|r| r.trim_start().starts_with(':')).map(|r| r.trim_start()[1..].trim().to_string())
+            })
+            .filter(|n| connected && !n.is_empty())
+        })
+        .unwrap_or_default();
+    kvpn::regeln::Netz { online: route::online(tun), wlan, router: route::router_mac(tun) }
+}
+
+/// Namen der Ausnahmen aufloesen (vor dem Einrichten der Routen: DNS laeuft dann noch nicht durch den Tunnel)
+fn ziele_aufloesen(names: &[String]) -> Vec<(IpAddr, u8)> {
+    use std::net::ToSocketAddrs;
+    let mut v = Vec::new();
+    for n in names {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let h = n.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((h.as_str(), 443).to_socket_addrs().map(|it| it.collect::<Vec<_>>()));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(4)) {
+            Ok(Ok(a)) => {
+                for x in a {
+                    let e = (x.ip(), if x.is_ipv4() { 32 } else { 128 });
+                    if !v.contains(&e) {
+                        v.push(e);
+                    }
+                }
+            }
+            _ => crate::say(&format!("Ausnahme {n}: Adresse nicht gefunden")),
+        }
+    }
+    v
+}
 
 const WINTUN_DLL: &[u8] = include_bytes!("../wintun/wintun.dll");
 const ADAPTER: &str = "KroneVPN";
@@ -102,6 +163,10 @@ pub struct Platform {
     idx: u32,
     /// gesetzte Umgehungsrouten: (Server, Gateway, Schnittstelle)
     bypass: Arc<Mutex<Vec<(IpAddr, IpAddr, u32)>>>,
+    /// Ausnahmen (Ziele am VPN vorbei): gesetzte Routen
+    ziele: Arc<Mutex<Vec<(IpAddr, u8)>>>,
+    /// Ende des Nachschlage-Threads fuer Namen in den Ausnahmen
+    ziele_stop: Arc<std::sync::atomic::AtomicBool>,
     full: bool,
 }
 
@@ -128,7 +193,12 @@ impl Platform {
             Err(_) => wintun::Adapter::create(&w, ADAPTER, ADAPTER, Some(GUID)).map_err(|e| format!("Netzwerkadapter anlegen: {e} (als Administrator starten)"))?,
         };
         let idx = adapter.get_adapter_index().map_err(|e| format!("Adapter-Index: {e}"))?;
+        TUN_IDX.store(idx, std::sync::atomic::Ordering::Relaxed);
         let i = idx.to_string();
+        let regeln = crate::regeln(a);
+        // Ausnahmen: Namen jetzt aufloesen (gleich laeuft DNS durch den Tunnel)
+        let (mut ziel_netze, ziel_namen) = regeln.ziele_aufteilen();
+        ziel_netze.extend(ziele_aufloesen(&ziel_namen));
         let (ip4, p4) = kvpn::util::parse_cidr(&cfg.ip4)?;
         let gw4 = match ip4 {
             IpAddr::V4(a) => std::net::Ipv4Addr::from((u32::from(a) & (!0u32 << (32 - p4))) + 1).to_string(),
@@ -188,6 +258,64 @@ impl Platform {
             let _ = cmd("ipconfig", &["/flushdns"]);
         }
         crate::say(&format!("Adapter {ADAPTER} (Index {idx}): {} {} – Routen: {}", cfg.ip4, cfg.ip6, routes.join(", ")));
+        // Ausnahmen: Routen am Tunnel vorbei
+        let mut gesetzt = Vec::new();
+        if full {
+            for (a, p) in &ziel_netze {
+                match route::bypass_net(*a, *p, idx) {
+                    Ok((nh, _)) => {
+                        gesetzt.push((*a, *p));
+                        crate::say(&format!("Ausnahme am VPN vorbei: {a}/{p} ueber {nh}"));
+                    }
+                    Err(e) => crate::say(&format!("Ausnahme {a}/{p}: {e}")),
+                }
+            }
+        }
+        // Notbremse (Kill-Switch): bleibt ueber Neuverbindungen bestehen
+        if regeln.notbremse && full {
+            let luid = unsafe { adapter.get_luid().Value };
+            let key = format!("{}|{:?}", regeln.lokal_erlaubt, ziel_netze);
+            let mut nb = NB.lock().unwrap();
+            if nb.as_ref().map(|(l, k, _)| *l != luid || *k != key).unwrap_or(true) {
+                *nb = None;
+                match notbremse::Notbremse::an(luid, regeln.lokal_erlaubt, &ziel_netze) {
+                    Ok(n) => {
+                        *nb = Some((luid, key, n));
+                        crate::say(&format!("Notbremse an: ohne VPN kein Internet{}", if regeln.lokal_erlaubt { " (lokales Netz erlaubt)" } else { "" }));
+                    }
+                    Err(e) => crate::say(&format!("Notbremse konnte nicht eingeschaltet werden: {e} – VPN laeuft ohne")),
+                }
+            }
+        } else {
+            drop(regeln);
+            notbremse_aus();
+        }
+        let ziele = Arc::new(Mutex::new(gesetzt));
+        let ziele_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // Namen in den Ausnahmen alle 10 Minuten neu nachschlagen (Adressen grosser Seiten wechseln)
+        if full && !ziel_namen.is_empty() {
+            let (z, stop) = (ziele.clone(), ziele_stop.clone());
+            std::thread::spawn(move || loop {
+                for _ in 0..600 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                }
+                let neu: Vec<(IpAddr, u8)> = ziele_aufloesen(&ziel_namen).into_iter().filter(|x| !z.lock().unwrap().contains(x)).collect();
+                if neu.is_empty() {
+                    continue;
+                }
+                for (a, p) in &neu {
+                    if route::bypass_net(*a, *p, idx).is_ok() {
+                        z.lock().unwrap().push((*a, *p));
+                    }
+                }
+                if let Some((_, _, n)) = NB.lock().unwrap().as_ref() {
+                    n.erlauben(&neu);
+                }
+            });
+        }
 
         let session = Arc::new(adapter.start_session(wintun::MAX_RING_CAPACITY).map_err(|e| format!("Wintun-Sitzung: {e}"))?);
         let (tx, rx) = mpsc::channel(4096);
@@ -202,7 +330,7 @@ impl Platform {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Platform { session, _adapter: adapter, reader: Mutex::new(Some(rx)), idx, bypass: Arc::new(Mutex::new(Vec::new())), full })
+        Ok(Platform { session, _adapter: adapter, reader: Mutex::new(Some(rx)), idx, bypass: Arc::new(Mutex::new(Vec::new())), ziele, ziele_stop, full })
     }
 
     pub fn writer(&self) -> Arc<dyn TunWriter> {
@@ -240,6 +368,10 @@ impl Platform {
     pub fn cleanup(&self) {
         for (a, _, _) in self.bypass.lock().unwrap().drain(..) {
             route::remove_host(a);
+        }
+        self.ziele_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for (a, p) in self.ziele.lock().unwrap().drain(..) {
+            route::remove_net(a, p);
         }
         let _ = self.session.shutdown();
         let _ = cmd("ipconfig", &["/flushdns"]);
@@ -314,14 +446,31 @@ mod route {
         (r.Connected != 0).then_some(r.Metric)
     }
 
-    fn is_host(r: &MIB_IPFORWARD_ROW2, a: IpAddr) -> bool {
-        let len = if a.is_ipv4() { 32 } else { 128 };
+    fn is_route(r: &MIB_IPFORWARD_ROW2, a: IpAddr, len: u8) -> bool {
         r.DestinationPrefix.PrefixLength == len && from_sockaddr(&r.DestinationPrefix.Prefix) == Some(a)
+    }
+
+    fn full(a: IpAddr) -> u8 {
+        if a.is_ipv4() { 32 } else { 128 }
+    }
+
+    /// Netz-Adresse (Host-Teil auf 0)
+    pub fn net_addr(a: IpAddr, prefix: u8) -> IpAddr {
+        match a {
+            IpAddr::V4(v) => IpAddr::V4(std::net::Ipv4Addr::from(u32::from(v) & if prefix == 0 { 0 } else { u32::MAX << (32 - prefix.min(32) as u32) })),
+            IpAddr::V6(v) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v) & if prefix == 0 { 0 } else { u128::MAX << (128 - prefix.min(128) as u32) })),
+        }
     }
 
     /// Host-Route zu `a` ueber das beste normale Standard-Gateway (nicht den Tunnel `tun`) setzen.
     /// Ergebnis: (Gateway, Schnittstellen-Index)
     pub fn bypass(a: IpAddr, tun: u32) -> Result<(IpAddr, u32), String> {
+        bypass_net(a, full(a), tun)
+    }
+
+    /// Route fuer ein Netz am Tunnel vorbei (Ausnahmen)
+    pub fn bypass_net(a: IpAddr, prefix: u8, tun: u32) -> Result<(IpAddr, u32), String> {
+        let a = net_addr(a, prefix);
         let fam = family(a);
         let rows = table(fam)?;
         let best = rows
@@ -333,7 +482,7 @@ mod route {
             .ok_or_else(|| format!("kein normales Standard-Gateway fuer {} gefunden", if a.is_ipv4() { "IPv4" } else { "IPv6" }))?;
         let nh = from_sockaddr(&best.NextHop).unwrap_or(IpAddr::from([0u8, 0, 0, 0]));
         // alte Host-Routen zum Server (z. B. ueber ein frueheres WLAN) entfernen
-        for r in rows.iter().filter(|r| is_host(r, a)) {
+        for r in rows.iter().filter(|r| is_route(r, a, prefix)) {
             if r.InterfaceIndex == best.InterfaceIndex && from_sockaddr(&r.NextHop) == Some(nh) {
                 return Ok((nh, best.InterfaceIndex));
             }
@@ -344,7 +493,7 @@ mod route {
         row.InterfaceLuid = best.InterfaceLuid;
         row.InterfaceIndex = best.InterfaceIndex;
         row.DestinationPrefix.Prefix = to_sockaddr(a);
-        row.DestinationPrefix.PrefixLength = if a.is_ipv4() { 32 } else { 128 };
+        row.DestinationPrefix.PrefixLength = prefix;
         row.NextHop = best.NextHop;
         row.Metric = 1;
         match unsafe { CreateIpForwardEntry2(&row) } {
@@ -355,11 +504,46 @@ mod route {
 
     /// Host-Routen zu `a` auf allen Schnittstellen entfernen
     pub fn remove_host(a: IpAddr) {
+        remove_net(a, full(a))
+    }
+
+    pub fn remove_net(a: IpAddr, prefix: u8) {
+        let a = net_addr(a, prefix);
         if let Ok(rows) = table(family(a)) {
-            for r in rows.iter().filter(|r| is_host(r, a)) {
+            for r in rows.iter().filter(|r| is_route(r, a, prefix)) {
                 unsafe { DeleteIpForwardEntry2(r) };
             }
         }
+    }
+
+    /// das Netz, in dem der PC gerade ist: MAC-Adresse des Routers (Standard-Gateway, nicht der Tunnel `tun`)
+    pub fn router_mac(tun: u32) -> String {
+        use windows_sys::Win32::NetworkManagement::IpHelper::{GetIpNetEntry2, MIB_IPNET_ROW2};
+        let Ok(rows) = table(AF_INET) else { return String::new() };
+        let Some(best) = rows
+            .iter()
+            .filter(|r| r.DestinationPrefix.PrefixLength == 0 && r.InterfaceIndex != tun)
+            .filter_map(|r| if_metric(AF_INET, r.InterfaceIndex).map(|m| (r.Metric.saturating_add(m), r)))
+            .min_by_key(|(m, _)| *m)
+            .map(|(_, r)| r)
+        else {
+            return String::new();
+        };
+        let mut n: MIB_IPNET_ROW2 = unsafe { std::mem::zeroed() };
+        n.Address = best.NextHop;
+        n.InterfaceIndex = best.InterfaceIndex;
+        n.InterfaceLuid = best.InterfaceLuid;
+        if unsafe { GetIpNetEntry2(&mut n) } != NO_ERROR || n.PhysicalAddressLength != 6 {
+            return String::new();
+        }
+        n.PhysicalAddress[..6].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+    }
+
+    /// ist der PC ueberhaupt mit einem Netz verbunden (Standard-Gateway ausserhalb des Tunnels)?
+    pub fn online(tun: u32) -> bool {
+        [AF_INET, AF_INET6].iter().any(|f| {
+            table(*f).map(|rows| rows.iter().any(|r| r.DestinationPrefix.PrefixLength == 0 && r.InterfaceIndex != tun && if_metric(*f, r.InterfaceIndex).is_some())).unwrap_or(false)
+        })
     }
 }
 

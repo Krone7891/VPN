@@ -19,6 +19,9 @@
 mod absturz;
 mod admin;
 mod config;
+mod dns;
+mod notify;
+mod totp;
 mod geo;
 mod netsetup;
 mod server;
@@ -48,7 +51,7 @@ const DEFAULT_CONFIG: &str = "/etc/krone-vpn/server.toml";
 
 fn usage() -> ! {
     eprintln!(
-        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
+        "KroneVPN Server {}\n\n  kvpn-server init --url wss://HOST/api/v1/stream\n  kvpn-server add <name> [--benutzer <name>] [--ablauf <datum|tage>]\n  kvpn-server remove <name>\n  kvpn-server list\n  kvpn-server benutzer [add|remove|sperren|entsperren|max] ...   Benutzerverwaltung (SQLite)\n  kvpn-server sperren|entsperren <geraet>   kvpn-server ablauf <geraet> <datum|tage|nie>\n  kvpn-server zuordnen <geraet> <benutzer>  kvpn-server verlauf [geraet]\n  kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--admin-vpn an|aus] [--standort an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--max N]\n  kvpn-server admin-passwort [--loeschen]   Passwort fuer Admin-Seite und Update-Quelle (fragt nach)\n  kvpn-server update-quelle [besitzer/name [zweig]]   GitHub-Repo fuer App-Updates anzeigen/aendern (Admin-Passwort)\n  kvpn-server bericht [JJJJ-MM]          Monatsbericht (Daten, Online-Zeit, Server-Laufzeit, Blocker)\n  kvpn-server zwei-faktor [an|aus]       zweiter Schritt fuer die Admin-Seite (Code aus Authenticator-App)\n  kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <geraet,passwort,start,update>|aus|test]\n  kvpn-server autostart [an]            pruefen, ob der VPN-Server beim Hochfahren mit startet (an = einschalten)\n  kvpn-server status                    Geraete mit App-Version und Update-Stand\n  kvpn-server standort <ip>             ungefaehrer Ort einer IP-Adresse (ipwho.is)\n  kvpn-server orte <geraet> [tage]      Standort-Verlauf (Bewegungen) [--gpx datei.gpx]\n  kvpn-server abstuerze [geraet]        Absturz-Protokolle der Apps (Ordner absturz-logs)\n  kvpn-server code <name>               Code + QR-Code erneut anzeigen\n  kvpn-server import <code>             Code eines Geraets merken (fuer 'code')\n  kvpn-server update [--ja]             neue App-Version von GitHub an die Geraete verteilen\n  kvpn-server password <passwort>\n  kvpn-server set <schluessel> <wert>   (z. B. vpn_name \"Potzplitz VPN\")\n  kvpn-server logo <bild.png>           eigenes Bild fuer die Webseiten\n  kvpn-server run\n\n  Optionen: --config <datei> (Standard {DEFAULT_CONFIG})",
         VERSION
     );
     std::process::exit(2)
@@ -105,6 +108,10 @@ fn main() {
         "logo" | "bild" => cmd_logo(&cfg_path, &args[1..]),
         "run" => cmd_run(cfg_path),
         "version" | "--version" => println!("{VERSION}"),
+        "autostart" | "systemstart" => cmd_autostart(&args[1..]),
+        "bericht" | "monatsbericht" | "report" => cmd_report(&cfg_path, &args[1..]),
+        "zwei-faktor" | "2fa" | "totp" => cmd_totp(&cfg_path, &args[1..]),
+        "benachrichtigung" | "benachrichtigungen" | "notify" => cmd_notify(&cfg_path, &args[1..]),
         _ => usage(),
     }
 }
@@ -502,6 +509,169 @@ fn cmd_password(path: &str, pw: &str) {
     println!("{}", if pw.is_empty() { "Passwort entfernt – Statistik nur noch aus Heimnetz/VPN" } else { "Passwort gesetzt" });
 }
 
+/// Text-Ausgabe eines Programms (leer bei Fehler)
+fn out_of(prog: &str, args: &[&str]) -> String {
+    std::process::Command::new(prog).args(args).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+fn cmd_report(path: &str, args: &[String]) {
+    let cfg = Config::load(path).unwrap_or_else(|e| die(e));
+    let h = stats::Hist::new(stats::Hist::load(&format!("{}/stats.json", cfg.state_dir)));
+    let now = kvpn::util::now_secs();
+    let months = h.months();
+    let m = match args.first() {
+        Some(m) if m.len() == 7 && m.as_bytes()[4] == b'-' => m.clone(),
+        Some(x) => die(format!("Monat bitte als JJJJ-MM, z. B. {} (nicht {x})", &stats::local_date(now)[..7])),
+        None => stats::local_date(now)[..7].to_string(),
+    };
+    println!("{}", stats::bericht_text(&h.bericht(&m, now), cfg.display_name()));
+    if months.len() > 1 {
+        println!("\nweitere Monate: {}", months.iter().filter(|x| **x != m).cloned().collect::<Vec<_>>().join(", "));
+    }
+    println!("(Werte des laufenden Servers werden jede Minute gespeichert)");
+}
+
+fn cmd_totp(path: &str, args: &[String]) {
+    let mut c = Config::load(path).unwrap_or_else(|e| die(e));
+    match args.first().map(|s| s.as_str()) {
+        None | Some("status") => {
+            println!("Zweiter Schritt fuer die Admin-Seite im VPN: {}", if c.admin_totp.is_empty() { "aus" } else { "an (Passwort + Code aus der Authenticator-App)" });
+            if c.admin_totp.is_empty() {
+                println!("Einschalten: kvpn-server zwei-faktor an");
+            }
+        }
+        Some("aus") | Some("off") => {
+            c.admin_totp.clear();
+            c.save(path).unwrap_or_else(|e| die(e));
+            println!("Zweiter Schritt aus – Anmeldung nur noch mit dem Passwort.");
+        }
+        Some("an") | Some("on") => {
+            let secret = totp::new_secret();
+            let uri = totp::uri(&secret, c.display_name());
+            println!("Mit der Authenticator-App (Google/Microsoft Authenticator, Aegis, 2FAS ...) scannen:\n");
+            println!("{}", qr(&uri));
+            let grouped: Vec<String> = secret.as_bytes().chunks(4).map(|x| String::from_utf8_lossy(x).into_owned()).collect();
+            println!("oder von Hand eintragen: {}\n", grouped.join(" "));
+            if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                die("bitte im Terminal ausfuehren (zum Bestaetigen wird ein Code abgefragt)");
+            }
+            for _ in 0..3 {
+                let code = ask("Angezeigten 6-stelligen Code eingeben", "");
+                if totp::verify_once(&secret, &code) {
+                    c.admin_totp = secret;
+                    c.save(path).unwrap_or_else(|e| die(e));
+                    println!("Zweiter Schritt an – Anmeldung im VPN ab jetzt mit Passwort + Code (alle Browser sind abgemeldet).");
+                    println!("Handy verloren? Auf dem Server: kvpn-server zwei-faktor aus");
+                    return;
+                }
+                println!("  Code passt nicht (Uhrzeit am Handy richtig?) – nochmal");
+            }
+            die("nicht eingeschaltet");
+        }
+        Some(x) => die(format!("unbekannt: {x} – kvpn-server zwei-faktor [an|aus]")),
+    }
+}
+
+fn cmd_notify(path: &str, args: &[String]) {
+    let mut c = Config::load(path).unwrap_or_else(|e| die(e));
+    let a: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    match a.as_slice() {
+        [] | ["status"] => {
+            println!("ntfy:     {}{}", if c.notify_ntfy.is_empty() { "–".to_string() } else { c.notify_ntfy.clone() }, if c.notify_ntfy_token.is_empty() { "" } else { " (mit Zugang)" });
+            println!("Telegram: {}", if c.notify_telegram_token.is_empty() { "–".to_string() } else { format!("Bot eingetragen, Chat {}", c.notify_telegram_chat) });
+            println!("melden:   {}", if c.notify_on.is_empty() { "nichts".to_string() } else { c.notify_on.join(", ") });
+            if !notify::configured(&c) {
+                println!("\nEinrichten, z. B.: kvpn-server benachrichtigung ntfy https://ntfy.sh/<langes-geheimes-thema>\n  (App \"ntfy\" aufs Handy, dasselbe Thema abonnieren)");
+            }
+            return;
+        }
+        ["ntfy", url] => c.set("notify_ntfy", url).unwrap_or_else(|e| die(e)),
+        ["ntfy", url, token] => {
+            c.set("notify_ntfy", url).unwrap_or_else(|e| die(e));
+            c.set("notify_ntfy_token", token).unwrap_or_else(|e| die(e));
+        }
+        // ntfy des HomeServers (/etc/hs-notify.conf), eigenes Thema "VPN"
+        ["homeserver", rest @ ..] => {
+            let falls_fehlt = rest.contains(&"--falls-fehlt");
+            if falls_fehlt && notify::configured(&c) {
+                return;
+            }
+            let thema = rest.iter().find(|x| !x.starts_with("--")).copied().unwrap_or("VPN");
+            match notify::homeserver(thema) {
+                Ok((url, token)) => {
+                    c.set("notify_ntfy", &url).unwrap_or_else(|e| die(e));
+                    c.set("notify_ntfy_token", &token).unwrap_or_else(|e| die(e));
+                    println!("Benachrichtigungen ueber den ntfy des HomeServers, Thema \"{thema}\": {url}");
+                }
+                Err(e) if falls_fehlt => {
+                    println!("(Benachrichtigungen: {e})");
+                    return;
+                }
+                Err(e) => die(e),
+            }
+        }
+        ["telegram", token, chat] => {
+            c.set("notify_telegram_token", token).unwrap_or_else(|e| die(e));
+            c.set("notify_telegram_chat", chat).unwrap_or_else(|e| die(e));
+        }
+        ["melden", list] => c.set("notify_on", list).unwrap_or_else(|e| die(e)),
+        ["aus"] | ["off"] => {
+            c.notify_ntfy.clear();
+            c.notify_ntfy_token.clear();
+            c.notify_telegram_token.clear();
+            c.notify_telegram_chat.clear();
+        }
+        ["test"] => {
+            match notify::test(&c) {
+                Ok(m) => println!("Testnachricht {m}"),
+                Err(e) => die(format!("Testnachricht nicht gesendet: {e}")),
+            }
+            return;
+        }
+        _ => die("Aufruf: kvpn-server benachrichtigung [homeserver [thema]|ntfy <adresse> [token]|telegram <bot-schluessel> <chat-id>|melden <liste>|aus|test]"),
+    }
+    c.save(path).unwrap_or_else(|e| die(e));
+    println!("Gespeichert. Probe: kvpn-server benachrichtigung test");
+}
+
+/// Startet der VPN-Server beim Hochfahren mit? (Text fuer die Anzeige, alles in Ordnung?)
+pub fn autostart_state() -> (String, bool) {
+    let docker_policy = out_of("docker", &["inspect", "-f", "{{.HostConfig.RestartPolicy.Name}}", "krone-vpn"]);
+    if !docker_policy.is_empty() {
+        let docker_on = out_of("systemctl", &["is-enabled", "docker"]);
+        let ok = matches!(docker_policy.as_str(), "always" | "unless-stopped") && docker_on == "enabled";
+        return (format!("Docker-Container krone-vpn: Neustart-Regel \"{docker_policy}\", Docker beim Hochfahren: {docker_on}"), ok);
+    }
+    let en = out_of("systemctl", &["is-enabled", "krone-vpn"]);
+    let act = out_of("systemctl", &["is-active", "krone-vpn"]);
+    if en.is_empty() || en == "not-found" {
+        return ("kein systemd-Dienst krone-vpn gefunden (Server von Hand gestartet?)".into(), false);
+    }
+    (format!("systemd-Dienst krone-vpn: beim Hochfahren {en}, jetzt {act}"), en == "enabled")
+}
+
+fn cmd_autostart(args: &[String]) {
+    let (text, ok) = autostart_state();
+    println!("{text}");
+    if ok {
+        println!("OK – der VPN-Server startet beim Hochfahren von selbst und nach einem Absturz neu.");
+        return;
+    }
+    if !args.first().map(|a| config::on_off(a).unwrap_or(false)).unwrap_or(false) {
+        println!("ACHTUNG: startet beim Hochfahren NICHT von selbst. Einschalten: kvpn-server autostart an");
+        std::process::exit(1);
+    }
+    if text.starts_with("Docker") {
+        let _ = std::process::Command::new("docker").args(["update", "--restart", "unless-stopped", "krone-vpn"]).status();
+        let _ = std::process::Command::new("systemctl").args(["enable", "docker"]).status();
+    } else {
+        let _ = std::process::Command::new("systemctl").args(["enable", "krone-vpn"]).status();
+    }
+    let (text, ok) = autostart_state();
+    println!("{text}");
+    println!("{}", if ok { "Eingeschaltet – startet ab jetzt beim Hochfahren mit." } else { "Konnte es nicht einschalten (als root ausfuehren?)" });
+}
+
 fn cmd_run(cfg_path: String) {
     let cfg = Config::load(&cfg_path).unwrap_or_else(|e| die(e));
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
@@ -530,6 +700,36 @@ fn cmd_run(cfg_path: String) {
         let sh = server::Shared::new(cfg_path.clone(), cfg.clone(), tuns);
         server::spawn_tun_readers(&sh);
         server::spawn_background(&sh);
+        notify::init_seen(&cfg);
+        notify::event_cfg(&cfg, notify::Ereignis::Start { version: VERSION.to_string() });
+        // eigener DNS im Tunnel: Werbe-Blocker + Namen im Heimnetz
+        if cfg.dns_proxy {
+            crate::dns::load_cached(&sh.dns, &cfg.state_dir);
+            let mut addrs = vec![std::net::IpAddr::V4(cfg.ip4(1))];
+            if let Some(a6) = cfg.ip6(1) {
+                addrs.push(std::net::IpAddr::V6(a6));
+            }
+            let ok = crate::dns::start(sh.dns.clone(), addrs, cfg.dns.clone()).await;
+            if !ok.is_empty() && cfg.nat {
+                netsetup::dns_redirect(&cfg, &ok, true);
+            }
+            let shd = sh.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(if shd.dns.list_len() == 0 { 3 } else { 120 })).await;
+                loop {
+                    let c = shd.cfg();
+                    if c.adblock && c.dns_proxy {
+                        let d = shd.dns.clone();
+                        match tokio::task::spawn_blocking(move || crate::dns::refresh(&d, &c.state_dir, &c.adblock_lists)).await {
+                            Ok(Ok(n)) => log!("Werbe-Blocker: Sperrliste geladen ({n} Namen)"),
+                            Ok(Err(e)) => log!("Werbe-Blocker: Sperrliste nicht geladen ({e}) – nehme die gespeicherte"),
+                            Err(_) => {}
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+                }
+            });
+        }
 
         let tls = if !cfg.tls_cert.is_empty() {
             Some(load_tls(&cfg.tls_cert, &cfg.tls_key).unwrap_or_else(|e| die(e)))
@@ -549,6 +749,13 @@ fn cmd_run(cfg_path: String) {
             if cfg.users { "an (SQLite)" } else { "aus" },
             cfg.public_url
         );
+        // unter systemd: startet der Dienst auch beim Hochfahren? (sonst waere das VPN nach einem Neustart weg)
+        if std::env::var_os("INVOCATION_ID").is_some() {
+            let en = out_of("systemctl", &["is-enabled", "krone-vpn"]);
+            if !en.is_empty() && en != "enabled" {
+                log!("ACHTUNG: Dienst krone-vpn startet beim Hochfahren nicht mit ({en}) – einschalten: kvpn-server autostart an");
+            }
+        }
         // lokale Webseite: http://localhost:8180 (Statistik + Downloads, nur von diesem Rechner, ohne Passwort)
         if !cfg.local_listen.trim().is_empty() {
             match tokio::net::TcpListener::bind(&cfg.local_listen).await {
@@ -630,6 +837,10 @@ fn cmd_run(cfg_path: String) {
         }
         log!("beende ...");
         server::save_stats(&sh);
+        let dns_on: Vec<std::net::SocketAddr> = sh.dns.listening.lock().unwrap().clone();
+        if sh.cfg().nat {
+            netsetup::dns_redirect(&sh.cfg(), &dns_on, false);
+        }
         netsetup::teardown(&sh.cfg());
     });
 }
@@ -819,6 +1030,9 @@ fn cmd_settings(path: &str, args: &[String]) {
         (&["--leistung", "--leistungsmodus", "--performance"][..], "performance"),
         (&["--admin-vpn", "--admin"][..], "admin_vpn"),
         (&["--standort", "--geo"][..], "geo"),
+        (&["--werbeblocker", "--blocker", "--adblock"][..], "adblock"),
+        (&["--heimnetz", "--lan"][..], "lan_access"),
+        (&["--dns", "--eigener-dns"][..], "dns_proxy"),
         (&["--max", "--max-geraete"][..], "max_devices"),
     ] {
         if let Some(v) = take_opt(&mut args, keys) {
@@ -826,7 +1040,7 @@ fn cmd_settings(path: &str, args: &[String]) {
         }
     }
     if let Some(x) = args.first() {
-        die(format!("unbekannt: {x} – Aufruf: kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--max N]"));
+        die(format!("unbekannt: {x} – Aufruf: kvpn-server einstellungen [--benutzer an|aus] [--aes256 an|aus] [--leistung an|aus] [--werbeblocker an|aus] [--heimnetz an|aus] [--dns an|aus] [--max N]"));
     }
     let cfg = Config::load(path).unwrap_or_else(|e| die(e));
     let onoff = |b: bool| if b { "an" } else { "aus" };
@@ -843,6 +1057,8 @@ fn cmd_settings(path: &str, args: &[String]) {
                 onoff(cfg.admin_vpn).to_string(),
             ),
             ("geo", "Standort der Geraete auf der Admin-Seite (ungefaehr aus der IP, Abfrage bei ipwho.is)", onoff(cfg.geo).to_string()),
+            ("adblock", "Werbe- und Tracker-Blocker fuer alle Geraete im VPN (wie Pi-hole)", onoff(cfg.adblock).to_string()),
+            ("lan_access", "Geraete im VPN duerfen ins Heimnetz (Drucker, NAS, ... auch mit Namen)", onoff(cfg.lan_access).to_string()),
             ("max_devices", "Hoechstzahl Geraete", cfg.max_devices.to_string()),
         ] {
             loop {

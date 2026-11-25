@@ -11,6 +11,37 @@ Gerät ── TLS 1.3 :443 ──► (Firewall / Proxy) ──► dein Server �
 ```
 
 
+## Neu in Apps 1.3.0 / Server 1.3.0
+
+**Server**
+- **Werbe- & Tracker-Blocker** (wie Pi-hole, Standard an): Der Server beantwortet die DNS-Anfragen der Geräte
+  selbst und blockt Namen aus einer Sperrliste (StevenBlack, täglich neu). Wirkt auch bei alten Apps (DNS wird
+  umgeleitet). Eigene Sperren/Ausnahmen und Listen auf der Admin-Seite; Zähler, meistgeblockte Namen und je Gerät.
+  `kvpn-server einstellungen --werbeblocker an|aus`
+- **Heimnetz**: Geräte im VPN erreichen Drucker, NAS usw. im Netz des Servers – auch mit Namen (`nas.fritz.box`
+  oder kurz `nas`). Abschaltbar: `kvpn-server einstellungen --heimnetz aus` (dann nur Internet).
+- **Zweiter Schritt** für die Admin-Seite im VPN: Passwort + Code aus einer Authenticator-App (TOTP, RFC 6238).
+  Einrichten auf der Admin-Seite (QR-Code) oder `kvpn-server zwei-faktor an`; Notfall: `kvpn-server zwei-faktor aus`.
+- **Benachrichtigungen aufs Handy** über **ntfy** (ntfy.sh oder eigener ntfy-Server, auch mit Zugang/Token) oder Telegram: neues Gerät, falsches Admin-Passwort, Server gestartet, neue App-Version,
+  Monatsbericht. `kvpn-server benachrichtigung ntfy https://ntfy.sh/<geheimes-thema>` · `… test`
+- **Monatsbericht**: Daten, Online-Zeit und Verbindungen je Gerät, Laufzeit des Servers, geblockte Anfragen – auf
+  der Admin-Seite (auch als CSV), mit `kvpn-server bericht [JJJJ-MM]` und am Monatsanfang als Benachrichtigung.
+- **Start beim Hochfahren** prüfen/einschalten: `kvpn-server autostart [an]` (auch auf der Admin-Seite); der
+  Dienst gibt beim Hochfahren nicht mehr auf, wenn das Netz noch nicht da ist.
+
+**Apps**
+- **Notbremse (Kill-Switch)**: Fällt das VPN aus, geht nichts mehr unverschlüsselt ins Internet.
+  - PC (Windows): Filter der Windows-Filterplattform (wie WireGuard), Fenster → **Schutz**. Lokales Netz wahlweise erlaubt.
+  - Android: über die System-Einstellung „Durchgehend aktives VPN“ + „Verbindungen ohne VPN blockieren“ – die App
+    zeigt den Stand und führt dorthin (App → **Schutz**).
+  - Linux: iptables (`kronevpn --notbremse an`).
+- **Automatisch schützen**: In fremden WLANs und im Mobilfunk verbindet das VPN von selbst, in vertrauten Netzen
+  (z. B. zu Hause) pausiert es. Android: WLAN-Name; PC: WLAN-Name oder Router des Netzes.
+- **Am VPN vorbei**: Android: einzelne Apps wählen. PC: Ziele (Namen, Adressen, Netze) – einzelne Programme gehen
+  unter Windows nur mit eigenem Treiber.
+- Nach einem **App-Update** verbindet sich das VPN sicher wieder von selbst (auch wenn Android es beim Austausch kurz entzieht).
+- Ändert sich die Adresse des Servers (DynDNS) während einer Unterbrechung, fragt die App sie direkt am Tunnel vorbei nach.
+
 ## Neu in Apps 1.2.0 / Server 1.2.1: eigenes Logo überall
 
 - Ein hochgeladenes Logo (Admin-Seite oder `kvpn-server logo bild.png`) erscheint jetzt **auch in den Apps**: Der

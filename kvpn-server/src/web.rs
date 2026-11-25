@@ -235,6 +235,12 @@ pub async fn handle<S>(
         }
         let mut j = data_json(sh);
         j["local"] = json!(local);
+        // welche Namen geblockt wurden, verraet etwas ueber das Surfen: nur auf der lokalen bzw. Admin-Seite
+        if !local {
+            j["dns"]["top"] = json!([]);
+            j["dns"]["per"] = json!({});
+            j["berichte"] = json!([]);
+        }
         // ungefaehrer Standort nur auf der lokalen bzw. Admin-Seite
         let cfg = sh.cfg();
         if local && cfg.geo {
@@ -362,17 +368,27 @@ fn can_restart() -> bool {
 
 fn settings_json(sh: &Shared) -> serde_json::Value {
     let c = sh.cfg();
+    let (t, ok) = crate::autostart_state();
+    let autostart = json!({"text": t, "ok": ok});
     json!({
         "ok": true,
         "users": c.users, "aes256": c.aes256, "performance": c.performance, "admin_vpn": c.admin_vpn, "geo": c.geo,
         "admin_url": c.admin_addr().map(|a| format!("http://{a}")).unwrap_or_default(),
         "admin_password_set": !c.admin_password.is_empty(),
+        "totp": !c.admin_totp.is_empty(),
+        "notify_ntfy": c.notify_ntfy, "notify_ntfy_token": !c.notify_ntfy_token.is_empty(), "notify_telegram": !c.notify_telegram_token.is_empty(), "notify_telegram_chat": c.notify_telegram_chat,
+        "notify_on": c.notify_on,
         // Zugangsdaten fuer die WLAN-Ortung: nur ob gesetzt, nie der Wert
         "google_geo_key": !c.google_geo_key.is_empty(), "wigle_api": !c.wigle_api.is_empty(),
         "max_devices": c.max_devices, "max_possible": c.capacity().unwrap_or(0), "devices": c.device_count(),
         "vpn_name": c.display_name(),
         "update_repo": c.update_repo, "update_branch": c.update_branch, "server_version": crate::VERSION,
-        "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot,
+        "dns_proxy": c.dns_proxy, "adblock": c.adblock, "lan_access": c.lan_access,
+        "autostart": autostart,
+        "dns_block": c.dns_block.join("\n"), "dns_allow": c.dns_allow.join("\n"), "adblock_lists": c.adblock_lists.join("\n"),
+        "dns_running": !sh.dns.listening.lock().unwrap().is_empty(),
+        "lan_nets": crate::netsetup::lan_nets_cached(&c),
+        "restart_needed": (c.performance, c.admin_addr().is_some()) != sh.boot || c.dns_proxy != sh.dns_boot,
         "can_restart": can_restart(),
         "msg": "",
     })
@@ -405,10 +421,73 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
             msgs.push(if on { "Benutzerverwaltung an".into() } else { "Benutzerverwaltung aus".into() });
         }
     }
+    // zweiter Schritt (Authenticator-App): einrichten -> mit erstem Code bestaetigen; ausschalten nur mit gueltigem Code
+    if flag("totp_setup") == Some(true) {
+        let secret = crate::totp::new_secret();
+        let uri = crate::totp::uri(&secret, sh.cfg().display_name());
+        *crate::totp::PENDING.lock().unwrap() = Some((secret.clone(), now_secs()));
+        let svg = qrcode::QrCode::new(uri.as_bytes())
+            .map(|q| q.render::<qrcode::render::svg::Color>().min_dimensions(200, 200).quiet_zone(true).build())
+            .unwrap_or_default();
+        let mut v = settings_json(sh);
+        v["totp_new"] = json!({"secret": secret, "uri": uri, "svg": svg});
+        v["msg"] = json!("Mit der Authenticator-App scannen und den angezeigten Code eingeben");
+        return Ok((v, false));
+    }
+    if let Some(code) = text("totp_enable") {
+        let pending = crate::totp::PENDING.lock().unwrap().clone();
+        let Some((secret, t)) = pending.filter(|(_, t)| now_secs().saturating_sub(*t) < 900) else {
+            return Err("Einrichtung abgelaufen – bitte nochmal auf „Einrichten“".into());
+        };
+        let _ = t;
+        if !crate::totp::verify_once(&secret, code) {
+            return Err("Code passt nicht – Uhrzeit am Handy richtig? Nächsten Code eingeben".into());
+        }
+        let mut c = crate::config::Config::load(path)?;
+        c.admin_totp = secret;
+        c.save(path)?;
+        *crate::totp::PENDING.lock().unwrap() = None;
+        sh.reload();
+        crate::log!("Webseite: zweiter Schritt (Authenticator-App) eingeschaltet");
+        let mut v = settings_json(sh);
+        v["msg"] = json!("Zweiter Schritt an ✓ – ab jetzt braucht die Anmeldung im VPN Passwort + Code");
+        return Ok((v, true));
+    }
+    if flag("totp_disable") == Some(true) {
+        let c = sh.cfg();
+        if !c.admin_totp.is_empty() && !text("totp_code").map(|x| crate::totp::verify_once(&c.admin_totp, x)).unwrap_or(false) {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            return Err("Zum Ausschalten bitte einen gültigen Code aus der Authenticator-App eingeben".into());
+        }
+        let mut c = crate::config::Config::load(path)?;
+        c.admin_totp.clear();
+        c.save(path)?;
+        sh.reload();
+        crate::log!("Webseite: zweiter Schritt (Authenticator-App) ausgeschaltet");
+        let mut v = settings_json(sh);
+        v["msg"] = json!("Zweiter Schritt aus");
+        return Ok((v, true));
+    }
+    if flag("notify_test") == Some(true) {
+        let mut v = settings_json(sh);
+        v["msg"] = json!(match crate::notify::test(&sh.cfg()) {
+            Ok(m) => format!("Testnachricht {m}"),
+            Err(e) => return Err(format!("Testnachricht nicht gesendet: {e}")),
+        });
+        return Ok((v, false));
+    }
     let mut c = crate::config::Config::load(path)?;
     let before = c.clone();
     let mut pw_changed = false;
-    for (k, v) in [("aes256", flag("aes256")), ("performance", flag("performance")), ("admin_vpn", flag("admin_vpn")), ("geo", flag("geo"))] {
+    for (k, v) in [
+        ("aes256", flag("aes256")),
+        ("performance", flag("performance")),
+        ("admin_vpn", flag("admin_vpn")),
+        ("geo", flag("geo")),
+        ("dns_proxy", flag("dns_proxy")),
+        ("adblock", flag("adblock")),
+        ("lan_access", flag("lan_access")),
+    ] {
         if let Some(v) = v {
             c.set(k, if v { "an" } else { "aus" })?;
         }
@@ -420,6 +499,28 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     if let Some(n) = body.get("vpn_name").and_then(|v| v.as_str()) {
         if n.trim() != c.display_name() {
             c.set("vpn_name", n)?;
+        }
+    }
+    // Benachrichtigungen: ntfy-Adresse und Chat-ID ("" = entfernen), Bot-Schluessel ("" = so lassen, "aus" = entfernen)
+    for k in ["notify_ntfy", "notify_telegram_chat"] {
+        if let Some(v) = body.get(k).and_then(|v| v.as_str()) {
+            c.set(k, v)?;
+        }
+    }
+    if let Some(v) = text("notify_ntfy_token") {
+        c.set("notify_ntfy_token", v)?;
+    }
+    if let Some(v) = text("notify_telegram_token") {
+        c.set("notify_telegram_token", v)?;
+    }
+    if let Some(list) = body.get("notify_on").and_then(|v| v.as_array()) {
+        let l: Vec<&str> = list.iter().filter_map(|x| x.as_str()).collect();
+        c.set("notify_on", &if l.is_empty() { "nichts".to_string() } else { l.join(",") })?;
+    }
+    // eigene Sperren/Ausnahmen/Sperrlisten des Werbe-Blockers ("" = leeren)
+    for k in ["dns_block", "dns_allow", "adblock_lists"] {
+        if let Some(v) = body.get(k).and_then(|v| v.as_str()) {
+            c.set(k, v)?;
         }
     }
     // Zugangsdaten fuer die WLAN-Ortung: "" = so lassen, "aus" = entfernen
@@ -457,6 +558,29 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
     if c.wigle_api != before.wigle_api {
         msgs.push(format!("WiGLE {}", if c.wigle_api.is_empty() { "entfernt" } else { "eingetragen" }));
     }
+    if c.notify_ntfy != before.notify_ntfy || c.notify_ntfy_token != before.notify_ntfy_token || c.notify_telegram_token != before.notify_telegram_token || c.notify_telegram_chat != before.notify_telegram_chat || c.notify_on != before.notify_on {
+        msgs.push(if crate::notify::configured(&c) { "Benachrichtigungen eingerichtet".to_string() } else { "Benachrichtigungen aus".to_string() });
+    }
+    if c.dns_proxy != before.dns_proxy {
+        msgs.push(format!("eigener DNS {} (gilt nach Neustart)", onoff(c.dns_proxy)));
+    }
+    if c.adblock != before.adblock {
+        msgs.push(format!("Werbe-Blocker {}", onoff(c.adblock)));
+    }
+    if c.lan_access != before.lan_access {
+        msgs.push(format!("Heimnetz-Zugriff {}", onoff(c.lan_access)));
+    }
+    if c.dns_block != before.dns_block || c.dns_allow != before.dns_allow {
+        msgs.push(format!("{} eigene Sperren, {} Ausnahmen", c.dns_block.len(), c.dns_allow.len()));
+    }
+    if c.adblock_lists != before.adblock_lists {
+        msgs.push(format!("{} Sperrliste(n) – werden jetzt geladen", c.adblock_lists.len()));
+        let (d, st, lists) = (sh.dns.clone(), c.state_dir.clone(), c.adblock_lists.clone());
+        std::thread::spawn(move || match crate::dns::refresh(&d, &st, &lists) {
+            Ok(n) => crate::log!("Werbe-Blocker: Sperrliste geladen ({n} Namen)"),
+            Err(e) => crate::log!("Werbe-Blocker: Sperrliste nicht geladen ({e})"),
+        });
+    }
     if c.max_devices != before.max_devices {
         msgs.push(format!("höchstens {} Geräte", c.max_devices));
     }
@@ -478,11 +602,13 @@ fn settings(sh: &Shared, body: &serde_json::Value) -> Result<(serde_json::Value,
 
 // ------------------------------------------------------------------ Admin-Seite im VPN (noch nicht angemeldet)
 
-async fn read_pw<S: AsyncRead + Unpin>(s: &mut S, headers: &HashMap<String, String>) -> String {
+/// Anmeldedaten: (Passwort, Einmal-Code der Authenticator-App)
+async fn read_pw<S: AsyncRead + Unpin>(s: &mut S, headers: &HashMap<String, String>) -> (String, String) {
     let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0).min(2048);
     let mut body = vec![0u8; len];
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), s.read_exact(&mut body)).await;
-    serde_json::from_slice::<serde_json::Value>(&body).ok().and_then(|v| v["pw"].as_str().map(String::from)).unwrap_or_default()
+    let v = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+    (v["pw"].as_str().unwrap_or("").to_string(), v["code"].as_str().unwrap_or("").to_string())
 }
 
 fn admin_cookie(cfg: &crate::config::Config) -> String {
@@ -492,11 +618,11 @@ fn admin_cookie(cfg: &crate::config::Config) -> String {
 async fn admin_gate<S: AsyncRead + AsyncWrite + Unpin>(sh: &Arc<Shared>, s: &mut S, method: &str, p: &str, headers: &HashMap<String, String>) {
     let cfg = sh.cfg();
     if p.ends_with("/data.json") || p == "data.json" {
-        let b = json!({"login": true, "admin": true, "setup": cfg.admin_password.is_empty(), "password_set": !cfg.admin_password.is_empty()}).to_string();
+        let b = json!({"login": true, "admin": true, "setup": cfg.admin_password.is_empty(), "password_set": !cfg.admin_password.is_empty(), "totp": !cfg.admin_totp.is_empty()}).to_string();
         return respond(s, "401 Unauthorized", "application/json; charset=utf-8", "", b.as_bytes()).await;
     }
     if p.ends_with("/login") && method == "POST" {
-        let pw = read_pw(s, headers).await;
+        let (pw, code) = read_pw(s, headers).await;
         if !login_allowed(sh) {
             return respond(s, "429 Too Many Requests", "application/json", "", br#"{"ok":false,"err":"Zu viele Versuche - bitte 1 Minute warten"}"#).await;
         }
@@ -507,13 +633,28 @@ async fn admin_gate<S: AsyncRead + AsyncWrite + Unpin>(sh: &Arc<Shared>, s: &mut
         if !ok {
             login_failed(sh);
             crate::log!("Admin-Seite im VPN: falsches Passwort");
+            crate::notify::event(sh, crate::notify::Ereignis::FalschesPasswort);
             tokio::time::sleep(std::time::Duration::from_millis(800)).await;
             return respond(s, "200 OK", "application/json", "", br#"{"ok":false,"err":"Falsches Passwort"}"#).await;
         }
+        // zweiter Schritt: Code aus der Authenticator-App
+        if !cfg.admin_totp.is_empty() {
+            if code.trim().is_empty() {
+                return respond(s, "200 OK", "application/json", "", r#"{"ok":false,"need_code":true,"err":"Bitte den 6-stelligen Code aus der Authenticator-App eingeben"}"#.as_bytes()).await;
+            }
+            if !crate::totp::verify_once(&cfg.admin_totp, &code) {
+                login_failed(sh);
+                crate::log!("Admin-Seite im VPN: falscher Einmal-Code");
+                crate::notify::event(sh, crate::notify::Ereignis::FalschesPasswort);
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                return respond(s, "200 OK", "application/json", "", r#"{"ok":false,"need_code":true,"err":"Code falsch oder schon benutzt – nächsten Code abwarten"}"#.as_bytes()).await;
+            }
+        }
+        crate::log!("Admin-Seite im VPN: angemeldet{}", if cfg.admin_totp.is_empty() { "" } else { " (mit Einmal-Code)" });
         return respond(s, "200 OK", "application/json", &admin_cookie(&cfg), br#"{"ok":true}"#).await;
     }
     if p.ends_with("/admin-setup") && method == "POST" {
-        let pw = read_pw(s, headers).await;
+        let (pw, _) = read_pw(s, headers).await;
         if !cfg.admin_password.is_empty() {
             return respond(s, "200 OK", "application/json", "", br#"{"ok":false,"err":"Es ist schon ein Passwort festgelegt - bitte anmelden"}"#).await;
         }
@@ -870,13 +1011,37 @@ pub fn data_json(sh: &Shared) -> serde_json::Value {
         })
         .collect();
     let up = now.saturating_sub(sh.started).max(1);
+    // Monatsbericht: die letzten 13 Monate
+    let berichte: Vec<_> = h.months().iter().take(13).map(|m| h.bericht(m, now)).collect();
+    // DNS je Geraet (Tunnel-Adresse -> Name)
+    let per_ip = sh.dns.per_ip();
+    let mut dns_dev = serde_json::Map::new();
+    for p in &peers {
+        let mut q = (0u64, 0u64);
+        for ip in [Some(std::net::IpAddr::V4(cfg.ip4(p.peer.index))), cfg.ip6(p.peer.index).map(std::net::IpAddr::V6)].into_iter().flatten() {
+            if let Some(v) = per_ip.get(&ip) {
+                q.0 += v.0;
+                q.1 += v.1;
+            }
+        }
+        dns_dev.insert(p.peer.name.clone(), json!([q.0, q.1]));
+    }
+    let dns = json!({
+        "running": !sh.dns.listening.lock().unwrap().is_empty(), "adblock": cfg.adblock && cfg.dns_proxy,
+        "queries": sh.dns.total.queries.load(Relaxed), "blocked": sh.dns.total.blocked.load(Relaxed),
+        "list": sh.dns.list_info.lock().unwrap().clone(), "list_len": sh.dns.list_len(),
+        "top": sh.dns.top(15), "per": dns_dev,
+        "lan_access": cfg.lan_access, "lan": crate::netsetup::lan_nets_cached(&cfg),
+    });
     json!({
         "now": now,
+        "dns": dns,
+        "berichte": berichte,
         "server": {
             "version": crate::VERSION, "name": cfg.display_name(), "logo": logo_version(sh), "downloads": !cfg.downloads_dir.is_empty(), "started": sh.started, "queues": sh.queues,
             "cores": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
             "admin_url": cfg.admin_addr().map(|a| format!("http://{a}/")).unwrap_or_default(),
-            "url": cfg.public_url, "tun": cfg.tun, "net4": cfg.net4, "net6": cfg.net6, "mtu": cfg.mtu,
+            "url": cfg.public_url, "dns": cfg.dns, "tun": cfg.tun, "net4": cfg.net4, "net6": cfg.net6, "mtu": cfg.mtu,
             "cpu_pct": proc_cpu_seconds() / up as f64 * 100.0, "rss_mb": rss_mb(),
             "tun_drops": sh.tun_drops.load(Relaxed),
             "load": std::fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next().map(String::from)).unwrap_or_default(),

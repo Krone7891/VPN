@@ -74,6 +74,18 @@ pub trait Steuerung: Send + Sync + 'static {
     fn logo_ordner(&self) -> Option<std::path::PathBuf> {
         None
     }
+    /// Schutz-Regeln (Notbremse, automatisch schuetzen, Ausnahmen)
+    fn regeln(&self) -> kvpn::regeln::Regeln {
+        kvpn::regeln::Regeln::default()
+    }
+    /// Regeln speichern; ein laufendes VPN uebernimmt sie (verbindet kurz neu)
+    fn regeln_speichern(&self, _r: &kvpn::regeln::Regeln) -> Result<(), String> {
+        Err("hier nicht moeglich".into())
+    }
+    /// das Netz, in dem der PC gerade ist
+    fn netz(&self) -> kvpn::regeln::Netz {
+        kvpn::regeln::Netz::default()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -111,6 +123,8 @@ struct App {
     wahl_arbeit: Option<mpsc::Receiver<Result<(), String>>>,
     zeige_profile: bool,
     profile: Vec<ClientConfig>,
+    /// Schutz-Dialog: Regeln in Bearbeitung, Ausnahmen als Text, aktuelles Netz, Meldung
+    schutz: Option<(kvpn::regeln::Regeln, String, kvpn::regeln::Netz, String)>,
     titel_setzen: bool,
     danach_verbinden: bool,
     log: Option<String>,
@@ -275,6 +289,13 @@ fn host(url: &str) -> String {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, st: Arc<dyn Steuerung>, cfg: Option<ClientConfig>, sofort: bool) -> Self {
+        let schutz_vorschau = if cfg!(feature = "vorschau") && std::env::var_os("KVPN_VORSCHAU_SCHUTZ").is_some() {
+            let r = st.regeln();
+            let t = r.ziele.join("\n");
+            Some((r, t, st.netz(), String::new()))
+        } else {
+            None
+        };
         stil(&cc.egui_ctx);
         let logo = cc.egui_ctx.load_texture("logo", egui::ColorImage::from_rgba_unmultiplied([128, 128], LOGO), egui::TextureOptions::LINEAR);
         let gewollt = st.gewollt();
@@ -298,6 +319,7 @@ impl App {
             wahl_arbeit: None,
             zeige_profile: false,
             profile: Vec::new(),
+            schutz: schutz_vorschau,
             titel_setzen: false,
             danach_verbinden: false,
             log: None,
@@ -722,6 +744,12 @@ impl App {
 
     fn statustext(&self, anz: Anzeige) -> (String, String) {
         let z = self.z.as_ref();
+        // automatisch schuetzen: im vertrauten Netz pausiert
+        if let (Lage::Laeuft, Some(z)) = (self.lage, z) {
+            if z.state == "paused" && self.arbeit.is_none() {
+                return ("Pausiert".into(), z.error.clone());
+            }
+        }
         match anz {
             Anzeige::Verbunden => {
                 let z = z.unwrap();
@@ -829,16 +857,24 @@ impl App {
 
     fn fuss(&mut self, ui: &mut egui::Ui) {
         ui.spacing_mut().button_padding.x = 6.0;
-        ui.columns(3, |c| {
+        ui.columns(4, |c| {
+            if c[1].add_sized([c[1].available_width(), 36.0], knopf("Schutz", false))
+                .on_hover_text("Notbremse (ohne VPN kein Internet), automatisch schützen in fremden WLANs, Ausnahmen am VPN vorbei")
+                .clicked()
+            {
+                let r = self.st.regeln();
+                let t = r.ziele.join("\n");
+                self.schutz = Some((r, t, self.st.netz(), String::new()));
+            }
             if c[0].add_sized([c[0].available_width(), 36.0], knopf("Sicherheit", false)).on_hover_text("Was deine Daten schützt – und Verschlüsselung wählen (Auto, AES-256, ChaCha20)").clicked() {
                 self.wahl = self.st.verschluesselung();
                 self.zeige_sicherheit = true;
             }
-            if c[1].add_sized([c[1].available_width(), 36.0], knopf("Protokoll", false)).clicked() {
+            if c[2].add_sized([c[2].available_width(), 36.0], knopf("Protokoll", false)).clicked() {
                 self.log = Some(self.st.protokoll());
             }
             let t = if self.profile.len() > 1 { format!("Profile ({})", self.profile.len()) } else { "Profile".into() };
-            if c[2].add_sized([c[2].available_width(), 36.0], knopf(&t, false)).on_hover_text("Zwischen Verbindungen wechseln oder eine neue hinzufügen").clicked() {
+            if c[3].add_sized([c[3].available_width(), 36.0], knopf(&t, false)).on_hover_text("Zwischen Verbindungen wechseln oder eine neue hinzufügen").clicked() {
                 self.zeige_profile = true;
             }
         });
@@ -900,6 +936,100 @@ impl App {
             };
             ui.label(RichText::new(t).color(MUTE).size(12.5));
         });
+    }
+
+    fn schutz_dialog(&mut self, ctx: &egui::Context, breite: f32) {
+        let hoehe = (ctx.screen_rect().height() - 110.0).max(240.0);
+        let mut zu = false;
+        let mut speichern = false;
+        let Some((r, ziele, netz, msg)) = self.schutz.as_mut() else { return };
+        let schalter = |ui: &mut egui::Ui, an: &mut bool, titel: &str, text: &str, aktiv: bool| {
+            ui.add_enabled_ui(aktiv, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.checkbox(an, "");
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(fett(titel, 14.5));
+                        ui.add(egui::Label::new(RichText::new(text).color(MUTE).size(12.5)).wrap());
+                    });
+                });
+            });
+            ui.add_space(6.0);
+        };
+        let modal = egui::Modal::new(egui::Id::new("schutz")).show(ctx, |ui| {
+            ui.set_width(breite.min(460.0));
+            egui::ScrollArea::vertical().max_height(hoehe).min_scrolled_height(hoehe.min(520.0)).show(ui, |ui| {
+                ui.label(fett("Schutz", 19.0));
+                ui.label(RichText::new("Wann das VPN läuft und was ohne VPN passieren darf.").color(MUTE).size(13.0));
+                ui.add_space(8.0);
+                schalter(ui, &mut r.notbremse, "Notbremse (Kill-Switch)",
+                    "Fällt das VPN aus (Funkloch, Server weg), geht gar nichts mehr ins Internet – nichts läuft unverschlüsselt daran vorbei. Hotel-/Zug-WLAN mit Anmeldeseite: kurz ausschalten, anmelden, wieder an.", true);
+                let nb = r.notbremse;
+                ui.indent("lokal", |ui| {
+                    schalter(ui, &mut r.lokal_erlaubt, "Lokales Netz erlauben", "Drucker, Router-Seite, Fernseher im selben WLAN bleiben trotz Notbremse erreichbar. Namen (DNS) gehen trotzdem nur durchs VPN.", nb);
+                });
+                schalter(ui, &mut r.auto, "Automatisch schützen",
+                    "In fremden WLANs und im Mobilfunk verbindet sich das VPN von selbst. In deinen vertrauten Netzen (z. B. zu Hause) pausiert es – dort bist du ja schon sicher.", true);
+                ui.indent("vertraut", |ui| {
+                    ui.add_enabled_ui(r.auto, |ui| {
+                        ui.label(RichText::new("Vertraute Netze").color(INK).size(13.0).strong());
+                        let mut weg = None;
+                        if r.vertraut.is_empty() {
+                            ui.label(RichText::new("noch keine").color(MUTE).size(12.5));
+                        }
+                        for (i, v) in r.vertraut.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                let t = v.strip_prefix("router:").map(|m| format!("Netz mit Router {m}")).unwrap_or_else(|| format!("WLAN „{v}“"));
+                                ui.label(RichText::new(t).size(12.5));
+                                if ui.small_button("entfernen").on_hover_text("nicht mehr vertrauen").clicked() {
+                                    weg = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = weg {
+                            r.vertraut.remove(i);
+                        }
+                        let schon = r.ist_vertraut(netz);
+                        let t = if !netz.online { "Kein Netz erkannt".to_string() } else if schon { format!("{} ist vertraut ✓", netz.anzeige()) } else { format!("Diesem Netz vertrauen: {}", netz.anzeige()) };
+                        if ui.add_enabled(netz.online && !schon && !netz.kennungen().is_empty(), egui::Button::new(RichText::new(t).size(12.5))).clicked() {
+                            r.vertrauen(netz);
+                        }
+                    });
+                });
+                ui.add_space(8.0);
+                ui.label(fett("Am VPN vorbei (Ausnahmen)", 14.5));
+                ui.add(egui::Label::new(RichText::new("Diese Ziele gehen direkt ins Internet, nicht durchs VPN – z. B. eine Bank, die VPN-Verbindungen sperrt. Ein Eintrag pro Zeile: Name (bank.de), Adresse (203.0.113.5) oder Netz (198.51.100.0/24). Einzelne Programme lassen sich unter Windows nicht ausnehmen (das ginge nur mit einem eigenen Treiber); auf dem Handy geht das pro App.").color(MUTE).size(12.5)).wrap());
+                ui.add(egui::TextEdit::multiline(ziele).desired_rows(3).desired_width(f32::INFINITY).hint_text("bank.de"));
+                if !msg.is_empty() {
+                    ui.label(RichText::new(msg.as_str()).color(BAD).size(12.5));
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 8.0) / 2.0;
+                    if ui.add(knopf("Speichern", true).min_size(vec2(w, 38.0))).clicked() {
+                        speichern = true;
+                    }
+                    if ui.add(knopf("Abbrechen", false).min_size(vec2(w, 38.0))).clicked() {
+                        zu = true;
+                    }
+                });
+            });
+        });
+        if speichern {
+            match kvpn::regeln::ziele_pruefen(ziele) {
+                Ok(z) => {
+                    r.ziele = z;
+                    match self.st.regeln_speichern(r) {
+                        Ok(()) => zu = true,
+                        Err(e) => *msg = e,
+                    }
+                }
+                Err(e) => *msg = e,
+            }
+        }
+        if zu || modal.should_close() {
+            self.schutz = None;
+        }
     }
 
     fn dialoge(&mut self, ctx: &egui::Context) {
@@ -987,6 +1117,9 @@ impl App {
             if zu || r.should_close() {
                 self.zeige_sicherheit = false;
             }
+        }
+        if self.schutz.is_some() {
+            self.schutz_dialog(ctx, breite);
         }
         if self.zeige_profile {
             let mut zu = false;
@@ -1143,8 +1276,19 @@ pub fn vorschau(modus: &str) {
         an: Mutex<bool>,
         profile: Mutex<Vec<ClientConfig>>,
         wahl: Mutex<String>,
+        regeln: Mutex<kvpn::regeln::Regeln>,
     }
     impl Steuerung for Demo {
+        fn regeln(&self) -> kvpn::regeln::Regeln {
+            self.regeln.lock().unwrap().clone()
+        }
+        fn regeln_speichern(&self, r: &kvpn::regeln::Regeln) -> Result<(), String> {
+            *self.regeln.lock().unwrap() = r.clone();
+            Ok(())
+        }
+        fn netz(&self) -> kvpn::regeln::Netz {
+            kvpn::regeln::Netz { online: true, wlan: "FRITZ!Box 7590".into(), router: "3c:a6:2f:12:34:56".into() }
+        }
         fn logo_ordner(&self) -> Option<std::path::PathBuf> {
             std::env::var_os("KVPN_VORSCHAU_LOGO").map(std::path::PathBuf::from)
         }
@@ -1161,6 +1305,7 @@ pub fn vorschau(modus: &str) {
             let t = self.t0.elapsed().as_secs_f64();
             let state = match self.modus.as_str() {
                 "verbinde" => "waiting",
+                "pause" => "paused",
                 _ => "connected",
             };
             let rx = (2.5e6 * (1.2 + (t * 0.7).sin()) + 4e5 * (t * 3.1).sin().abs()) as u64;
@@ -1180,7 +1325,13 @@ pub fn vorschau(modus: &str) {
                 rate_tx: tx,
                 rtt_ms: 23.0 + (t * 2.0).sin() * 3.0,
                 since: kvpn::util::now_secs() - 4_391,
-                error: if state == "waiting" { kvpn::fehler::klartext("203.0.113.10:443: keine Antwort (Firewall?)") } else { String::new() },
+                error: if state == "waiting" {
+                    kvpn::fehler::klartext("203.0.113.10:443: keine Antwort (Firewall?)")
+                } else if state == "paused" {
+                    "Vertrautes Netz: WLAN „FRITZ!Box 7590“ – in fremden Netzen verbindet es sich von selbst".into()
+                } else {
+                    String::new()
+                },
                 error_detail: if state == "waiting" { "203.0.113.10:443: keine Antwort (Firewall?)".into() } else { String::new() },
                 update_version: if self.modus == "update" { "1.0.4".into() } else { String::new() },
                 update_got: 3_100_000,
@@ -1261,7 +1412,8 @@ pub fn vorschau(modus: &str) {
         profile.push(demo("Büro-VPN", "Laptop", "wss://buero.example.com/api/v1/stream"));
         profile.push(demo("Eltern", "Mein PC", "wss://eltern.example.net/api/v1/stream"));
     }
-    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile), wahl: Mutex::new("auto".into()) });
+    let st = Arc::new(Demo { modus: modus.to_string(), t0: Instant::now(), an: Mutex::new(an), profile: Mutex::new(profile), wahl: Mutex::new("auto".into()),
+        regeln: Mutex::new(kvpn::regeln::Regeln { notbremse: true, auto: true, vertraut: vec!["FRITZ!Box 7590".into()], ziele: vec!["bank.de".into()], ..Default::default() }) });
     if let Err(e) = run(st, cfg, false) {
         eprintln!("{e}");
     }

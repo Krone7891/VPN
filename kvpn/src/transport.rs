@@ -218,7 +218,81 @@ pub fn preresolve(cache: &DnsCache, host: &str, port: u16) -> Result<Vec<SocketA
     Ok(v)
 }
 
-async fn resolve(host: &str, port: u16, cache: &DnsCache) -> io::Result<Vec<SocketAddr>> {
+/// Server-Namen direkt bei oeffentlichen DNS-Servern nachschlagen – am Tunnel vorbei (Umgehungsroute ueber `protect`).
+/// Fuer den Fall, dass das normale DNS gerade nicht geht (laeuft durch den noch nicht verbundenen Tunnel, Notbremse an)
+/// und sich die Adresse des Servers geaendert hat (DynDNS: neue IP zu Hause).
+pub async fn direct_lookup(host: &str, port: u16, protect: &Option<ProtectFn>) -> Option<Vec<SocketAddr>> {
+    if host.parse::<IpAddr>().is_ok() || host.len() > 253 {
+        return None;
+    }
+    let mut q = vec![0u8, 0, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    let id: u16 = rand::random();
+    q[..2].copy_from_slice(&id.to_be_bytes());
+    for l in host.trim_end_matches('.').split('.') {
+        if l.is_empty() || l.len() > 63 {
+            return None;
+        }
+        q.push(l.len() as u8);
+        q.extend_from_slice(l.as_bytes());
+    }
+    q.extend_from_slice(&[0, 0, 1, 0, 1]);
+    for r in ["1.1.1.1", "9.9.9.9", "8.8.8.8"] {
+        let ip: IpAddr = r.parse().unwrap();
+        if let Some(p) = protect {
+            p(ip);
+        }
+        let Ok(s) = tokio::net::UdpSocket::bind("0.0.0.0:0").await else { continue };
+        if s.send_to(&q, (ip, 53)).await.is_err() {
+            continue;
+        }
+        let mut buf = [0u8; 1500];
+        let Ok(Ok((n, from))) = tokio::time::timeout(Duration::from_millis(1500), s.recv_from(&mut buf)).await else { continue };
+        if from.ip() != ip || n < 12 || buf[..2] != q[..2] {
+            continue;
+        }
+        let v = parse_a_records(&buf[..n], port);
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// A-Eintraege einer DNS-Antwort
+pub fn parse_a_records(r: &[u8], port: u16) -> Vec<SocketAddr> {
+    let skip = |mut i: usize| -> Option<usize> {
+        loop {
+            let l = *r.get(i)? as usize;
+            if l == 0 {
+                return Some(i + 1);
+            }
+            if l & 0xc0 == 0xc0 {
+                return Some(i + 2);
+            }
+            i += 1 + l;
+        }
+    };
+    let mut v = Vec::new();
+    if r.len() < 12 || r[3] & 0x0f != 0 {
+        return v;
+    }
+    let an = u16::from_be_bytes([r[6], r[7]]) as usize;
+    let Some(mut i) = skip(12).map(|i| i + 4) else { return v };
+    for _ in 0..an {
+        let Some(j) = skip(i) else { break };
+        let Some(h) = r.get(j..j + 10) else { break };
+        let (t, len) = (u16::from_be_bytes([h[0], h[1]]), u16::from_be_bytes([h[8], h[9]]) as usize);
+        if t == 1 && len == 4 {
+            if let Some(d) = r.get(j + 10..j + 14) {
+                v.push(SocketAddr::from(([d[0], d[1], d[2], d[3]], port)));
+            }
+        }
+        i = j + 10 + len;
+    }
+    v
+}
+
+async fn resolve(host: &str, port: u16, cache: &DnsCache, protect: &Option<ProtectFn>) -> io::Result<Vec<SocketAddr>> {
     let key = format!("{host}:{port}");
     // normale Abfrage; bleibt sie haengen (z. B. IPv6-Antwort fehlt), nach 1,5 s parallel nur IPv4 versuchen
     let h = host.to_string();
@@ -265,19 +339,29 @@ async fn resolve(host: &str, port: u16, cache: &DnsCache) -> io::Result<Vec<Sock
         cache.lock().unwrap().insert(k2, v.clone());
         return Ok(v);
     }
-    // DNS geht gerade nicht (z. B. laeuft es durch den noch nicht verbundenen Tunnel): gemerkte Adresse nehmen
-    match cache.lock().unwrap().get(&key).cloned() {
-        Some(v) => Ok(v),
+    // DNS geht gerade nicht (z. B. laeuft es durch den noch nicht verbundenen Tunnel): gemerkte Adresse nehmen,
+    // ohne gemerkte direkt am Tunnel vorbei fragen
+    if let Some(v) = cache.lock().unwrap().get(&key).cloned() {
+        return Ok(v);
+    }
+    match direct_lookup(host, port, protect).await {
+        Some(v) => {
+            cache.lock().unwrap().insert(key, v.clone());
+            Ok(v)
+        }
         None => Err(err),
     }
 }
 
 async fn tcp_connect(host: &str, port: u16, protect: &Option<ProtectFn>, cache: &DnsCache) -> io::Result<TcpStream> {
-    let mut addrs: Vec<SocketAddr> = resolve(host, port, cache).await?;
+    let mut addrs: Vec<SocketAddr> = resolve(host, port, cache, protect).await?;
     // IPv4 zuerst: Firmennetze (Sophos) haben oft kein oder gefiltertes IPv6
     addrs.sort_by_key(|a| a.is_ipv6());
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("keine Adresse fuer {host}"));
-    for a in addrs {
+    let mut tried = Vec::new();
+    let mut direct_done = false;
+    while let Some(a) = (!addrs.is_empty()).then(|| addrs.remove(0)) {
+        tried.push(a);
         if let Some(p) = protect {
             p(a.ip());
         }
@@ -288,6 +372,18 @@ async fn tcp_connect(host: &str, port: u16, protect: &Option<ProtectFn>, cache: 
             }
             Ok(Err(e)) => last = io::Error::new(e.kind(), format!("{a}: {e}")),
             Err(_) => last = io::Error::new(io::ErrorKind::TimedOut, format!("{a}: keine Antwort (Firewall?)")),
+        }
+        // keine Adresse ging: vielleicht ist die gemerkte veraltet (neue IP zu Hause) und das normale DNS geht gerade
+        // nicht (Tunnel unterbrochen) -> einmal direkt am Tunnel vorbei nachfragen
+        if addrs.is_empty() && !direct_done && host.parse::<IpAddr>().is_err() {
+            direct_done = true;
+            if let Some(v) = direct_lookup(host, port, protect).await {
+                let neu: Vec<SocketAddr> = v.iter().filter(|x| !tried.contains(x)).cloned().collect();
+                if !neu.is_empty() {
+                    cache.lock().unwrap().insert(format!("{host}:{port}"), v);
+                    addrs = neu;
+                }
+            }
         }
     }
     Err(last)
@@ -497,6 +593,20 @@ pub async fn connect(url: &str, proxy: Option<&Proxy>, protect: &Option<ProtectF
         .map_err(|e| format!("WebSocket-Aufbau fehlgeschlagen: {e}"))?;
     let _ = resp;
     Ok((ws, info))
+}
+
+#[cfg(test)]
+mod dns_tests {
+    #[test]
+    fn a_eintraege() {
+        // Antwort fuer vpn.test: CNAME + A
+        let mut r = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0, 3, b'v', b'p', b'n', 4, b't', b'e', b's', b't', 0, 0, 1, 0, 1];
+        r.extend_from_slice(&[0xc0, 0x0c, 0, 5, 0, 1, 0, 0, 0, 60, 0, 2, 0xc0, 0x0c]);
+        r.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 7]);
+        assert_eq!(super::parse_a_records(&r, 443), vec!["203.0.113.7:443".parse().unwrap()]);
+        r[3] = 0x83; // NXDOMAIN
+        assert!(super::parse_a_records(&r, 443).is_empty());
+    }
 }
 
 #[cfg(test)]

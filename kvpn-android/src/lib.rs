@@ -236,3 +236,17 @@ pub extern "system" fn Java_de_krone_vpn_Native_aesHw<'l>(_env: JNIEnv<'l>, _c: 
 pub extern "system" fn Java_de_krone_vpn_Native_version<'l>(mut env: JNIEnv<'l>, _c: JClass<'l>) -> jstring {
     out(&mut env, kvpn::VERSION)
 }
+
+/// Schutz-Regeln: soll das VPN in diesem Netz laufen? (automatisch schuetzen, gleiche Regeln wie am PC)
+#[no_mangle]
+pub extern "system" fn Java_de_krone_vpn_Native_schuetzen<'l>(
+    mut env: JNIEnv<'l>,
+    _c: JClass<'l>,
+    regeln: JString<'l>,
+    wlan: JString<'l>,
+    online: jni::sys::jboolean,
+) -> jni::sys::jboolean {
+    let r = kvpn::regeln::Regeln::from_json(&jstr(&mut env, &regeln));
+    let n = kvpn::regeln::Netz { online: online != 0, wlan: jstr(&mut env, &wlan), router: String::new() };
+    (!n.online || r.soll_schuetzen(&n)) as jni::sys::jboolean
+}

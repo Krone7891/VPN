@@ -26,4 +26,7 @@ final class Native {
     static native void logoDir(String dir);
     /** Absturz-Protokoll an den Server schicken (Status "crash_ok" meldet, was angekommen ist) */
     static native void crash(long handle, String name, String text);
+
+    /** Schutz-Regeln (JSON wie am PC): soll das VPN in diesem Netz laufen? (kvpn::regeln) */
+    static native boolean schuetzen(String regeln, String wlan, boolean online);
 }

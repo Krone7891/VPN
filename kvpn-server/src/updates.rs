@@ -97,6 +97,23 @@ pub fn set_source(path: &str, repo: &str, branch: &str, pw: Option<&str>, ohne_p
     })
 }
 
+/// Datei aus dem Internet laden (z. B. DNS-Sperrliste)
+pub fn fetch_url(url: &str, max: u64) -> Result<Vec<u8>, String> {
+    if url.starts_with("http://") && std::env::var_os("KVPN_ALLOW_HTTP").is_none() {
+        return Err(format!("{url}: bitte https:// verwenden"));
+    }
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--proto", "=https,http", "--max-time", "120", "--max-filesize"])
+        .arg(max.to_string())
+        .arg(url)
+        .output()
+        .map_err(|e| format!("curl nicht gefunden ({e}) – bitte installieren"))?;
+    if !out.status.success() {
+        return Err(format!("{url}: Download fehlgeschlagen ({})", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(out.stdout)
+}
+
 /// Datei laden (curl: Proxy, Weiterleitungen, Zertifikatspruefung)
 fn fetch(url: &str, max: u64) -> Result<Vec<u8>, String> {
     let test = std::env::var("KVPN_UPDATE_URL").is_ok();

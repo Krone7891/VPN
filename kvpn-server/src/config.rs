@@ -89,6 +89,42 @@ pub struct Config {
     /// Passwort dafuer als PBKDF2-Hash (leer = wird beim ersten Aufruf im VPN festgelegt)
     #[serde(default)]
     pub admin_password: String,
+    /// zweiter Schritt fuer die Admin-Seite im VPN: TOTP-Geheimnis (Base32) der Authenticator-App, leer = aus
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub admin_totp: String,
+    /// eigener DNS im Tunnel (Server 1.3.0): beantwortet die DNS-Anfragen der Geraete selbst – Grundlage fuer den
+    /// Werbe-Blocker und fuer Namen im Heimnetz (z. B. nas.fritz.box)
+    #[serde(default = "d_true")]
+    pub dns_proxy: bool,
+    /// Werbe- und Tracker-Blocker (nur mit dns_proxy)
+    #[serde(default = "d_true")]
+    pub adblock: bool,
+    /// Sperrlisten (Hosts-Format oder reine Namensliste), werden taeglich neu geladen
+    #[serde(default = "d_lists")]
+    pub adblock_lists: Vec<String>,
+    /// eigene Sperren (gelten auch fuer Unter-Namen, z. B. "tiktok.com")
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_block: Vec<String>,
+    /// Ausnahmen vom Blocker (gehen immer, auch wenn sie auf einer Sperrliste stehen)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dns_allow: Vec<String>,
+    /// Geraete im VPN duerfen ins Heimnetz des Servers (Drucker, NAS, ...). Aus = nur Internet
+    #[serde(default = "d_true")]
+    pub lan_access: bool,
+    /// Benachrichtigungen ueber ntfy: Adresse des Themas, z. B. https://ntfy.sh/mein-geheimes-thema (leer = aus)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notify_ntfy: String,
+    /// Zugang zum eigenen ntfy-Server (Bearer-Token, z. B. vom HomeServer aus /etc/hs-notify.conf), leer = ohne
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notify_ntfy_token: String,
+    /// Benachrichtigungen ueber Telegram: Bot-Schluessel (von @BotFather) und Chat-ID (leer = aus)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notify_telegram_token: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notify_telegram_chat: String,
+    /// was gemeldet wird: geraet, passwort, start, update, bericht
+    #[serde(default = "d_notify_on")]
+    pub notify_on: Vec<String>,
     /// gesperrte/abgelaufene Geraete (nur Benutzerverwaltung; belegen Plaetze und Adressen)
     #[serde(skip)]
     pub inactive: Vec<Peer>,
@@ -131,6 +167,12 @@ fn d_dns() -> Vec<String> {
 fn d_mtu() -> u16 {
     1400
 }
+fn d_notify_on() -> Vec<String> {
+    crate::notify::ALLE.iter().map(|s| s.to_string()).collect()
+}
+fn d_lists() -> Vec<String> {
+    vec![crate::dns::DEFAULT_LIST.into()]
+}
 fn d_true() -> bool {
     true
 }
@@ -157,6 +199,27 @@ pub fn on_off(v: &str) -> Result<bool, String> {
         _ => Err(format!("'{v}': bitte an oder aus")),
     }
 }
+/// Liste von Namen (Komma, Leerzeichen oder Zeilen) fuer dns_block/dns_allow
+pub fn name_list(val: &str) -> Result<Vec<String>, String> {
+    let mut v: Vec<String> = Vec::new();
+    for x in val.split([',', ' ', '\n', ';']) {
+        let n = crate::dns::norm(x.trim_start_matches("*.").trim_start_matches("http://").trim_start_matches("https://").split('/').next().unwrap_or(""));
+        if n.is_empty() {
+            continue;
+        }
+        if n.len() > 253 || !n.contains('.') || !n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_') {
+            return Err(format!("'{x}' ist kein Name wie werbung.example.com"));
+        }
+        if !v.contains(&n) {
+            v.push(n);
+        }
+    }
+    if v.len() > 500 {
+        return Err("hoechstens 500 Namen".into());
+    }
+    Ok(v)
+}
+
 /// absolute Obergrenze fuer max_devices (Adressen .2 bis .251)
 pub const LIMIT: usize = 250;
 
@@ -308,8 +371,67 @@ impl Config {
                 }
                 self.wigle_api = if aus { String::new() } else { v.into() }
             }
+            "notify_ntfy" | "ntfy" => {
+                let v = val.trim();
+                if v.is_empty() || matches!(v, "aus" | "off" | "-") {
+                    self.notify_ntfy.clear()
+                } else if (v.starts_with("https://") || v.starts_with("http://")) && v.len() > 10 && !v.contains(char::is_whitespace) && !v.contains('"') {
+                    self.notify_ntfy = v.into()
+                } else {
+                    return Err("ntfy: Adresse wie https://ntfy.sh/mein-geheimes-thema (\"aus\" = abschalten)".into());
+                }
+            }
+            "notify_ntfy_token" | "ntfy_token" => {
+                let v = val.trim();
+                if v.is_empty() || matches!(v, "aus" | "off" | "-") {
+                    self.notify_ntfy_token.clear()
+                } else if v.len() >= 8 && v.bytes().all(|b| b.is_ascii_graphic() && b != b'"') {
+                    self.notify_ntfy_token = v.into()
+                } else {
+                    return Err("ntfy-Zugang: Token ohne Leerzeichen".into());
+                }
+            }
+            "notify_telegram_token" | "telegram_token" => {
+                let v = val.trim();
+                if v.is_empty() || matches!(v, "aus" | "off" | "-") {
+                    self.notify_telegram_token.clear()
+                } else if v.contains(':') && v.len() > 20 && v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b':' || b == b'_' || b == b'-') {
+                    self.notify_telegram_token = v.into()
+                } else {
+                    return Err("Telegram: Bot-Schluessel wie 123456789:AAH... (von @BotFather)".into());
+                }
+            }
+            "notify_telegram_chat" | "telegram_chat" => {
+                let v = val.trim();
+                if v.is_empty() || matches!(v, "aus" | "off" | "-") {
+                    self.notify_telegram_chat.clear()
+                } else if v.trim_start_matches('-').bytes().all(|b| b.is_ascii_digit()) || (v.starts_with('@') && v.len() > 2) {
+                    self.notify_telegram_chat = v.into()
+                } else {
+                    return Err("Telegram: Chat-ID ist eine Zahl (z. B. von @userinfobot)".into());
+                }
+            }
+            "notify_on" | "melden" => {
+                let v: Vec<String> = val.split([',', ' ']).map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect();
+                if let Some(x) = v.iter().find(|x| !crate::notify::ALLE.contains(&x.as_str()) && x.as_str() != "nichts") {
+                    return Err(format!("melden: '{x}' unbekannt (geraet, passwort, start, update, bericht oder nichts)"));
+                }
+                self.notify_on = v.into_iter().filter(|x| x != "nichts").collect();
+            }
+            "dns_proxy" | "dns_server" | "eigener_dns" => self.dns_proxy = on_off(val)?,
+            "adblock" | "werbeblocker" | "blocker" => self.adblock = on_off(val)?,
+            "lan_access" | "heimnetz" => self.lan_access = on_off(val)?,
+            "adblock_lists" | "sperrlisten" => {
+                let v: Vec<String> = val.split([',', ' ', '\n']).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+                if v.iter().any(|u| !u.starts_with("https://") && !u.starts_with("http://")) {
+                    return Err("adblock_lists: Adressen (https://...) mit Komma getrennt".into());
+                }
+                self.adblock_lists = if v.is_empty() { d_lists() } else { v }
+            }
+            "dns_block" | "sperren" => self.dns_block = name_list(val)?,
+            "dns_allow" | "ausnahmen" => self.dns_allow = name_list(val)?,
             "max_devices" | "max_geraete" | "max" => self.max_devices = val.trim().parse().map_err(|_| "max_devices: Zahl erwartet")?,
-            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api)")),
+            _ => return Err(format!("unbekannter Schluessel '{key}' (listen, local_listen, public_url, vpn_name, downloads_dir, download_mirror, tls_cert, tls_key, stats_password, state_dir, dns, mtu, nat, net4, net6, update_repo, update_branch, update_check, max_devices, aes256, performance, users, admin_vpn, geo, google_geo_key, wigle_api, dns_proxy, adblock, adblock_lists, dns_block, dns_allow, lan_access, notify_ntfy, notify_ntfy_token, notify_telegram_token, notify_telegram_chat, notify_on)")),
         }
         self.check()
     }

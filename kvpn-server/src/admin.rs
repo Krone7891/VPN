@@ -42,6 +42,9 @@ pub fn token(cfg: &Config) -> String {
     h.update(b"krone-vpn-admin\0");
     h.update(cfg.admin_password.as_bytes());
     h.update(b"\0");
+    // zweiten Schritt ein-/ausschalten meldet ebenfalls alle Browser ab
+    h.update(cfg.admin_totp.as_bytes());
+    h.update(b"\0");
     h.update(cfg.private_key.as_bytes());
     hex(&h.finalize())
 }

@@ -264,16 +264,9 @@ public class MainActivity extends Activity {
             if (!Logo.pin(this, t)) Toast.makeText(this, "Dein Startbildschirm erlaubt keine Verknüpfungen", Toast.LENGTH_LONG).show();
         });
         c3.addView(bPin);
-        Button always = button("Immer verbunden (Always-on VPN) …", false);
-        always.setOnClickListener(v -> {
-            try {
-                startActivity(new Intent(Settings.ACTION_VPN_SETTINGS));
-                Toast.makeText(this, "Bei KroneVPN auf ⚙ tippen und „Durchgehend aktives VPN“ einschalten", Toast.LENGTH_LONG).show();
-            } catch (Exception e) {
-                Toast.makeText(this, "VPN-Einstellungen nicht gefunden", Toast.LENGTH_SHORT).show();
-            }
-        });
-        c3.addView(always);
+        Button schutz = button("🛡️ Schutz · Notbremse, WLAN, Apps …", false);
+        schutz.setOnClickListener(v -> showSchutz());
+        c3.addView(schutz);
         bLoc = button("", false);
         bLoc.setOnClickListener(v -> toggleLocation());
         c3.addView(bLoc);
@@ -756,6 +749,184 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    // ------------------------------------------------------------------------------------------ Schutz
+
+    private TextView schutzZeile(LinearLayout box, String titel, String text) {
+        TextView h = text(titel, 15.5f, cInk, true);
+        h.setPadding(0, dp(14), 0, dp(2));
+        box.addView(h);
+        TextView d = text(text, 13, cMute, false);
+        box.addView(d);
+        return d;
+    }
+
+    private void systemVpnEinstellungen() {
+        try {
+            startActivity(new Intent(Settings.ACTION_VPN_SETTINGS));
+            Toast.makeText(this, "Bei KroneVPN auf ⚙ tippen: „Durchgehend aktives VPN“ und „Verbindungen ohne VPN blockieren“ einschalten", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "VPN-Einstellungen nicht gefunden", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /** Schutz: Notbremse (System), automatisch schuetzen in fremden WLANs, Apps am VPN vorbei */
+    private void showSchutz() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(4), dp(22), dp(6));
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        final AlertDialog[] dlg = new AlertDialog[1];
+        org.json.JSONObject r = Schutz.regeln(this);
+
+        // Notbremse: macht Android selbst
+        String nb = !Schutz.bekannt ? "Ob sie an ist, zeigt die App, sobald das VPN einmal verbunden war."
+                : Schutz.lockdown ? "✓ An – ohne VPN kommt keine App ins Internet."
+                : Schutz.alwaysOn ? "Teilweise: „Durchgehend aktives VPN“ ist an, „Verbindungen ohne VPN blockieren“ noch aus."
+                : "Aus.";
+        schutzZeile(box, "🛑 Notbremse (Kill-Switch)",
+                "Fällt das VPN aus (Funkloch, Server weg), geht gar nichts mehr ins Internet – nichts läuft unverschlüsselt daran vorbei. "
+                        + "Auf dem Handy macht das Android selbst: „Durchgehend aktives VPN“ + „Verbindungen ohne VPN blockieren“. "
+                        + "Damit startet das VPN auch nach dem Neustart des Handys und nach Updates von selbst.");
+        TextView nbs = text(nb, 13.5f, Schutz.lockdown ? cOk : cWarn, true);
+        nbs.setPadding(0, dp(4), 0, 0);
+        box.addView(nbs);
+        Button bNb = button(Schutz.lockdown ? "Android-Einstellung öffnen" : "In den Android-Einstellungen einschalten", false);
+        bNb.setOnClickListener(v -> systemVpnEinstellungen());
+        box.addView(bNb);
+
+        // automatisch schuetzen
+        schutzZeile(box, "📶 Automatisch schützen",
+                "In fremden WLANs und im Mobilfunk verbindet sich das VPN von selbst. In deinen vertrauten WLANs (z. B. zu Hause) pausiert es – "
+                        + "dort bist du ja schon sicher. Dafür einmal das VPN einschalten; danach regelt es das selbst.");
+        android.widget.Switch sw = new android.widget.Switch(this);
+        sw.setText("Automatisch schützen");
+        sw.setTextColor(cInk);
+        sw.setTextSize(15);
+        sw.setChecked(r.optBoolean("auto", false));
+        sw.setPadding(0, dp(8), 0, dp(4));
+        box.addView(sw);
+        TextView vt = text("", 13, cMute, false);
+        box.addView(vt);
+        LinearLayout vl = new LinearLayout(this);
+        vl.setOrientation(LinearLayout.VERTICAL);
+        box.addView(vl);
+        Button bTrust = button("", false);
+        box.addView(bTrust);
+        Runnable zeigeVertraut = new Runnable() {
+            @Override
+            public void run() {
+                org.json.JSONObject rr = Schutz.regeln(MainActivity.this);
+                java.util.List<String> v = Schutz.list(rr, "vertraut");
+                vt.setText(v.isEmpty() ? "Vertraute WLANs: noch keine" : "Vertraute WLANs (antippen zum Entfernen):");
+                vl.removeAllViews();
+                for (String n : v) {
+                    TextView t = text("  ✓  " + n + "   ✕", 14, cInk, false);
+                    t.setPadding(0, dp(6), 0, dp(6));
+                    t.setOnClickListener(x -> {
+                        org.json.JSONObject r2 = Schutz.regeln(MainActivity.this);
+                        java.util.List<String> l = Schutz.list(r2, "vertraut");
+                        l.remove(n);
+                        Schutz.putList(r2, "vertraut", l);
+                        Schutz.save(MainActivity.this, r2);
+                        this.run();
+                        nachRegelAenderung(false);
+                    });
+                    vl.addView(t);
+                }
+                String w = Schutz.wlan(MainActivity.this);
+                bTrust.setEnabled(!w.isEmpty() && !v.contains(w));
+                bTrust.setText(w.isEmpty() ? "Kein WLAN-Name lesbar (WLAN an? Standort erlaubt?)"
+                        : v.contains(w) ? "„" + w + "“ ist vertraut ✓" : "Diesem WLAN vertrauen: „" + w + "“");
+            }
+        };
+        zeigeVertraut.run();
+        bTrust.setOnClickListener(v -> {
+            String w = Schutz.vertrauen(this);
+            if (w.isEmpty()) Toast.makeText(this, "WLAN-Name nicht lesbar – Standort für KroneVPN erlauben", Toast.LENGTH_LONG).show();
+            zeigeVertraut.run();
+            nachRegelAenderung(false);
+        });
+        sw.setOnCheckedChangeListener((b, an) -> {
+            org.json.JSONObject r2 = Schutz.regeln(this);
+            try {
+                r2.put("auto", an);
+            } catch (Exception ignored) {
+            }
+            Schutz.save(this, r2);
+            if (an && Schutz.lockdown)
+                Toast.makeText(this, "Hinweis: Mit der Notbremse pausiert das VPN nie (sonst gäbe es zu Hause kein Internet)", Toast.LENGTH_LONG).show();
+            nachRegelAenderung(false);
+        });
+
+        // Apps am VPN vorbei
+        TextView at = schutzZeile(box, "↪ Apps am VPN vorbei", "");
+        Button bApps = button("", false);
+        Runnable zeigeApps = () -> {
+            int n = Schutz.apps(this).size();
+            at.setText("Diese Apps gehen direkt ins Internet, nicht durchs VPN – z. B. eine Banking-App, die VPNs ablehnt, oder Android Auto. "
+                    + "Sie sind dann nicht geschützt." + (Schutz.lockdown ? " Achtung: Mit der Notbremse haben ausgenommene Apps unter Android gar kein Internet." : ""));
+            bApps.setText(n == 0 ? "Apps auswählen …" : n + (n == 1 ? " App" : " Apps") + " am VPN vorbei – ändern …");
+        };
+        zeigeApps.run();
+        bApps.setOnClickListener(v -> appsWaehlen(zeigeApps));
+        box.addView(bApps);
+
+        dlg[0] = new AlertDialog.Builder(this)
+                .setTitle("Schutz")
+                .setView(sc)
+                .setNegativeButton("Schließen", null)
+                .show();
+    }
+
+    /** Regeln geaendert: laufender Dienst prueft das Netz neu bzw. baut den Tunnel neu auf (Apps) */
+    private void nachRegelAenderung(boolean neuAufbauen) {
+        if (KroneVpnService.handle == 0 && KroneVpnService.paused.isEmpty()) return;
+        try {
+            Intent i = new Intent(this, KroneVpnService.class);
+            if (neuAufbauen) i.setAction(KroneVpnService.ACTION_NEU);
+            startService(i);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void appsWaehlen(Runnable danach) {
+        android.content.pm.PackageManager pm = getPackageManager();
+        java.util.List<android.content.pm.ResolveInfo> ri = pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+        java.util.TreeMap<String, String> apps = new java.util.TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (android.content.pm.ResolveInfo r : ri) {
+            String pkg = r.activityInfo.packageName;
+            if (pkg.equals(getPackageName())) continue;
+            apps.put(r.loadLabel(pm).toString() + "\u0000" + pkg, pkg);
+        }
+        java.util.List<String> sel = Schutz.apps(this);
+        String[] labels = new String[apps.size()];
+        String[] pkgs = new String[apps.size()];
+        boolean[] checked = new boolean[apps.size()];
+        int i = 0;
+        for (java.util.Map.Entry<String, String> e : apps.entrySet()) {
+            labels[i] = e.getKey().substring(0, e.getKey().indexOf('\u0000'));
+            pkgs[i] = e.getValue();
+            checked[i] = sel.contains(pkgs[i]);
+            i++;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Apps am VPN vorbei")
+                .setMultiChoiceItems(labels, checked, (d, w, an) -> checked[w] = an)
+                .setPositiveButton("Übernehmen", (d, w) -> {
+                    java.util.List<String> l = new java.util.ArrayList<>();
+                    for (int k = 0; k < pkgs.length; k++) if (checked[k]) l.add(pkgs[k]);
+                    org.json.JSONObject r = Schutz.regeln(this);
+                    Schutz.putList(r, "apps", l);
+                    Schutz.save(this, r);
+                    danach.run();
+                    nachRegelAenderung(true);
+                    if (KroneVpnService.handle != 0) Toast.makeText(this, "Übernommen – VPN verbindet kurz neu", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Abbrechen", null)
+                .show();
+    }
+
     private void installUpdate() {
         if (Updater.showConfirm(this)) return;
         try {
@@ -814,7 +985,7 @@ public class MainActivity extends Activity {
     }
 
     private void toggle() {
-        if (KroneVpnService.handle != 0) {
+        if (KroneVpnService.handle != 0 || !KroneVpnService.paused.isEmpty()) {
             stopAt = System.currentTimeMillis();
             power.setState(PowerButton.DISCONNECTING);
             startService(new Intent(this, KroneVpnService.class).setAction(KroneVpnService.ACTION_STOP));
@@ -948,8 +1119,13 @@ public class MainActivity extends Activity {
                 power.setState(PowerButton.CONNECTING);
                 break;
             default:
-                swapText(tState, "Nicht verbunden", cInk);
-                power.setState(h != 0 ? PowerButton.CONNECTING : PowerButton.OFF);
+                if (h == 0 && !KroneVpnService.paused.isEmpty()) {
+                    swapText(tState, "Pausiert", cAcc);
+                    power.setState(PowerButton.OFF);
+                } else {
+                    swapText(tState, "Nicht verbunden", cInk);
+                    power.setState(h != 0 ? PowerButton.CONNECTING : PowerButton.OFF);
+                }
         }
 
         String err = KroneVpnService.lastError;
@@ -987,7 +1163,9 @@ public class MainActivity extends Activity {
             tUp.setText("–");
             tPing.setText("–");
             tTotal.setText("–");
-            tSub.setText(c == null ? "Zuerst den Verbindungscode einfügen" : "Zum Verbinden auf den Knopf tippen");
+            tSub.setText(c == null ? "Zuerst den Verbindungscode einfügen"
+                    : !KroneVpnService.paused.isEmpty() ? "Vertrautes " + KroneVpnService.paused + " – in fremden Netzen verbindet es sich von selbst"
+                    : "Zum Verbinden auf den Knopf tippen");
             tInfo.setText("");
         }
         tErr.setText(err == null ? "" : err);
